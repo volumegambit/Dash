@@ -50,7 +50,8 @@
     "memory:e2e": "node scripts/memory-e2e/run.mjs",
     "location:e2e": "node --import tsx scripts/location-e2e/run.mjs",
     "skills:e2e": "node scripts/skill-learning-e2e/run.mjs",
-    "lint": "biome check . && npm run typecheck --workspace=apps/mission-control && npm run typecheck --workspace=apps/web && npm run typecheck --workspace=packages/plugin-sdk && npm run typecheck --workspace=packages/plugins",
+    "subagents:e2e": "node scripts/subagents-e2e/run.mjs",
+    "lint": "biome check . && npm run typecheck --workspace=apps/mission-control && npm run typecheck --workspace=apps/web && npm run typecheck --workspace=packages/plugin-sdk && npm run typecheck --workspace=packages/plugins && npm run typecheck --workspace=packages/agent && npm run typecheck --workspace=packages/swarm && npm run typecheck --workspace=packages/management && npm run typecheck --workspace=apps/gateway",
     "lint:fix": "biome check --write .",
     "clean": "rm -rf contracts/*/*/dist packages/*/dist apps/*/dist apps/*/out",
     "version:sync": "V=$(node -p \"require('./package.json').version\") && for f in contracts/mobile/v1/package.json contracts/mobile/v2/package.json packages/*/package.json apps/*/package.json packages/skills/plugins/*/.claude-plugin/plugin.json; do node -e \"const fs=require('fs');const p=JSON.parse(fs.readFileSync('$f'));p.version='$V';fs.writeFileSync('$f',JSON.stringify(p,null,2)+'\\n')\"; done && tsx scripts/sync-ios-version.ts"

@@ -51,8 +51,42 @@ replace Keychain, cellular relay, or background execution evidence.
 - [ ] VoiceOver labels status and announces final response once
 - [ ] Largest Dynamic Type does not clip sign-in, chat, agent, or settings flows
 - [ ] Reduce Motion removes nonessential streaming/navigation animation
-- [ ] iPad split view works in full screen and multitasking widths
-- [ ] Hardware keyboard -> Tab traversal, Return-to-send, and cancel shortcuts work on iPad
+
+## iPad hardware
+
+Everything below needs real hardware or a real input device. Nothing here is coverable by
+XCUITest, which is why each row exists rather than being a test. The first two rows replace the
+older "iPad split view works in full screen and multitasking widths" and "Hardware keyboard -> Tab
+traversal, Return-to-send, and cancel shortcuts work on iPad" entries, which said the same things
+less precisely.
+
+- [ ] Hardware keyboard -> ⌘Return sends the composer's text and Esc stops a streaming turn, and
+      each is inert exactly when its on-screen control is disabled
+- [ ] Hold ⌘ on a connected hardware keyboard -> the overlay lists every case of
+      `KeyboardCommand` with its real title: ⌘N New Conversation, ⌘F Search Conversations,
+      ⌘⇧[ / ⌘⇧] Previous / Next Conversation, ⌘, Settings…, ⌘1 Conversations, ⌘2 Agents,
+      ⌘W Close Conversation, ⌘Return Send, Esc Stop Response, ⌘L Focus Message Field,
+      ⌘⇧C Copy Last Response — each enabled or greyed to match its on-screen control. XCUITest
+      cannot synthesise hardware key chords, so the table is only unit-tested
+      (`DashCommandsTests`); this is the sole check that the overlay actually renders it
+- [ ] With a hardware keyboard and **Full Keyboard Access** on, Tab through the conversation list,
+      the agent list, and the sidebar footer -> every row takes focus exactly once, in visual
+      order, with a visible focus ring, and none is skipped or focused twice. This row exists
+      because an explicit focus modifier was deliberately removed rather than shipped unverified —
+      treat a regression here as a blocker, not a polish item
+- [ ] With a trackpad or mouse attached, hover over conversation rows, agent rows, sidebar footer
+      rows and toolbar buttons -> each shows its pointer effect and the cursor changes shape; no
+      row is left inert. Pointer interaction cannot be driven in the simulator
+- [ ] Drag an image out of Photos in Split View and drop it on the chat composer -> it attaches;
+      dropping past the four-attachment limit is rejected with the same message an in-app pick is
+- [ ] Slide Over, and Split View at both 1/3 and 1/2 width -> the layout collapses to the compact
+      single-column presentation and back without losing the open conversation or its draft
+- [ ] Stage Manager -> resize the window continuously across the compact/regular boundary; the
+      open conversation, scroll position and draft all survive every crossing
+- [ ] Two windows open on the SAME conversation (from "Open in New Window") -> a streaming reply
+      renders in both, with no duplicated or dropped messages in either
+- [ ] Floating (undocked/minimised) keyboard -> the composer stays visible and the send button
+      stays reachable; the transcript is not left scrolled behind the keyboard
 
 ## Evidence notes
 

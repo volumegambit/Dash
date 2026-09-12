@@ -1,0 +1,43 @@
+{
+  "id": "sub_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "agentId": "agent-01",
+  "agentName": "Mobile Helper",
+  "title": "Research contract behavior",
+  "revision": 5,
+  "status": "idle",
+  "activeTurnId": null,
+  "owningIssueId": null,
+  "projectId": null,
+  "lastSeq": 6,
+  "lastMessagePreview": "The contract includes child conversations.",
+  "createdAt": "2026-09-06T09:00:00.000Z",
+  "updatedAt": "2026-09-06T09:12:00.000Z",
+  "kind": "subagent",
+  "parentConversationId": "00000000-0000-4000-8000-000000000001",
+  "parentTurnId": "turn-parent-01",
+  "subagent": {
+    "type": "explore",
+    "name": "Contract researcher",
+    "status": "done",
+    "description": "Audit the mobile contract",
+    "prompt": "Compare mobile v2 with mainline semantics.",
+    "model": "openai/gpt-5.6",
+    "background": true,
+    "isolation": "worktree",
+    "depth": 1,
+    "startedAt": "2026-09-06T09:00:00.000Z",
+    "endedAt": "2026-09-06T09:11:00.000Z",
+    "usage": {
+      "inputTokens": 120,
+      "outputTokens": 80
+    },
+    "toolCallCount": 3,
+    "report": "The contract includes child conversations.",
+    "oneShot": true,
+    "workspace": "/workspace/contract-research"
+  },
+  "queuePaused": false,
+  "queueRevision": 0,
+  "pendingFollowUpCount": 0,
+  "v2LastSeq": 6
+}

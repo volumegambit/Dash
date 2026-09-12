@@ -1,0 +1,12 @@
+{
+  "type": "accepted",
+  "id": "turn-child-01",
+  "conversationId": "sub_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "runId": "turn-child-01",
+  "segmentTurnId": "turn-child-01",
+  "v2Seq": 1,
+  "userMessageId": "00000000-0000-4000-8000-000000000213",
+  "assistantMessageId": "00000000-0000-4000-8000-000000000214",
+  "revision": 1,
+  "origin": "future"
+}

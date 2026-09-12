@@ -5,11 +5,16 @@ import type { EventLogStore } from './event-log-store.js';
 import { orchestrateGatewayStartup, recoverGatewayTurns } from './gateway-recovery.js';
 
 describe('recoverGatewayTurns', () => {
-  it('repairs canonical swarm workers before the sole filtered v2 recovery pass', () => {
+  it('repairs canonical subagent tails before v2 recovery and child notifications', () => {
+    // The order is load-bearing. The tail pass appends `subagent_finished`, so
+    // it MUST precede the generic pass that writes the terminal marker — an
+    // event after that marker leaves the log non-terminal and the conversation
+    // comes back "interrupted" on every boot. The child pass MUST follow it,
+    // because the generic pass is what sets `subagent_status = 'interrupted'`.
     const calls: string[] = [];
     const eventLog = {
       listInterrupted: vi.fn(() => {
-        calls.push('swarm');
+        calls.push('tails');
         return [];
       }),
     } as unknown as EventLogStore;
@@ -20,26 +25,48 @@ describe('recoverGatewayTurns', () => {
         return {
           conversationsInterrupted: 2,
           terminalsAppended: 1,
+          subagentsInterrupted: 3,
           eligibleConversationIds: ['conversation-a'],
         };
       }),
+      listInterruptedSubagents: vi.fn(() => {
+        calls.push('children');
+        return [];
+      }),
+      updateSubagent: vi.fn(),
+      enqueueNotification: vi.fn(),
+      peekNotifications: vi.fn(() => []),
+      get: vi.fn(() => null),
     } as unknown as ConversationService;
 
     expect(recoverGatewayTurns({ eventLog, conversations })).toEqual({
       swarm: {
         conversationsRepaired: 0,
-        workersCancelled: 0,
+        childrenTerminalized: 0,
+        notificationsQueued: 0,
+        pendingDelivery: [],
+        canonicalConversationsRepaired: [],
+        failedCanonicalConversationIds: [],
+      },
+      subagents: {
+        conversationsRepaired: 0,
+        childrenTerminalized: 0,
+        notificationsQueued: 0,
+        pendingDelivery: [],
         canonicalConversationsRepaired: [],
         failedCanonicalConversationIds: [],
       },
       conversations: {
         conversationsInterrupted: 2,
         terminalsAppended: 1,
+        subagentsInterrupted: 3,
         eligibleConversationIds: ['conversation-a'],
       },
+      notifiedChildren: { childrenNotified: 0, pendingDelivery: [] },
+      pendingDelivery: [],
       excludedConversationIds: [],
     });
-    expect(calls).toEqual(['swarm', 'conversation']);
+    expect(calls).toEqual(['tails', 'conversation', 'children']);
     expect(conversations.recoverV2State).toHaveBeenCalledWith({
       excludeConversationIds: new Set(),
     });
@@ -65,12 +92,15 @@ describe('recoverGatewayTurns', () => {
           payload: {
             type: 'event',
             event: {
-              type: 'worker_spawned',
-              workerId: 'worker-bad',
-              runId: 'swarm-bad',
-              role: 'researcher',
-              brief: 'research',
+              type: 'subagent_started',
+              subagentId: 'subagent-bad',
+              subagentType: 'general-purpose',
+              description: 'research',
+              prompt: 'research',
               model: 'test',
+              background: true,
+              depth: 1,
+              startedAt: '2026-09-06T00:00:00.000Z',
             },
           },
         },
@@ -98,6 +128,11 @@ describe('recoverGatewayTurns', () => {
         terminalsAppended: 1,
         eligibleConversationIds: ['conversation-ok'],
       })),
+      listInterruptedSubagents: vi.fn(() => []),
+      updateSubagent: vi.fn(),
+      enqueueNotification: vi.fn(),
+      peekNotifications: vi.fn(() => []),
+      get: vi.fn(() => null),
     } as unknown as ConversationService;
     const admission = {
       markRecoveryRequired: vi.fn(),
@@ -150,12 +185,15 @@ describe('recoverGatewayTurns', () => {
           payload: {
             type: 'event',
             event: {
-              type: 'worker_spawned',
-              workerId: `worker-${conversationId}`,
-              runId: `swarm-${conversationId}`,
-              role: 'researcher',
-              brief: 'research',
+              type: 'subagent_started',
+              subagentId: `subagent-${conversationId}`,
+              subagentType: 'general-purpose',
+              description: 'research',
+              prompt: 'research',
               model: 'test',
+              background: true,
+              depth: 1,
+              startedAt: '2026-09-06T00:00:00.000Z',
             },
           },
         },
@@ -185,6 +223,11 @@ describe('recoverGatewayTurns', () => {
           };
         },
       ),
+      listInterruptedSubagents: vi.fn(() => []),
+      updateSubagent: vi.fn(),
+      enqueueNotification: vi.fn(),
+      peekNotifications: vi.fn(() => []),
+      get: vi.fn(() => null),
     } as unknown as ConversationService;
     const cleanupToken = { kind: 'recovery' };
     const admission = {
@@ -280,10 +323,18 @@ describe('orchestrateGatewayStartup', () => {
         createResumableChatHub: async () => {},
         resumePendingAgentDeletions: async () => {},
         resumeRecoveredQueues: async () => {},
-        startRestoredChannelAdapters: async () => started.push('adapter'),
-        startListeners: async () => started.push('listener'),
-        startRelayDial: async () => started.push('relay'),
-        ready: async () => started.push('ready'),
+        startRestoredChannelAdapters: async () => {
+          started.push('adapter');
+        },
+        startListeners: async () => {
+          started.push('listener');
+        },
+        startRelayDial: async () => {
+          started.push('relay');
+        },
+        ready: async () => {
+          started.push('ready');
+        },
       }),
     ).rejects.toThrow('pause failed');
     expect(started).toEqual([]);
@@ -356,10 +407,18 @@ describe('orchestrateGatewayStartup', () => {
         createResumableChatHub: phase('createResumableChatHub'),
         resumePendingAgentDeletions: phase('resumePendingAgentDeletions'),
         resumeRecoveredQueues: phase('resumeRecoveredQueues'),
-        startRestoredChannelAdapters: async () => ingress.push('adapter'),
-        startListeners: async () => ingress.push('listener'),
-        startRelayDial: async () => ingress.push('relay'),
-        ready: async () => ingress.push('ready'),
+        startRestoredChannelAdapters: async () => {
+          ingress.push('adapter');
+        },
+        startListeners: async () => {
+          ingress.push('listener');
+        },
+        startRelayDial: async () => {
+          ingress.push('relay');
+        },
+        ready: async () => {
+          ingress.push('ready');
+        },
       }),
     ).rejects.toThrow(`${failedPhase} failed`);
     expect(ingress).toEqual([]);
@@ -425,6 +484,13 @@ describe('gateway conversation composition', () => {
     expect(source).toContain('recoverGatewayTurns({');
     expect(source).toContain('orchestrateGatewayStartup({');
     expect(source).not.toContain('recoverInterruptedSwarmTurns({');
+    expect(source).not.toContain('restoreFinalizedRun');
+    // §7.5: what recovery queued has to be DELIVERED once the hub exists.
+    expect(source).toContain('recoveredNotificationTargets');
+    expect(source).toContain('deliverPending(target.agentId, target.conversationId)');
+    // A throw inside recovery must not take boot down (the child sweep is one
+    // unguarded UPDATE inside its transaction).
+    expect(source).toContain('[recovery] boot recovery failed');
 
     const managementMount = source.slice(
       source.indexOf('createGatewayManagementApp({'),

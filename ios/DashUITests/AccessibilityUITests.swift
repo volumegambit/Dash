@@ -28,7 +28,10 @@ final class AccessibilityUITests: DashUITestCase {
   func testSettingsForgetReturnsToConnectAndRemovesCachedRows() {
     let app = launch(scenario: "settings-forget")
     selectTab("tab.settings", in: app)
-    element("settings.disconnect", in: app).tap()
+    // Settings is a sheet on the iPad two-column layout (design §1.1), a much
+    // shorter viewport than the old full-height column: `settings.disconnect`
+    // sits below its fold and is absent from the hierarchy until scrolled to.
+    scrollSettingsToElement("settings.disconnect", in: app).tap()
     let confirmation = confirmationDialog(titled: "Disconnect & Forget?", in: app)
     confirmation.buttons["Disconnect & Forget"].tap()
 
@@ -45,7 +48,16 @@ final class AccessibilityUITests: DashUITestCase {
     app = launch(scenario: "paired-online", contentSize: Self.accessibilityXXXL)
     selectTab("tab.conversations", in: app)
     revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
-    assertFitsHorizontally(element("conversation.list", in: app), in: app)
+    // The sidebar is checked on the rendered TEXT of a conversation row rather
+    // than on `conversation.list`'s frame. `NavigationSplitView` overhangs the
+    // sidebar column's host view -- and every cell, row button and section
+    // header inside it -- 100 pt past the window's leading edge on iPadOS 18.4,
+    // with a compensating safe-area inset, so all of those frames measure the
+    // system's column geometry instead of this app's layout. The row's labels
+    // are the sidebar content a user actually reads and the thing Dynamic Type
+    // grows, so they are what a clip at XXXL would show up in. See
+    // `assertTextFitsHorizontally`.
+    assertTextFitsHorizontally(element("conversation.row.shared-plan", in: app), in: app)
     element("conversation.row.shared-plan", in: app).tap()
     dismissSplitOverlayIfPresent(in: app)
     assertFitsHorizontally(element("chat.transcript", in: app), in: app)
@@ -74,6 +86,15 @@ final class AccessibilityUITests: DashUITestCase {
     send.tap()
 
     XCTAssertTrue(app.staticTexts["Reconnecting"].waitForExistence(timeout: 5))
+    // Task D5: the sub-agent row's disclosure is state, not animation timing —
+    // it must open under reduce-motion exactly as it does without it
+    // (§8.6). `withAnimation(reduceMotion ? nil : .snappy)` is the mechanism;
+    // this is the assertion that it did not become "animate or nothing".
+    element("chat.subagent.ui-subagent.header", in: app).tap()
+    XCTAssertTrue(element("chat.subagent.ui-subagent.tool.ui-tool", in: app).exists)
+    XCTAssertEqual(
+      element("chat.subagent.ui-subagent", in: app).label, "Agent researcher, Running")
+
     XCTAssertEqual(
       element("chat.final.response", in: app, timeout: 8).label, "Recovered exactly once.")
   }
@@ -95,8 +116,12 @@ final class AccessibilityUITests: DashUITestCase {
     XCTAssertFalse(app.descendants(matching: .any)["chat.final.response"].exists)
     XCTAssertTrue(element("chat.question.ui-question", in: app).buttons["Ship it"].isEnabled)
     XCTAssertEqual(element("chat.tool.ui-tool", in: app).label, "Tool Search, Tool succeeded")
+    // Renamed in task D4 with the sub-agent row: `chat.worker.<runId+workerId>`
+    // → `chat.subagent.<subagentId>` (sub-agents design §8.6). The scenario
+    // emits both event families for one child, and this is the canonical
+    // family's type and status.
     XCTAssertEqual(
-      element("chat.worker.ui-worker", in: app).label, "Worker researcher, Worker running")
+      element("chat.subagent.ui-subagent", in: app).label, "Agent researcher, Running")
 
     let final = element("chat.final.response", in: app, timeout: 8)
     XCTAssertEqual(final.label, "Recovered exactly once.")
@@ -106,39 +131,5 @@ final class AccessibilityUITests: DashUITestCase {
     // "Response completed" row to find here anymore. The message's own
     // accessibility label above already conveys the completed state.
     XCTAssertFalse(app.staticTexts["Response completed"].exists)
-  }
-
-  private func scrollSettingsToElement(
-    _ identifier: String,
-    in app: XCUIApplication,
-    maxSwipes: Int = 6,
-    file: StaticString = #filePath,
-    line: UInt = #line
-  ) -> XCUIElement {
-    let settingsList = element("settings.list", in: app, file: file, line: line)
-    let window = app.windows.firstMatch
-    XCTAssertTrue(
-      window.waitForExistence(timeout: 2),
-      "Expected the app window before scrolling settings",
-      file: file,
-      line: line
-    )
-    let value = app.descendants(matching: .any)[identifier]
-
-    func isExposed() -> Bool {
-      guard value.exists, value.isHittable else { return false }
-      return value.frame.intersects(settingsList.frame) && value.frame.intersects(window.frame)
-    }
-
-    for _ in 0..<maxSwipes where isExposed() == false {
-      settingsList.swipeUp()
-    }
-    XCTAssertTrue(
-      isExposed(),
-      "Expected \(identifier) to be exposed and hittable after \(maxSwipes) settings-list swipes",
-      file: file,
-      line: line
-    )
-    return value
   }
 }

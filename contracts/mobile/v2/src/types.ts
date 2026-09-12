@@ -1,5 +1,7 @@
 import type {
+  ConversationKind,
   ConversationMessage,
+  ConversationMessageOrigin,
   ConversationSummary,
   MobileAgentEvent,
   MobileApiErrorCode,
@@ -183,6 +185,12 @@ export type MobileV2SequencedFrame =
       userMessageId: string;
       assistantMessageId: string;
       revision: number;
+      /** Live-only turn cause; omitted on replay and ordinary user turns. */
+      origin?: ConversationMessageOrigin;
+      /** Live-only conversation kind; omitted on replay and ordinary user turns. */
+      kind?: ConversationKind;
+      /** Live-only echo of a subagent resume request; never persisted or replayed. */
+      requestId?: string;
     })
   | (MobileV2RunFrameBase & { type: 'event'; event: MobileAgentEvent })
   | (MobileV2RunFrameBase & {

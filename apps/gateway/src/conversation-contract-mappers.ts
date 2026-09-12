@@ -21,6 +21,12 @@ export function mapConversationV1(conversation: StoredConversation): Conversatio
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
     ...(conversation.deletedAt !== undefined ? { deletedAt: conversation.deletedAt } : {}),
+    kind: conversation.kind ?? 'user',
+    ...(conversation.parentConversationId !== undefined
+      ? { parentConversationId: conversation.parentConversationId }
+      : {}),
+    ...(conversation.parentTurnId !== undefined ? { parentTurnId: conversation.parentTurnId } : {}),
+    ...(conversation.subagent !== undefined ? { subagent: conversation.subagent } : {}),
   };
 }
 
@@ -45,6 +51,7 @@ export function mapMessageV1(message: StoredConversationMessage): ConversationMe
     content: message.content,
     createdAt: message.createdAt,
     updatedAt: message.updatedAt,
+    ...(message.origin !== undefined ? { origin: message.origin } : {}),
   };
 }
 

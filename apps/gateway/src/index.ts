@@ -23,10 +23,15 @@ import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
 import type { ConversationSummary, GatewayIdentity } from '@dash/mobile-contract';
 import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
-import { PluginConfigStore, RESERVED_PROVIDER_IDS, loadPlugins } from '@dash/plugins';
+import {
+  PluginConfigStore,
+  RESERVED_PROVIDER_IDS,
+  findCatalogPattern,
+  loadPlugins,
+} from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
 import { getBuiltinPluginsDir } from '@dash/skills';
-import { SwarmCoordinator, createSwarmTools } from '@dash/swarm';
+import { SwarmCoordinator, createStaticResolver } from '@dash/swarm';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
@@ -36,6 +41,7 @@ import { AgentRegistry } from './agent-registry.js';
 import { ensureCoreProvidersPlugin } from './bundled-plugin.js';
 import { ChannelRegistry } from './channel-registry.js';
 import { type ChatWsLifecycle, mountChatWs } from './chat-ws.js';
+import { createChildTurnDriver } from './child-turn-driver.js';
 import {
   parseFlags,
   resolveSwarmConfig,
@@ -51,7 +57,11 @@ import { GatewayCredentialStore } from './credential-store.js';
 import { createDialTokenManager } from './dial-token-manager.js';
 import { EventBus } from './event-bus.js';
 import { loadOrCreateGatewayId, loadOrCreateGatewayIdentity } from './gateway-identity.js';
-import { orchestrateGatewayStartup, recoverGatewayTurns } from './gateway-recovery.js';
+import {
+  type GatewayRecoveryResult,
+  orchestrateGatewayStartup,
+  recoverGatewayTurns,
+} from './gateway-recovery.js';
 import { createDynamicGateway } from './gateway.js';
 import { createLanMobileApp } from './lan-mobile-app.js';
 import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
@@ -61,6 +71,7 @@ import { extractMemoriesWithModel, shouldSweepModel } from './memory-sweep-extra
 import { createMemorySweepService } from './memory-sweep.js';
 import { migrateIncludeBundled } from './migrate-include-bundled.js';
 import { ModelsStore } from './models-store.js';
+import { createNotificationDriver } from './notification-driver.js';
 import { OAuthRefreshCoordinator } from './oauth-refresh.js';
 import { filterPluginsByAgent } from './plugin-filtering.js';
 import { reconcilePluginMcpServers, registerPluginMcpServers } from './plugin-mcp.js';
@@ -70,7 +81,7 @@ import {
   reloadPluginsUnderMutex,
 } from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
-import { createResumableChatHub } from './resumable-chat-hub.js';
+import { type ResumableChatHub, createResumableChatHub } from './resumable-chat-hub.js';
 import { type GatewayShutdownCoordinator, createGatewayShutdownCoordinator } from './shutdown.js';
 import {
   DEFAULT_MIN_TOOL_CALLS,
@@ -78,8 +89,43 @@ import {
   shouldReviewSkills,
 } from './skill-review-extract.js';
 import { createSkillReviewService } from './skill-review.js';
-import { createGatewayWorkerFactory } from './swarm-wiring.js';
+import {
+  buildChildDelegationSection,
+  isSubagentsEnabled,
+  subagentCapsFromConfig,
+  subagentMaxDepth,
+} from './subagent-config.js';
+import { createSubagentDefinitionRegistry } from './subagent-definitions.js';
+import {
+  childAttachOverrides,
+  reconstructChildSpec as reconstructChildSpecFrom,
+} from './subagent-resume.js';
+import { createSubagentRosterRefresher } from './subagent-roster-refresh.js';
+import {
+  childSkillWiring,
+  createChildSpawnTools,
+  createSubagentExtraTools,
+  createSwarmGate,
+  orchestratorMcpToolNames,
+} from './subagent-tools.js';
+import {
+  type ChildBackendDeps,
+  createChildBackend,
+  createWorktreeCleanupHook,
+} from './subagent-wiring.js';
+import { childWorktreePath, reapOrphanWorktrees } from './subagent-worktree.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
+
+/**
+ * The one refusal message for a turn on a sub-agent conversation whose grant
+ * this process can neither find in memory nor rebuild from the row — a child of
+ * a deleted conversation, of a removed agent, or one persisted before grants
+ * were recorded. Both guards use it so the pool-miss path and the warm-entry
+ * path cannot drift into saying different things — or, worse, into one of them
+ * not saying anything and running the child on the AGENT's grant.
+ */
+const SPEC_LESS_CHILD_TURN = (conversationId: string): string =>
+  `sub-agent conversation ${conversationId} has no live spec and its grant cannot be rebuilt`;
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -228,14 +274,15 @@ async function main() {
   });
   const coreProviderIds = [...RESERVED_PROVIDER_IDS];
 
-  // Derive ALL plugin wiring (skill dirs, namespaced command/agent files, hook
-  // engine, model catalog + dropdown models, MCP configs, provider configs with
-  // core-collision exclusion, status records) in ONE place. Stored in a MUTABLE
-  // holder so a later hot-reload (Task 3) can reassign it; every downstream
-  // consumer that must observe reloaded wiring reads through `wiringState.*`
-  // LAZILY (at backend/hook construction time) rather than capturing a field
-  // into a boot-time const. The hook engine is built with the same
-  // `{ logger, dataDir }` the gateway used previously, so behavior is identical.
+  // Derive ALL plugin wiring (skill dirs, namespaced command files, namespaced
+  // sub-agent definition files, hook engine, model catalog + dropdown models,
+  // MCP configs, provider configs with core-collision exclusion, status
+  // records) in ONE place. Stored in a MUTABLE holder so a later hot-reload
+  // (Task 3) can reassign it; every downstream consumer that must observe
+  // reloaded wiring reads through `wiringState.*` LAZILY (at backend/hook
+  // construction time) rather than capturing a field into a boot-time const.
+  // The hook engine is built with the same `{ logger, dataDir }` the gateway
+  // used previously, so behavior is identical.
   //
   // MUST be `let` (not `const`): the `onWiringRebuilt` callback below reassigns
   // this holder on every plugin hot-reload.
@@ -348,6 +395,33 @@ async function main() {
     logger.info(`[migrate] rewrote ${migratedAgents} agent(s) off skills.includeBundled`);
   }
 
+  // --- Sub-agent definition registry (spec §6.2) ---
+  //
+  // Resolves a `subagent_type` per agent across the four definition sources.
+  // Both inputs are LIVE getters, never snapshots: a plugin hot-reload
+  // reassigns `wiringState`, and `PUT /agents/:id` rewrites the config the
+  // per-agent dir, workspace dirs and `allowedTypes` come from.
+  //
+  // The logger matters as much as the resolution: the registry's
+  // `allowedTypes` diagnostics and the spec §5.4 roster token-budget warning
+  // are only useful if they land in the gateway's own log stream rather than a
+  // console nobody is tailing.
+  const subagentDefinitions = createSubagentDefinitionRegistry({
+    dataDir,
+    getPluginAgentDefFiles: () => wiringState.agentDefFiles,
+    getAgentConfig: (agentId) => registry.get(agentId)?.config,
+    logger: { warn: (message) => logger.warn(message) },
+  });
+  // The registry→warm-backend bridge. Created BEFORE `agents` and reaching it
+  // through the closure below (never called during construction) because the
+  // chat backend factory needs `resolverFor` while this needs the coordinator.
+  const subagentRosters = createSubagentRosterRefresher({
+    registry: subagentDefinitions,
+    refreshBackends: (agentId) => agents.refreshCustomTools(agentId),
+    listAgentIds: () => registry.list().map((entry) => entry.id),
+    warn: (message) => logger.warn(message),
+  });
+
   // Shared pull-based credential source. The chat-path backend factory below
   // builds its own inline copy (it also needs it before this point in the file
   // layout); this top-level instance feeds the swarm worker factory, whose
@@ -367,7 +441,7 @@ async function main() {
 
   // The swarm coordinator: one per gateway. Owns every live swarm run's worker
   // pool + event channel, enforces the global concurrent-worker ceiling and the
-  // per-agent caps, and appends straggler worker_done events out-of-band to the
+  // per-agent caps, and appends straggler subagent_finished events out-of-band to the
   // event log on the consumer-gone finalize path. Constructed BEFORE the chat
   // coordinator so the merge wrapper (which attaches turns) and the swarm-tool
   // injection in createBackend both address the same instance. Caps come from
@@ -402,25 +476,112 @@ async function main() {
     swarmPokeLastEmit.set(runId, now);
     eventBus.emit({ type: 'swarm:run-changed', agentId, runId });
   };
-  const swarmCoordinator = new SwarmCoordinator({
-    workerFactory: createGatewayWorkerFactory({
-      credentialProvider: swarmCredentialProvider,
-      dataDir,
-      // Workers inherit the ORCHESTRATOR's memory read-only (prompt only, no
-      // memory tools). Keyed by registry id, same as the chat path above, and
-      // off entirely for agents that opted out with `memory.enabled === false`.
-      memoryDir: (id) =>
-        registry.get(id)?.config.memory?.enabled === false
-          ? undefined
-          : agentMemoryDir(dataDir, id),
-      // No logger: the gateway's StructuredLogger (from @dash/logging) is not
-      // assignable to @dash/agent's Logger (different `error` arity), and the
-      // chat-path PiAgentBackend is likewise constructed with an undefined
-      // logger — workers stay consistent with that.
-    }),
-    // Canonical Follow Up runs append on the current run segment. Genuinely
-    // legacy runs retain their v1 message journal; the discriminated identity
-    // makes it impossible to silently fall back when a canonical append fails.
+  /**
+   * The names of the MCP tools the shared manager currently exposes. Read
+   * LIVE (never snapshotted) so a server added or removed mid-session is
+   * reflected on the next spawn.
+   */
+  const listMcpToolNames = (): string[] => mcpManager.getTools().map((t) => t.name);
+  /**
+   * The READ-ONLY skill wiring a child of `spec.agentId` may discover.
+   * Per-parent, not gateway-wide: a child of agent A must not discover agent
+   * B's managed skills.
+   *
+   * Keyed on the REGISTRY ID, not the name — the id is the stable handle the
+   * spec carries — and `childSkillWiring` fails CLOSED on a lookup miss (the
+   * parent was deleted mid-run), because `filterPluginsByAgent(undefined, …)`
+   * means ALL plugins. Reads `wiringState` LIVE inside the closure (same reload
+   * contract as the chat-path backend factory).
+   */
+  const parentSkillWiring = (spec: { agentId: string }) => {
+    const parentConfig = registry.get(spec.agentId)?.config;
+    return childSkillWiring(parentConfig, wiringState, (config) =>
+      resolve(dataDir, 'skills', config.name),
+    );
+  };
+  /**
+   * Everything a child's backend is built from — the credential source, the
+   * data dir, the narrowed MCP/skill/hook wiring. Read by the pool's child
+   * branch below, which is the ONLY place the gateway constructs a child.
+   */
+  const childBackendDeps: ChildBackendDeps = {
+    credentialProvider: swarmCredentialProvider,
+    dataDir,
+    // Children inherit the PARENT's memory read-only — the prompt only, never
+    // the memory tools (`buildChildAgentConfig` sets `tools: false`). Keyed by
+    // registry id, the same key the chat path uses, and off entirely for an
+    // agent that opted out with `memory.enabled === false`. A `skipMemory`
+    // child type (Explore / Plan) drops it a second time, per spec, in
+    // `buildChildAgentConfig`.
+    memoryDir: (id) =>
+      registry.get(id)?.config.memory?.enabled === false ? undefined : agentMemoryDir(dataDir, id),
+    // No logger: the gateway's StructuredLogger (from @dash/logging) is not
+    // assignable to @dash/agent's Logger (different `error` arity), and the
+    // chat-path PiAgentBackend is likewise constructed with an undefined
+    // logger — children stay consistent with that.
+    //
+    // The shared MCP manager. `buildChildBackendOptions` hands it on ONLY to
+    // a child whose resolved grant names MCP tools, and narrows that child to
+    // exactly those tools (assignedMcpServers + mcpToolAllowlist).
+    mcpManager,
+    // Plugin wiring read LAZILY through getters: a reload reassigns
+    // `wiringState`, and a child spawned afterwards must observe the new hook
+    // engine / model catalog. Capturing either into a boot-time const would
+    // make reload a silent no-op for children.
+    get pluginModelCatalog() {
+      return wiringState.pluginModelCatalog;
+    },
+    get hookRunner() {
+      return wiringState.hookEngine;
+    },
+    getParentSkillDirs: (spec) => parentSkillWiring(spec).paths,
+    getExtraSkillFiles: (spec) => parentSkillWiring(spec).commandFiles,
+  };
+
+  /**
+   * The child transport (design §7.1): a child is a real conversation whose
+   * turns run through the SAME `ResumableChatHub` as a user's. The hub is
+   * constructed later in this file, so it is read through a late-bound getter
+   * and its observer is attached once it exists.
+   */
+  const hubRef: { current?: ResumableChatHub } = {};
+  const childTurnDriver = createChildTurnDriver({
+    conversations: conversationService,
+    hub: () => hubRef.current,
+    warn: (message) => logger.warn(message),
+  });
+
+  /**
+   * RESUME (design §5.2): the spec of a child this process no longer holds one
+   * for, rebuilt from its row + persisted grant and RE-INTERSECTED against what
+   * its parent holds right now. Wired into the coordinator so `send_message` to
+   * a finished child, and an ordinary turn on a child conversation, both go
+   * through the one narrowing path.
+   */
+  const reconstructChildSpec = (subagentId: string) =>
+    reconstructChildSpecFrom(subagentId, {
+      conversations: conversationService,
+      liveSpec: (id) => swarmCoordinator.liveChildSpec(id),
+      agentConfig: (id) => registry.get(id)?.config,
+      agentMcpTools: (id) => orchestratorMcpToolNames(registry.get(id)?.config, listMcpToolNames),
+      worktreePath: (spec) =>
+        childWorktreePath({ dataDir, agentName: spec.agentName, childId: spec.workerId }),
+    });
+
+  const swarmCoordinator: SwarmCoordinator = new SwarmCoordinator({
+    childDriver: childTurnDriver,
+    reconstructChildSpec,
+    // Per-agent `subagents.max*` normally reach the coordinator through
+    // `attach({ caps })`. A resume can happen with no live parent turn, and
+    // falling back to the gateway defaults there would silently ignore every
+    // cap the operator set on the agent.
+    resolveCaps: (agentId) => {
+      const config = registry.get(agentId)?.config;
+      return config ? subagentCapsFromConfig(config) : undefined;
+    },
+    // EventLogStore.append is synchronous (returns the assigned seq); the swarm
+    // sink expects a Promise. Wrap so the coordinator's fire-and-forget
+    // out-of-band append is type-correct and never throws into the loop.
     eventLog: {
       append: (agentId, conversationId, identity, payload) => {
         if (identity.kind === 'canonical') {
@@ -442,8 +603,17 @@ async function main() {
     globalMaxConcurrentWorkers: swarmConfig.maxConcurrentWorkersGlobal,
     defaultCaps: swarmConfig.defaults,
     onRunChanged: emitSwarmRunChanged,
+    // Worktree isolation, finish half: an `isolation: worktree` child got its
+    // own checkout from the factory above, and this takes it down again on
+    // EVERY terminal path (cancels included). A worktree the child left dirty
+    // is kept and its path logged — the child's uncommitted work is the one
+    // thing cleanup must never destroy.
+    onWorkerFinished: createWorktreeCleanupHook({
+      dataDir,
+      warn: (message) => logger.warn(message),
+    }),
     // Fire the SubagentStart/SubagentStop plugin hook events around worker
-    // lifecycles (swarm design §6). The WorkerHandle seam is a synchronous
+    // lifecycles (swarm design §6). The ChildHandle seam is a synchronous
     // void callback, so the async engine runs fire-and-forget — a Subagent
     // hook can observe (log, notify, audit) but never block a worker. Read
     // the engine LIVE through the mutable `wiringState` holder (same reload
@@ -468,22 +638,66 @@ async function main() {
         });
       },
     },
+    // Completion notifications (design §7.3). The hub is constructed further
+    // down this file, so it is read through the SAME late-bound ref the child
+    // transport uses — there is no `hub` binding in this scope.
+    notifications: createNotificationDriver({
+      conversations: conversationService,
+      hub: () => hubRef.current,
+      agentRegistry: registry,
+      warn: (message) => logger.warn(message),
+    }),
   });
 
-  // Repair swarm turns a previous gateway process died in the middle of:
-  // synthesize worker_done{cancelled} + a terminal error marker into the
-  // event log (so MC's replay terminalizes instead of spinning forever) and
-  // restore the interrupted runs into the panel history. Runs before any
+  // Boot recovery (design §7.4, §7.5). Three passes in a fixed order: repair
+  // the parent tails a previous process died inside (a dangling
+  // `subagent_started` gets a synthesized `subagent_finished{interrupted}` so
+  // replay terminalizes instead of spinning forever), then terminalize the
+  // conversation leases and mark every non-terminal child `interrupted`, then
+  // queue each of those children's parent a notification. Runs before any
   // server accepts traffic, so no live turn can exist yet.
-  const gatewayRecovery = recoverGatewayTurns({
-    eventLog: eventLogStore,
-    conversations: conversationService,
-    admission,
-    isDeletionMarked: (agentId) => registry.get(agentId)?.deletionIntent === true,
-    restoreRun: (snapshot) => swarmCoordinator.restoreFinalizedRun(snapshot),
-    log: (message) => logger.info(message),
-  });
-  const { conversations: conversationRecovery } = gatewayRecovery;
+  // Recovery is contained so a corrupt historical row cannot prevent the
+  // gateway from serving; failed canonical runs remain fenced and excluded.
+  const emptySubagentRecovery = {
+    conversationsRepaired: 0,
+    childrenTerminalized: 0,
+    notificationsQueued: 0,
+    pendingDelivery: [],
+    canonicalConversationsRepaired: [],
+    failedCanonicalConversationIds: [],
+  };
+  let gatewayRecovery: GatewayRecoveryResult = {
+    swarm: emptySubagentRecovery,
+    subagents: emptySubagentRecovery,
+    conversations: {
+      conversationsInterrupted: 0,
+      terminalsAppended: 0,
+      subagentsInterrupted: 0,
+      eligibleConversationIds: [],
+    },
+    notifiedChildren: { childrenNotified: 0, pendingDelivery: [] },
+    pendingDelivery: [],
+    excludedConversationIds: [],
+  };
+  try {
+    gatewayRecovery = recoverGatewayTurns({
+      eventLog: eventLogStore,
+      conversations: conversationService,
+      admission,
+      isDeletionMarked: (agentId) => registry.get(agentId)?.deletionIntent === true,
+      log: (message) => logger.info(message),
+    });
+  } catch (err) {
+    logger.warn(
+      `[recovery] boot recovery failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const {
+    conversations: conversationRecovery,
+    subagents: subagentRecovery,
+    notifiedChildren,
+    pendingDelivery: recoveredNotificationTargets,
+  } = gatewayRecovery;
   if (conversationRecovery.conversationsInterrupted > 0) {
     logger.info(
       `[conversation-recovery] interrupted ${conversationRecovery.conversationsInterrupted} conversation(s), ` +
@@ -494,6 +708,43 @@ async function main() {
     if (entry.status === 'disabled') {
       conversationService.pauseFollowUpsForAgentDisable(entry.id);
     }
+  }
+  if (
+    subagentRecovery.childrenTerminalized > 0 ||
+    conversationRecovery.subagentsInterrupted > 0 ||
+    notifiedChildren.childrenNotified > 0
+  ) {
+    logger.info(
+      `[subagent-recovery] terminalized ${subagentRecovery.childrenTerminalized} parent-side child(ren), ` +
+        `marked ${conversationRecovery.subagentsInterrupted} child conversation(s) interrupted, ` +
+        `queued ${subagentRecovery.notificationsQueued + notifiedChildren.childrenNotified} notification(s)`,
+    );
+  }
+
+  // Worktree orphan reaper (Task B6 carried into C6). A SIGKILL between spawn
+  // and finish leaks `<dataDir>/worktrees/<agent>/<child>` AND leaves a
+  // `prunable` registration in the parent repo that nothing else sweeps. No
+  // child is live at boot, so every directory here is an orphan — but the B6
+  // rule still holds: a worktree holding uncommitted work or non-disposable
+  // ignored content is KEPT, and so is a `max_turns` child's (its report points
+  // at the work inside it). Awaited so the sweep completes before traffic, and
+  // fully contained: a reaper failure must never stop the gateway.
+  try {
+    const sweep = await reapOrphanWorktrees({
+      dataDir,
+      statusOf: (childId) => conversationService.get(childId)?.subagent?.status,
+      log: (message) => logger.info(message),
+    });
+    if (sweep.removed.length > 0 || sweep.kept.length > 0) {
+      logger.info(
+        `[worktree-reaper] removed ${sweep.removed.length} orphaned worktree(s), ` +
+          `kept ${sweep.kept.length}`,
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      `[worktree-reaper] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   const agents = createAgentChatCoordinator({
@@ -507,18 +758,135 @@ async function main() {
     // every agent gets it unless it opted out with `memory.enabled === false`.
     memoryDir: (id) => agentMemoryDir(dataDir, id),
     // Same plugin inputs the backend factory injects (skill dirs merged into
-    // `skills.paths`, command/agent files as extra flat skills) so the HTTP
-    // skills route (GET /agents/:id/skills) lists what chat can actually load.
+    // `skills.paths`, command files as extra flat skills) so the HTTP skills
+    // route (GET /agents/:id/skills) lists what chat can actually load. Plugin
+    // `agents/*.md` are NOT included: they are sub-agent definitions, not
+    // loadable skills (spec §6.2), so they never appear in this listing.
     // Read LIVE through the mutable `wiringState` holder (same as the chat-path
     // backend factory below) so a plugin hot-reload is reflected by the
     // read-only `listSkills` route immediately — no boot snapshot.
     getPluginSkillDirs: () => wiringState.skillDirs,
     getPluginCommandFiles: () => wiringState.commandFiles,
     // Swarm merge wiring. `isEnabled` is a live registry read so a mid-turn
-    // PUT /agents/:id that flips swarm.enabled takes effect on the next chat.
-    swarm: {
-      coordinator: swarmCoordinator,
-      isEnabled: (id) => registry.get(id)?.config.swarm?.enabled === true,
+    // PUT /agents/:id that flips the sub-agent gate takes effect on the next
+    // chat. Sub-agents are ON by default (see isSubagentsEnabled), so this is
+    // true for every agent that has not explicitly turned them off. Built by
+    // the shared helper so the integration test drives THIS predicate rather
+    // than a copy of it.
+    swarm: createSwarmGate(swarmCoordinator, registry, listMcpToolNames),
+    // Default delegation mode follows the orchestrator model's catalog tier
+    // (0 = frontier → 'auto'). Reads the LIVE wiring so a plugin reload that
+    // ships a new catalog is observed without a restart; an unknown model
+    // yields undefined, which resolves to 'explicit'.
+    modelTier: (model) => {
+      const slash = model.indexOf('/');
+      if (slash <= 0) return undefined;
+      const providerId = model.slice(0, slash);
+      const modelId = model.slice(slash + 1);
+      for (const { catalog } of wiringState.pluginProviderConfigs) {
+        if (catalog.id !== providerId) continue;
+        return findCatalogPattern(catalog, modelId)?.tier;
+      }
+      return undefined;
+    },
+    /**
+     * Children ride the SHARED pool (design §7.1, revised): the pool asks for a
+     * backend the same way it does for a user conversation, and this branch is
+     * the only thing that makes the answer a definition-driven child backend
+     * built from the child's resolved spec instead of the agent's normal one.
+     *
+     * The spec comes from the coordinator, which holds it while the child is
+     * live and REBUILDS it from the child's row + persisted grant otherwise (a
+     * finished child, an evicted one, or a row left by a previous gateway) —
+     * narrowed to what the parent holds now. Only a child whose grant cannot be
+     * established at all is refused, and it is refused loudly rather than
+     * silently warming the PARENT's backend on the child's conversation.
+     */
+    childRuntime: async (agentId, conversationId) => {
+      // `includeDeleted`: a cascading parent delete can tombstone a child
+      // mid-turn, and a tombstoned child must still be recognised AS a child —
+      // falling through would warm the agent's normal backend on the child's
+      // conversation id, which is the one thing this branch exists to prevent.
+      const convo = conversationService.get(conversationId, { includeDeleted: true });
+      if (convo?.kind !== 'subagent') return undefined;
+      const spec = swarmCoordinator.childSpec(conversationId);
+      if (!spec) {
+        throw new Error(SPEC_LESS_CHILD_TURN(conversationId));
+      }
+      // Nesting: a child below the ceiling gets its OWN `agent`/`send_message`,
+      // bounded by its own grant. `subagentRosters` is the same registry the
+      // parent's roster came from, narrowed to the child's `spawnableTypes`.
+      const parentConfig = registry.get(agentId)?.config;
+      const spawnTools = parentConfig
+        ? createChildSpawnTools({
+            coordinator: swarmCoordinator,
+            agentId,
+            spec,
+            maxDepth: subagentMaxDepth(parentConfig),
+            types: (await subagentRosters.resolverFor(agentId)).list(),
+            modelAliases: () => registry.get(agentId)?.config.subagents?.modelAliases ?? {},
+          })
+        : [];
+      const runtime = await createChildBackend(
+        { ...spec, extraTools: [...spec.extraTools, ...spawnTools] },
+        childBackendDeps,
+      );
+      // An ARMED child gets its own `# Delegation` section, rebuilt per turn so
+      // its roster names the children it has actually spawned. A static config
+      // would pin an empty roster forever, which is the same as not having one:
+      // the `agent` tool's schema lists spawnable TYPES, never live children, so
+      // without this an armed child holds `send_message` and no target ids.
+      const childDepth = spec.depth ?? 1;
+      const resolveConfig =
+        spawnTools.length === 0
+          ? () => runtime.config
+          : () => ({
+              ...runtime.config,
+              systemPrompt: `${runtime.config.systemPrompt}\n\n${buildChildDelegationSection(
+                childDepth,
+                parentConfig ? subagentMaxDepth(parentConfig) : childDepth,
+                swarmCoordinator.rosterFor(agentId, conversationId),
+              )}`,
+            });
+      // Record WHERE it ran. For an isolated child this is the only pointer a
+      // user ever gets to the worktree it left work in, and the parent's report
+      // reads it back out of `subagent_meta`. Never fatal: a cascading parent
+      // delete can tombstone the row between the spawn and here, and losing the
+      // path is not worth failing a turn that is otherwise ready to run.
+      try {
+        conversationService.updateSubagent(conversationId, {
+          info: { workspace: runtime.workspace },
+        });
+      } catch (err) {
+        logger.warn(
+          `[subagents] could not record the workspace of ${conversationId}: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return { backend: runtime.backend, workspace: runtime.workspace, resolveConfig };
+    },
+    /**
+     * A nested spawn is validated against the CHILD's grant, not the top-level
+     * agent's — otherwise a grandchild could hold tools its parent never had.
+     *
+     * FAILS CLOSED, and does so independently of the pool. `childRuntime` above
+     * only runs on a pool MISS, so a finished child whose backend is still warm
+     * would otherwise take this turn with the agent's grant in force: tool and
+     * MCP escalation is blocked by the child's captured `parentContext`, but
+     * `spawnChild` reads `workspace` from the attachment, so a grandchild would
+     * be sandboxed in the agent's real repo instead of inside its parent's
+     * worktree.
+     */
+    childAttachOptions: (_agentId, conversationId) => {
+      const spec = swarmCoordinator.childSpec(conversationId);
+      if (spec) {
+        return childAttachOverrides(spec, (s) =>
+          childWorktreePath({ dataDir, agentName: s.agentName, childId: s.workerId }),
+        );
+      }
+      const convo = conversationService.get(conversationId, { includeDeleted: true });
+      if (convo?.kind !== 'subagent') return undefined;
+      throw new Error(SPEC_LESS_CHILD_TURN(conversationId));
     },
     createBackend: async (agentConfig, conversationId, agentId) => {
       const sessionDir = resolve(dataDir, 'sessions', agentConfig.name, conversationId);
@@ -604,6 +972,7 @@ async function main() {
       const {
         skillDirs: allSkillDirs,
         commandFiles: allCommandFiles,
+        agentDefFiles: allAgentDefFiles,
         hookEngine,
         pluginModelCatalog,
       } = wiringState;
@@ -616,12 +985,32 @@ async function main() {
       // skillDirs/commandFiles). pluginModelCatalog is passed AS-IS: the catalog
       // is shared and per-agent routing happens via skill/command filtering.
       // Reload-correct: reads wiringState.* live inside this per-call closure.
+      //
+      // `agentDefFiles` (plugin `agents/*.md`) is narrowed by the SAME selection
+      // but is deliberately NOT handed to the backend: per spec §6.2 those are
+      // sub-agent DEFINITIONS, not loadable skills. They reach the model
+      // through the definition registry's roster instead (see
+      // `subagentResolver` below), which does its own plugin narrowing.
       const { skillDirs, commandFiles } = filterPluginsByAgent(
         agentConfig.plugins,
         allSkillDirs,
         allCommandFiles,
         wiringState.skillDirsByPlugin,
+        allAgentDefFiles,
       );
+
+      // This agent's sub-agent roster. Awaited HERE (not inside the tool
+      // bundle) because the registry scans directories: the `agent` tool's
+      // `parameters` getter is synchronous, so the first build has to happen
+      // while the backend is still being constructed.
+      //
+      // Gated on the sub-agent switch: `createSubagentExtraTools` returns []
+      // for a disabled agent, so building a roster for one buys nothing and
+      // costs a `readdir` per agent on a cold gateway's first chat — plus a
+      // roster-token-budget warning about an agent that can never spawn.
+      const subagentResolver = isSubagentsEnabled(agentConfig)
+        ? await subagentRosters.resolverFor(agentId)
+        : createStaticResolver([]);
 
       // Explicit annotation breaks the circular type inference: the projects
       // tools close over `backend` (getSessionId) while `backend` is still
@@ -678,17 +1067,46 @@ async function main() {
             // deep-link) must pass config.name.
             getAgentId: () => agentConfig.name,
           }),
+          // The sub-agent bundle (legacy swarm four + `agent`/`send_message`),
+          // empty when this agent has sub-agents off. Built by the shared
+          // helper so the gate, the type narrowing and the parent-tool grant
+          // are the same code the integration test drives.
+          //
           // SwarmExtraTool is a structural copy of ExtraTool (details? is
           // optional there, required here) — the same duck-typed shape the
-          // worker side casts in swarm-wiring.ts. Cast so the combined array
+          // child side casts in subagent-wiring.ts. Cast so the combined array
           // matches the backend's ExtraTool[] slot.
-          ...(agentConfig.swarm?.enabled
-            ? (createSwarmTools({
-                coordinator: swarmCoordinator,
-                agentId,
-                conversationId: () => backend.getCurrentSessionId() ?? '',
-              }) as unknown as ExtraTool[])
-            : []),
+          ...(createSubagentExtraTools({
+            coordinator: swarmCoordinator,
+            agentId,
+            agentConfig,
+            // The registry-backed roster, via the DELEGATING resolver: the
+            // `agent` tool captures it for this backend's whole life, so a
+            // definition written after the backend warmed is picked up by the
+            // refresher swapping the snapshot behind it (plus the
+            // `refreshCustomTools` poke that makes the new roster reach pi's
+            // frozen tool registry). Resolved above the `new PiAgentBackend`
+            // call because it is async.
+            resolver: subagentResolver,
+            conversationId: () => backend.getCurrentSessionId() ?? '',
+            parentTools: () => registry.get(agentId)?.config.tools,
+            // The parent's OWN MCP grant, read live and through the SAME helper
+            // the merge wrapper's attach() bound uses, so the roster, the
+            // resolved child grant and the coordinator's re-check agree.
+            parentMcpTools: () =>
+              orchestratorMcpToolNames(registry.get(agentId)?.config, listMcpToolNames),
+            parentModel: () => registry.get(agentId)?.config.model ?? agentConfig.model,
+            // `subagents.modelAliases`, read live: adding an alias must apply on
+            // the next turn, and a `PUT /agents/:id` does not evict the pool.
+            parentModelAliases: () =>
+              registry.get(agentId)?.config.subagents?.modelAliases ??
+              agentConfig.subagents?.modelAliases ??
+              {},
+            // The parent's OWN skill discovery — the same lookup `load_skill`
+            // uses — so a definition's `skills:` preloads the body the parent
+            // would have loaded. Consulted only when a definition names skills.
+            listSkills: () => backend.listSkills(),
+          }) as unknown as ExtraTool[]),
           // Reports the location the client attached to the current turn. Late-
           // bound to the backend's in-flight run for the same reason as the
           // session id above: the backend stays warm across turns, but the
@@ -740,6 +1158,32 @@ async function main() {
     onChanged: emitConversationChanged,
     logger,
   });
+  /**
+   * Append a notice to a conversation and tell subscribers to refetch.
+   *
+   * Post-turn work (the memory sweep, the skill review) finishes after the turn
+   * is terminal, and a finished turn refuses further events — so its result is
+   * carried as a message instead. Best-effort: a notice must never be able to
+   * break the work it is reporting on.
+   */
+  const publishNotice = (
+    conversationId: string,
+    kind: 'skill_learned' | 'memory_saved',
+    text: string,
+  ): void => {
+    try {
+      const appended = conversationService.appendNotice({ conversationId, kind, text });
+      if (!appended) return;
+      const summary = conversationService.get(conversationId);
+      if (summary) emitConversationChanged(summary);
+    } catch (error) {
+      logger.warn('could not append conversation notice', {
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   // Post-turn memory sweep. Extraction runs on the agent's OWN model (same
   // resolution, provider allow-list and credentials as the chat loop), so turn
   // text never leaves the provider the agent is already talking to.
@@ -766,6 +1210,11 @@ async function main() {
         index,
       });
     },
+    // The sweep runs after the turn is finalised, so a notice message is the
+    // only way its work becomes visible in the conversation.
+    onSaved: ({ conversationId, descriptions }) => {
+      publishNotice(conversationId, 'memory_saved', `Remembered: ${descriptions.join('; ')}`);
+    },
     logger,
   });
   // Post-turn skill review. Like the memory sweep, extraction runs on the
@@ -790,11 +1239,14 @@ async function main() {
         ? configured
         : DEFAULT_MIN_TOOL_CALLS;
     },
-    requiresApproval: (agentId) => registry.get(agentId)?.config.skills?.approval === true,
     // The agent's whole catalogue, so a review cannot write a lesson book over
     // a skill that is not one (or shadow a plugin skill by reusing its name).
     existingSkillNames: async (agentId) =>
       (await agents.listSkills(agentId)).map((skill) => skill.name),
+    onLearned: ({ conversationId, skills, created }) => {
+      const label = created.length > 0 ? 'Learned' : 'Updated skill';
+      publishNotice(conversationId, 'skill_learned', `${label}: ${skills.join(', ')}`);
+    },
     async extract({ agentId, userText, assistantText, books, loadedSkills, existingSkills }) {
       const entry = registry.get(agentId);
       if (!entry) throw new Error(`Agent '${agentId}' not found`);
@@ -828,6 +1280,43 @@ async function main() {
     swarmCoordinator,
     admission,
     onChanged: emitConversationChanged,
+  });
+  // Close the child transport's late binding: from here a spawn can start a
+  // real child turn, and the coordinator observes those turns' events and
+  // completions through the hub.
+  hubRef.current = resumableChatHub;
+  childTurnDriver.attachObserver();
+
+  // Design §7.5: boot recovery QUEUED an `interrupted` notification for every
+  // parent whose child the restart killed; it is delivered "once the hub is
+  // up", which is here. Without this an IDLE parent — the normal case for a
+  // detached background child — would hold its queue until the user happened
+  // to type again, because the only other trigger is that parent's own
+  // `finishTurn`. Fire-and-forget and individually caught: delivery is bounded
+  // (a busy parent simply leaves the rows queued) and must not stop boot.
+  for (const target of recoveredNotificationTargets) {
+    void swarmCoordinator
+      .deliverPending(target.agentId, target.conversationId)
+      .catch((err: unknown) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        logger.warn(
+          `[subagent-recovery] could not deliver the queued notification for conversation ${target.conversationId}: ${reason}`,
+        );
+      });
+  }
+
+  // A deleted conversation cascades to its descendants' rows, so the
+  // coordinator's in-memory child registry for it is addressing nothing. Drop
+  // it rather than letting a gateway that has served thousands of conversations
+  // hold a handle — with its resolved spec and its full report string — for
+  // every one of them. `forgetConversation` CANCELS any descendant that is
+  // still running first: a background child is detached from the turn that
+  // spawned it, so deleting its parent mid-turn would otherwise leave it
+  // running with nothing able to reach it.
+  eventBus.subscribe((event) => {
+    if (event.type === 'conversation:deleted') {
+      swarmCoordinator.forgetConversation(event.conversationId);
+    }
   });
 
   // --- Plugin hot-reload trigger ---
@@ -868,6 +1357,14 @@ async function main() {
     // Re-log any provider catalogs dropped for colliding with a built-in id —
     // the same boot-time helper, so the warning surfaces on every reload too.
     logDroppedCollisions(newWiring.droppedProviderCollisions);
+
+    // The plugin `agents/*.md` set just changed for EVERY agent, so drop every
+    // cached roster (no argument = all). The refresher rebuilds each one — which
+    // also re-fires the `allowedTypes` and roster-token-budget warnings against
+    // the new plugin set — and pokes the warm backends. Deliberately AFTER the
+    // `wiringState` swap above: the rebuild reads it through the live getter.
+    subagentDefinitions.invalidate();
+    await subagentRosters.whenIdle();
   };
 
   // The closure handed to the management routes: re-run discovery, rebuild
@@ -908,6 +1405,20 @@ async function main() {
       gateway.registerAgent(agentId, bridgeClient);
     }
   }
+
+  // Build every agent's sub-agent roster once at BOOT.
+  //
+  // The registry is lazy, so without this the spec §5.4 roster token-budget
+  // warning and the `subagents.allowedTypes` typo diagnostic would first fire
+  // on whatever chat happens to arrive first — buried in traffic, hours after
+  // the operator edited the config they are about. Priming here puts them in
+  // the startup log next to the rest of the boot diagnostics.
+  await subagentRosters.prime(
+    registry
+      .list()
+      .filter((entry) => isSubagentsEnabled(entry.config))
+      .map((entry) => entry.id),
+  );
 
   // Restore persisted channels
   const restoredChannelNames: string[] = [];
@@ -990,8 +1501,8 @@ async function main() {
     credentialStore,
     modelsStore,
     identity: mobileIdentity,
-    // Same resolver the chat coordinator and the review service use, so the
-    // approval routes act on exactly the directory learning writes to.
+    // Same resolver the review service uses, so the lesson routes read exactly
+    // the directory learning writes to.
     managedSkillsDir: (agentId) => {
       const entry = registry.get(agentId);
       return entry ? resolve(dataDir, 'skills', entry.config.name) : null;
@@ -1000,6 +1511,7 @@ async function main() {
     // GET /runtime/plugins). The wiring is read through a LIVE getter so the
     // routes always see the current state after a reload; the store + reload
     // closure + plugins dir let PUT/DELETE persist and re-derive wiring.
+    subagentDefinitions,
     getPluginWiringState: () => wiringState,
     pluginConfigStore,
     reloadPlugins,

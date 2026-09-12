@@ -1,3 +1,4 @@
+import type { WsTicketResponse } from '@dash/mobile-contract';
 import { Hono } from 'hono';
 import { WsTicketStore, mountWsTicketRoute } from './ws-ticket-store.js';
 
@@ -31,8 +32,8 @@ describe('WsTicketStore', () => {
     expect(v1.status).toBe(200);
     expect(v2.status).toBe(200);
 
-    const v1Ticket = (await v1.json()).ticket as string;
-    const v2Ticket = (await v2.json()).ticket as string;
+    const v1Ticket = ((await v1.json()) as WsTicketResponse).ticket;
+    const v2Ticket = ((await v2.json()) as WsTicketResponse).ticket;
     expect(store.redeem(v1Ticket)).toBe(true);
     expect(store.redeem(v2Ticket)).toBe(true);
     expect(store.redeem(v1Ticket)).toBe(false);

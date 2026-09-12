@@ -12,7 +12,7 @@ import {
   conversationSourceFor,
   useChatStore,
 } from '../../../stores/chat.js';
-import { MessageBubble, V2ConversationTimeline } from '../../chat.js';
+import { MessageBubble, V2ConversationTimeline, reconcileSubagentMessages } from '../../chat.js';
 
 const EMPTY_FRAMES: MobileWsServerFrame[] = [];
 
@@ -70,6 +70,10 @@ export function SessionPanel({
   const protocol = protocolByConversation[key] ?? 'v1';
   const queueCapable = stableRef.origin === 'gateway' && protocol === 'v2';
   const legacyMessages = messages[key];
+  const reconciledLegacyMessages = useMemo(
+    () => reconcileSubagentMessages(legacyMessages ?? []),
+    [legacyMessages],
+  );
   const legacyFrames = streamingFrames[key] ?? EMPTY_FRAMES;
   const legacyEvents = useMemo(() => eventsFromFrames(legacyFrames), [legacyFrames]);
   const [answeredQuestions, setAnsweredQuestions] = useState<Record<string, string>>({});
@@ -168,15 +172,17 @@ export function SessionPanel({
         ) : source?.protocol === 'v2' && projection ? (
           <V2ConversationTimeline
             projection={projection}
+            conversationKey={key}
             onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
             answerAttempts={answerAttemptsByConversation[key]}
           />
         ) : (
           <>
-            {legacyMessages?.map((message) => (
+            {reconciledLegacyMessages.map((message) => (
               <MessageBubble
                 key={message.id}
                 message={message}
+                conversationKey={key}
                 onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
                 answeredQuestions={answeredQuestions}
               />
@@ -189,6 +195,7 @@ export function SessionPanel({
             {legacyEvents.length > 0 && (
               <MessageBubble
                 streamingEvents={legacyEvents}
+                conversationKey={key}
                 onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
                 answeredQuestions={answeredQuestions}
               />

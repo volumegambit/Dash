@@ -1,0 +1,10 @@
+{
+  "type": "accepted",
+  "id": "018f0f4a-5c42-7a8b-9c01-7234567890ab",
+  "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+  "userMessageId": "018f0f4a-5c42-7a8b-9c01-8234567890ab",
+  "assistantMessageId": "018f0f4a-5c42-7a8b-9c01-9234567890ab",
+  "revision": 5,
+  "seq": 9,
+  "origin": "system"
+}

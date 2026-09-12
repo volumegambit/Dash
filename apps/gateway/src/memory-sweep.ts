@@ -28,6 +28,12 @@ export interface MemorySweepOptions {
     assistantText: string;
     index: MemoryInfo[];
   }): Promise<SweepCandidate[]>;
+  /**
+   * Called once per sweep that saved something, so the caller can tell the user.
+   * The sweep runs after the turn is finalised, so this is the only route by
+   * which its work becomes visible in the conversation.
+   */
+  onSaved?(report: { agentId: string; conversationId: string; descriptions: string[] }): void;
   logger?: Pick<StructuredLogger, 'info' | 'warn'>;
 }
 
@@ -104,6 +110,7 @@ export function createMemorySweepService(options: MemorySweepOptions): MemorySwe
     });
 
     let saved = 0;
+    const savedDescriptions: string[] = [];
     for (const candidate of candidates) {
       try {
         // The sweep is unattended and driven by a weaker model: it may never
@@ -119,6 +126,7 @@ export function createMemorySweepService(options: MemorySweepOptions): MemorySwe
           continue;
         }
         await store.save({ ...candidate, source: 'sweep' });
+        savedDescriptions.push(candidate.description || candidate.name);
         saved++;
       } catch (error) {
         options.logger?.warn('memory sweep dropped a candidate', {
@@ -132,6 +140,11 @@ export function createMemorySweepService(options: MemorySweepOptions): MemorySwe
         agentId: input.agentId,
         conversationId: input.conversationId,
         saved,
+      });
+      options.onSaved?.({
+        agentId: input.agentId,
+        conversationId: input.conversationId,
+        descriptions: savedDescriptions,
       });
     }
   };

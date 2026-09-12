@@ -31,6 +31,9 @@ function summary(record: McConversation, agentName: string): ConversationSummary
     lastMessagePreview: '',
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    // The legacy store predates sub-agent conversations and only ever held
+    // user ones; `kind` became required on `ConversationSummary` with them.
+    kind: 'user',
   };
 }
 
@@ -53,6 +56,9 @@ export function toCanonicalLegacyContent(record: McMessage): ConversationContent
       text: record.content.text,
       ...(images.length > 0 ? { images } : {}),
     };
+  }
+  if (record.content.type === 'notice') {
+    return { type: 'notice', kind: record.content.kind, text: record.content.text };
   }
   const events = record.content.events.filter(
     (event): event is MobileAgentEvent => typeof event.type === 'string',

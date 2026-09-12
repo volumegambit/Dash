@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { SubagentInfo } from '@dash/mobile-contract';
 import type { MobileV2SequencedFrame } from '@dash/mobile-contract-v2';
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
 import type {
@@ -246,8 +247,12 @@ describe('SqliteConversationService schema', () => {
       lastMessagePreview: null,
       createdAt: timestamp,
       updatedAt: timestamp,
+      kind: 'user',
     });
     expect('deletedAt' in created).toBe(false);
+    // A user conversation carries no child linkage at all.
+    expect('parentConversationId' in created).toBe(false);
+    expect('subagent' in created).toBe(false);
 
     expect(
       service.create({
@@ -1089,6 +1094,7 @@ describe('SqliteConversationService durable turns', () => {
     expect(service.recoverInterruptedTurns()).toEqual({
       conversationsInterrupted: 1,
       terminalsAppended: 1,
+      subagentsInterrupted: 0,
     });
     expect(service.get(conversation.id)).toMatchObject({
       status: 'interrupted',
@@ -1121,6 +1127,7 @@ describe('SqliteConversationService durable turns', () => {
     expect(service.recoverInterruptedTurns()).toEqual({
       conversationsInterrupted: 0,
       terminalsAppended: 0,
+      subagentsInterrupted: 0,
     });
   });
 
@@ -2755,6 +2762,7 @@ describe('SqliteConversationService segmented run lifecycle', () => {
     expect(service.recoverV2State()).toEqual({
       conversationsInterrupted: 1,
       terminalsAppended: 1,
+      subagentsInterrupted: 0,
       eligibleConversationIds: [conversationId],
     });
     expect(service.eventLog.readSince(AGENT_ID, conversationId, 0).at(-1)?.payload).toEqual({
@@ -2782,6 +2790,7 @@ describe('SqliteConversationService segmented run lifecycle', () => {
     expect(service.recoverV2State()).toEqual({
       conversationsInterrupted: 0,
       terminalsAppended: 0,
+      subagentsInterrupted: 0,
       eligibleConversationIds: [conversationId],
     });
   });
@@ -3068,6 +3077,7 @@ describe('SqliteConversationService segmented run lifecycle', () => {
     expect(service.recoverV2State({ excludeConversationIds: new Set([conversationId]) })).toEqual({
       conversationsInterrupted: 0,
       terminalsAppended: 0,
+      subagentsInterrupted: 0,
       eligibleConversationIds: [],
     });
     expect(service.get(conversationId)).toEqual(beforeConversation);
@@ -3085,5 +3095,892 @@ describe('SqliteConversationService segmented run lifecycle', () => {
     ).toEqual(beforeSteer);
     expect(service.eventLog.readSince(AGENT_ID, conversationId, 0)).toEqual(beforeLegacy);
     expect(service.readV2Since(AGENT_ID, conversationId, beforeV2Seq).frames).toEqual([]);
+  });
+});
+
+/**
+ * Storage for child conversations, parent notification queues, and message
+ * origin. The migration stays additive and idempotent for existing databases.
+ */
+describe('SqliteConversationService subagent persistence', () => {
+  let tmpDir: string;
+  let service: SqliteConversationService;
+  let uuidCounter: number;
+  let timestamp: string;
+
+  function subagentInfo(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
+    return {
+      type: 'code-reviewer',
+      status: 'running',
+      description: 'Review the diff',
+      prompt: 'Review the diff and report findings',
+      model: 'anthropic/claude-opus-4',
+      background: true,
+      depth: 1,
+      startedAt: '2026-09-04T00:00:00.000Z',
+      toolCallCount: 0,
+      oneShot: false,
+      ...overrides,
+    };
+  }
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'conversation-subagents-'));
+    uuidCounter = 0;
+    timestamp = '2026-09-04T00:00:00.000Z';
+    service = new SqliteConversationService({
+      dataDir: tmpDir,
+      now: () => timestamp,
+      uuid: () => `00000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`,
+    });
+  });
+
+  afterEach(async () => {
+    service.close();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function createParent(requestId = 'parent-01') {
+    return service.create({ agentId: 'agent-01', agentName: 'Helper', requestId });
+  }
+
+  it('adds the subagent columns to a pre-existing database and re-opens idempotently', async () => {
+    // Ruling 1: the DB already exists in the field, so the migration has to be a
+    // guarded ALTER over the *old* table shape, and opening the same file twice
+    // must not attempt the ALTER again (SQLite would throw "duplicate column").
+    service.close();
+    const legacyDir = await mkdtemp(join(tmpdir(), 'conversation-legacy-'));
+    const legacy = new Database(join(legacyDir, 'agent-stream-events.db'));
+    legacy.exec(`
+      CREATE TABLE conversations (
+        id                  TEXT PRIMARY KEY,
+        create_request_id   TEXT NOT NULL UNIQUE,
+        agent_id            TEXT NOT NULL,
+        agent_name_snapshot TEXT NOT NULL,
+        title               TEXT NOT NULL DEFAULT 'New Conversation',
+        revision            INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+        status              TEXT NOT NULL CHECK (status IN ('idle','running','interrupted','archived','deleted')),
+        active_turn_id      TEXT,
+        owning_issue_id     TEXT,
+        project_id          TEXT,
+        last_seq            INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
+        created_at          TEXT NOT NULL,
+        updated_at          TEXT NOT NULL,
+        deleted_at          TEXT
+      );
+      CREATE TABLE conversation_messages (
+        id              TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        turn_id         TEXT NOT NULL,
+        ordinal         INTEGER NOT NULL CHECK (ordinal > 0),
+        role            TEXT NOT NULL CHECK (role IN ('user','assistant')),
+        content         TEXT NOT NULL,
+        status          TEXT NOT NULL CHECK (status IN ('accepted','streaming','completed','cancelled','failed','interrupted')),
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL,
+        UNIQUE(conversation_id, ordinal),
+        UNIQUE(conversation_id, turn_id, role),
+        UNIQUE(turn_id, role)
+      );
+      INSERT INTO conversations VALUES (
+        'conversation-legacy', 'request-legacy', 'agent-legacy', 'Legacy', 'Old chat',
+        3, 'idle', NULL, NULL, NULL, 7,
+        '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:01.000Z', NULL
+      );
+      INSERT INTO conversation_messages VALUES (
+        'message-legacy', 'conversation-legacy', 'turn-legacy', 1, 'user',
+        '{"type":"user","text":"legacy question"}', 'completed',
+        '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'
+      );
+    `);
+    legacy.close();
+
+    const first = new SqliteConversationService({ dataDir: legacyDir });
+    // Ruling 4: the pre-existing rows keep their meaning under the new columns.
+    expect(first.get('conversation-legacy')).toMatchObject({
+      kind: 'user',
+      title: 'Old chat',
+      revision: 3,
+    });
+    expect(
+      first.listMessages({ conversationId: 'conversation-legacy', limit: 10 }).items[0],
+    ).toMatchObject({ origin: 'user' });
+    first.close();
+
+    // Second open over the same file: the guard must skip every ALTER.
+    const second = new SqliteConversationService({ dataDir: legacyDir });
+    expect(second.get('conversation-legacy')).toMatchObject({ kind: 'user' });
+    const db = (second as unknown as { db: DatabaseType }).db;
+    const columns = (db.pragma('table_info(conversations)') as Array<{ name: string }>).map(
+      (column) => column.name,
+    );
+    for (const added of [
+      'kind',
+      'parent_conversation_id',
+      'parent_turn_id',
+      'depth',
+      'subagent_type',
+      'subagent_name',
+      'subagent_status',
+      'subagent_meta',
+    ]) {
+      expect(columns.filter((name) => name === added)).toEqual([added]);
+    }
+    expect(
+      (db.pragma('table_info(conversation_messages)') as Array<{ name: string }>).filter(
+        (column) => column.name === 'origin',
+      ),
+    ).toHaveLength(1);
+    expect(
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .all('pending_notifications'),
+    ).toHaveLength(1);
+    second.close();
+    await rm(legacyDir, { recursive: true, force: true });
+  });
+
+  it('creates a child conversation carrying its subagent info', () => {
+    const parent = createParent();
+    const created = service.createSubagent({
+      id: 'sub_00000000000000000000000001',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Review the diff',
+      subagent: subagentInfo({ name: 'reviewer' }),
+    });
+
+    expect(created).toMatchObject({
+      id: 'sub_00000000000000000000000001',
+      kind: 'subagent',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Review the diff',
+      status: 'idle',
+      subagent: subagentInfo({ name: 'reviewer' }),
+    });
+    expect(service.get('sub_00000000000000000000000001')).toEqual(created);
+    // Parents stay plain users with no subagent block at all.
+    expect(service.get(parent.id)).toMatchObject({ kind: 'user' });
+    expect('subagent' in (service.get(parent.id) as object)).toBe(false);
+  });
+
+  it('hides children from the default list and reveals them only on request', () => {
+    // Ruling 2: a child's prompt can quote parent context, so the default list
+    // is user-only for privacy, not just for tidiness.
+    const parent = createParent();
+    service.createSubagent({
+      id: 'sub_child_a',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Child A',
+      subagent: subagentInfo(),
+    });
+
+    expect(service.list({ limit: 10 }).items.map((item) => item.id)).toEqual([parent.id]);
+    expect(service.list({ agentId: 'agent-01', limit: 10 }).items.map((item) => item.id)).toEqual([
+      parent.id,
+    ]);
+    expect(service.list({ limit: 10, kind: 'user' }).items.map((item) => item.id)).toEqual([
+      parent.id,
+    ]);
+    expect(service.list({ limit: 10, kind: 'subagent' }).items.map((item) => item.id)).toEqual([
+      'sub_child_a',
+    ]);
+  });
+
+  it('lists a parent-s children oldest first', () => {
+    const parent = createParent();
+    const other = createParent('parent-02');
+    for (const [index, id] of ['sub_c1', 'sub_c2', 'sub_c3'].entries()) {
+      timestamp = `2026-09-04T00:0${index}:00.000Z`;
+      service.createSubagent({
+        id,
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: id,
+        subagent: subagentInfo(),
+      });
+    }
+    timestamp = '2026-09-04T00:09:00.000Z';
+    service.createSubagent({
+      id: 'sub_other',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: other.id,
+      parentTurnId: 'turn-parent-02',
+      title: 'Other',
+      subagent: subagentInfo(),
+    });
+
+    expect(service.listSubagents(parent.id).map((item) => item.id)).toEqual([
+      'sub_c1',
+      'sub_c2',
+      'sub_c3',
+    ]);
+    expect(service.listSubagents(other.id).map((item) => item.id)).toEqual(['sub_other']);
+    expect(service.listSubagents('missing-parent')).toEqual([]);
+  });
+
+  it('bounds listSubagents to the NEWEST children, still oldest-first', () => {
+    const parent = createParent();
+    for (let i = 0; i < 5; i++) {
+      service.createSubagent({
+        id: `sub_page${i}`,
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: `Child ${i}`,
+        subagent: subagentInfo(),
+      });
+    }
+
+    // Every row read parses that child's whole `subagent_meta` — its report
+    // included — and the sub-agent registry reads this per parent turn, so an
+    // unbounded SELECT * grows with the age of a conversation.
+    expect(service.listSubagents(parent.id, 2).map((item) => item.id)).toEqual([
+      'sub_page3',
+      'sub_page4',
+    ]);
+    expect(service.listSubagents(parent.id, 0)).toEqual([]);
+    expect(service.listSubagents(parent.id).map((item) => item.id)).toHaveLength(5);
+  });
+
+  it('merges a subagent patch without dropping the untouched fields', () => {
+    const parent = createParent();
+    service.createSubagent({
+      id: 'sub_patch',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Patch me',
+      subagent: subagentInfo(),
+    });
+
+    const patched = service.updateSubagent('sub_patch', {
+      status: 'done',
+      info: {
+        toolCallCount: 4,
+        endedAt: '2026-09-04T00:05:00.000Z',
+        usage: { inputTokens: 120, outputTokens: 34 },
+        report: 'Found two issues.',
+      },
+    });
+    expect(patched.subagent).toEqual({
+      ...subagentInfo(),
+      status: 'done',
+      toolCallCount: 4,
+      endedAt: '2026-09-04T00:05:00.000Z',
+      usage: { inputTokens: 120, outputTokens: 34 },
+      report: 'Found two issues.',
+    });
+    expect(service.get('sub_patch')).toEqual(patched);
+    expect(() => service.updateSubagent(parent.id, { status: 'done' })).toThrow(
+      ConversationServiceError,
+    );
+  });
+
+  it('CLEARS a field a patch names as undefined, which is how a resume drops run 1', () => {
+    const parent = createParent();
+    service.createSubagent({
+      id: 'sub_reset',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Resume me',
+      subagent: subagentInfo(),
+    });
+    service.updateSubagent('sub_reset', {
+      status: 'done',
+      info: {
+        toolCallCount: 4,
+        endedAt: '2026-09-04T00:05:00.000Z',
+        usage: { inputTokens: 120, outputTokens: 34 },
+        report: 'Found two issues.',
+      },
+    });
+
+    // The merge is `{ ...mapSubagent(current), ...patch.info }`, so a key held
+    // at `undefined` beats the stored value, and `JSON.stringify` then drops it
+    // from `subagent_meta` — an ABSENT key rather than a null one, which is
+    // what `mapSubagent` reads back as unset. This is the mechanism
+    // `ChildHandle`'s resume persist depends on; nothing else on this branch
+    // exercises it.
+    const reset = service.updateSubagent('sub_reset', {
+      status: 'running',
+      info: {
+        startedAt: '2026-09-05T09:00:00.000Z',
+        endedAt: undefined,
+        report: undefined,
+        usage: undefined,
+        toolCallCount: 0,
+      },
+    });
+    expect(reset.subagent).toEqual({
+      ...subagentInfo(),
+      status: 'running',
+      startedAt: '2026-09-05T09:00:00.000Z',
+      toolCallCount: 0,
+    });
+    expect(reset.subagent).not.toHaveProperty('endedAt');
+    expect(reset.subagent).not.toHaveProperty('report');
+    expect(reset.subagent).not.toHaveProperty('usage');
+    // …and it survives a round trip through the row, not just the return value.
+    expect(service.get('sub_reset')).toEqual(reset);
+  });
+
+  it('lists only the interrupted children', () => {
+    const parent = createParent();
+    for (const [id, status] of [
+      ['sub_running', 'running'],
+      ['sub_interrupted_a', 'interrupted'],
+      ['sub_interrupted_b', 'interrupted'],
+    ] as const) {
+      service.createSubagent({
+        id,
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: id,
+        subagent: subagentInfo({ status }),
+      });
+    }
+    expect(service.listInterruptedSubagents().map((item) => item.id)).toEqual([
+      'sub_interrupted_a',
+      'sub_interrupted_b',
+    ]);
+  });
+
+  it('recovery marks every non-terminal child interrupted so a restart cannot leave one running', () => {
+    // Design §7.5: after a restart nothing is running, so a child left
+    // `running` or `waiting_input` by the dead process is interrupted — which
+    // is what makes `listInterruptedSubagents` (and the notification sweep that
+    // reads it) see it at all.
+    const parent = createParent();
+    for (const [id, status] of [
+      ['sub_running', 'running'],
+      ['sub_waiting', 'waiting_input'],
+      ['sub_done', 'done'],
+      ['sub_cancelled', 'cancelled'],
+    ] as const) {
+      service.createSubagent({
+        id,
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: id,
+        subagent: subagentInfo({ status }),
+      });
+    }
+
+    expect(service.recoverInterruptedTurns()).toMatchObject({ subagentsInterrupted: 2 });
+    expect(service.listInterruptedSubagents().map((item) => item.id)).toEqual([
+      'sub_running',
+      'sub_waiting',
+    ]);
+    expect(service.get('sub_done')?.subagent?.status).toBe('done');
+    expect(service.get('sub_cancelled')?.subagent?.status).toBe('cancelled');
+    // Idempotent: a second boot has nothing left to flip.
+    expect(service.recoverInterruptedTurns()).toMatchObject({ subagentsInterrupted: 0 });
+  });
+
+  it('records the turn origin on the user message and defaults it to user', () => {
+    // Ruling 4: `origin` is optional at the call site and defaults to 'user'.
+    const parent = createParent();
+    service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: parent.id,
+      turnId: 'turn-plain',
+      text: 'Plain user turn',
+    });
+    service.finishTurn({
+      conversationId: parent.id,
+      turnId: 'turn-plain',
+      outcome: 'completed',
+    });
+    const notified = service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: parent.id,
+      turnId: 'turn-notified',
+      text: '<subagent-finished .../>',
+      origin: 'notification',
+    });
+
+    expect(notified.userMessage.origin).toBe('notification');
+    // The origin describes the TURN, so both rows carry it: listMessages pages
+    // by ordinal and a page boundary can put the two rows of one turn on
+    // different pages, leaving an assistant-only page unable to recover it.
+    expect(notified.assistantMessage.origin).toBe('notification');
+    expect(
+      service
+        .listMessages({ conversationId: parent.id, limit: 10 })
+        .items.map((message) => [message.role, message.origin]),
+    ).toEqual([
+      ['user', 'user'],
+      ['assistant', 'user'],
+      ['user', 'notification'],
+      ['assistant', 'notification'],
+    ]);
+    // A single-row page still carries the origin.
+    const lastPage = service.listMessages({ conversationId: parent.id, limit: 1 });
+    expect(lastPage.items).toEqual([
+      expect.objectContaining({ role: 'assistant', origin: 'notification' }),
+    ]);
+  });
+
+  it('keeps a notification turn out of the conversation-list preview', () => {
+    // The preview sits where the UI shows what the USER last said, and it
+    // feeds both clients' conversation search. A server-initiated turn's user
+    // row is the `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the
+    // orchestrator was fed (sub-agents design 7.3), so it must never land
+    // there — the last thing the user actually said stands instead.
+    const parent = createParent();
+    service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: parent.id,
+      turnId: 'turn-typed',
+      text: 'Spawn a reviewer in the background',
+    });
+    service.finishTurn({
+      conversationId: parent.id,
+      turnId: 'turn-typed',
+      outcome: 'completed',
+    });
+    expect(service.get(parent.id)?.lastMessagePreview).toBe('Spawn a reviewer in the background');
+
+    service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: parent.id,
+      turnId: 'turn-notified',
+      text: '[SYSTEM NOTIFICATION - NOT USER INPUT]\nAgent "Review the diff" finished',
+      origin: 'notification',
+    });
+
+    expect(service.get(parent.id)?.lastMessagePreview).toBe('Spawn a reviewer in the background');
+    expect(
+      service.list({ agentId: 'agent-01', limit: 10 }).items.find((c) => c.id === parent.id)
+        ?.lastMessagePreview,
+    ).toBe('Spawn a reviewer in the background');
+  });
+
+  it('exposes children through the parentConversationId filter', () => {
+    const parent = createParent();
+    const other = createParent('parent-02');
+    service.createSubagent({
+      id: 'sub_filter_a',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Mine',
+      subagent: subagentInfo(),
+    });
+    service.createSubagent({
+      id: 'sub_filter_b',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: other.id,
+      parentTurnId: 'turn-parent-02',
+      title: 'Theirs',
+      subagent: subagentInfo(),
+    });
+
+    expect(
+      service
+        .list({ limit: 10, kind: 'subagent', parentConversationId: parent.id })
+        .items.map((item) => item.id),
+    ).toEqual(['sub_filter_a']);
+    // The trap worth a test: kind still defaults to 'user', and no parent has a
+    // parent, so the filter alone returns nothing.
+    expect(service.list({ limit: 10, parentConversationId: parent.id }).items).toEqual([]);
+  });
+
+  it('tombstones the whole subtree when a parent is deleted', () => {
+    const parent = createParent();
+    const child = service.createSubagent({
+      id: 'sub_level_one',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Level one',
+      subagent: subagentInfo(),
+    });
+    service.createSubagent({
+      id: 'sub_level_two',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: child.id,
+      parentTurnId: 'turn-child-01',
+      title: 'Level two',
+      subagent: subagentInfo({ depth: 2 }),
+    });
+    const bystander = createParent('parent-02');
+    service.createSubagent({
+      id: 'sub_bystander',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: bystander.id,
+      parentTurnId: 'turn-parent-02',
+      title: 'Untouched',
+      subagent: subagentInfo(),
+    });
+    service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: 'sub_level_two',
+      turnId: 'turn-grandchild-01',
+      text: 'Working',
+      origin: 'parent',
+    });
+
+    service.delete(parent.id, parent.revision);
+
+    // A grandchild's prompt can quote the context the user just deleted, so the
+    // whole subtree goes, not just the direct children.
+    for (const id of ['sub_level_one', 'sub_level_two']) {
+      expect(service.get(id)).toBeNull();
+      expect(service.get(id, { includeDeleted: true })).toMatchObject({ status: 'deleted' });
+    }
+    expect(service.listSubagents(parent.id)).toEqual([]);
+    expect(service.list({ limit: 10, kind: 'subagent' }).items.map((item) => item.id)).toEqual([
+      'sub_bystander',
+    ]);
+    // Transcripts and event logs of the subtree are gone, and an active child
+    // turn does not save it.
+    expect(
+      (service as unknown as { db: DatabaseType }).db
+        .prepare('SELECT COUNT(*) AS total FROM conversation_messages WHERE conversation_id = ?')
+        .get('sub_level_two'),
+    ).toEqual({ total: 0 });
+    expect(service.eventLog.readSince('agent-01', 'sub_level_two', 0)).toEqual([]);
+    expect(service.get('sub_level_two', { includeDeleted: true })?.activeTurnId).toBeNull();
+    // The bystander subtree is untouched.
+    expect(service.get('sub_bystander')).toMatchObject({ status: 'idle' });
+  });
+
+  it('queues notifications up to the cap and drains them in order', () => {
+    // Ruling 3: overflow throws — a dropped notification is a lost child report.
+    const parent = createParent();
+    for (let index = 0; index < 100; index++) {
+      service.enqueueNotification({
+        conversationId: parent.id,
+        kind: 'subagent_finished',
+        payload: { index },
+      });
+    }
+    expect(() =>
+      service.enqueueNotification({
+        conversationId: parent.id,
+        kind: 'subagent_finished',
+        payload: { index: 100 },
+      }),
+    ).toThrow(/notification queue full/i);
+
+    const queued = service.peekNotifications(parent.id);
+    expect(queued).toHaveLength(100);
+    expect(queued.map((item) => item.payload.index)).toEqual(
+      Array.from({ length: 100 }, (_unused, index) => index),
+    );
+    expect(queued[0]).toMatchObject({
+      conversationId: parent.id,
+      kind: 'subagent_finished',
+      createdAt: timestamp,
+    });
+    service.ackNotifications(queued.map((item) => item.id));
+    expect(service.peekNotifications(parent.id)).toEqual([]);
+    // Acking frees the queue again.
+    expect(() =>
+      service.enqueueNotification({
+        conversationId: parent.id,
+        kind: 'subagent_message',
+        payload: { text: 'hi' },
+      }),
+    ).not.toThrow();
+    expect(service.peekNotifications(parent.id)).toHaveLength(1);
+  });
+
+  it('peeks WITHOUT removing, and acks only the ids it is given', () => {
+    const parent = createParent();
+    const first = service.enqueueNotification({
+      conversationId: parent.id,
+      kind: 'subagent_finished',
+      payload: { index: 0 },
+    });
+    const second = service.enqueueNotification({
+      conversationId: parent.id,
+      kind: 'subagent_finished',
+      payload: { index: 1 },
+    });
+
+    // Repeated peeks are idempotent: a failed delivery leaves the queue exactly
+    // as it found it, so nothing is lost if the process dies mid-attempt and
+    // no row's created_at is re-stamped (which would reorder the queue).
+    expect(service.peekNotifications(parent.id).map((item) => item.id)).toEqual([
+      first.id,
+      second.id,
+    ]);
+    expect(service.peekNotifications(parent.id).map((item) => item.id)).toEqual([
+      first.id,
+      second.id,
+    ]);
+
+    service.ackNotifications([first.id]);
+    expect(service.peekNotifications(parent.id).map((item) => item.id)).toEqual([second.id]);
+
+    // A row enqueued after the ack still sorts AFTER the survivor.
+    const third = service.enqueueNotification({
+      conversationId: parent.id,
+      kind: 'subagent_message',
+      payload: { from: 'scout' },
+    });
+    expect(service.peekNotifications(parent.id).map((item) => item.id)).toEqual([
+      second.id,
+      third.id,
+    ]);
+
+    // Unknown ids are ignored, and an empty ack is a no-op.
+    service.ackNotifications([]);
+    service.ackNotifications(['not-a-row', second.id, third.id]);
+    expect(service.peekNotifications(parent.id)).toEqual([]);
+  });
+
+  it('drops a deleted conversation-s queue and refuses to enqueue behind the tombstone', () => {
+    const parent = createParent();
+    service.enqueueNotification({
+      conversationId: parent.id,
+      kind: 'subagent_finished',
+      payload: { index: 0 },
+    });
+    const tombstone = service.delete(parent.id, parent.revision);
+    expect(tombstone.status).toBe('deleted');
+    expect(service.peekNotifications(parent.id)).toEqual([]);
+    expect(() =>
+      service.enqueueNotification({
+        conversationId: parent.id,
+        kind: 'subagent_finished',
+        payload: {},
+      }),
+    ).toThrow(ConversationServiceError);
+  });
+
+  it('refuses to update a deleted child or to alias a non-subagent id', () => {
+    const parent = createParent();
+    const child = service.createSubagent({
+      id: 'sub_guard',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Guarded',
+      subagent: subagentInfo(),
+    });
+    // createSubagent is idempotent on its own id...
+    expect(
+      service.createSubagent({
+        id: 'sub_guard',
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: 'Different title',
+        subagent: subagentInfo({ status: 'done' }),
+      }),
+    ).toEqual(child);
+    // ...but it must never hand back a user conversation that shares the id.
+    expect(() =>
+      service.createSubagent({
+        id: parent.id,
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: 'Impostor',
+        subagent: subagentInfo(),
+      }),
+    ).toThrow(ConversationServiceError);
+
+    service.delete(child.id, child.revision);
+    expect(() => service.updateSubagent(child.id, { status: 'done' })).toThrow(
+      ConversationServiceError,
+    );
+    // A tombstone lives forever, so the idempotence branch must not report a
+    // deleted child as a fresh spawn — the caller's first acceptTurn would then
+    // fail with not_found on a conversation it believes it just created.
+    expect(() =>
+      service.createSubagent({
+        id: 'sub_guard',
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: 'Respawn',
+        subagent: subagentInfo(),
+      }),
+    ).toThrow(expect.objectContaining({ code: 'not_found', status: 410 }));
+  });
+
+  it('fails loudly on a corrupt child row instead of inventing contract-invalid values', () => {
+    const parent = createParent();
+    service.createSubagent({
+      id: 'sub_corrupt',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Corrupt me',
+      subagent: subagentInfo(),
+    });
+    const db = (service as unknown as { db: DatabaseType }).db;
+
+    // `SubagentInfo.type` is `minLength: 1` in the contract, so defaulting to ''
+    // would mint a summary the contract suite itself rejects.
+    db.prepare('UPDATE conversations SET subagent_type = NULL WHERE id = ?').run('sub_corrupt');
+    expect(() => service.get('sub_corrupt')).toThrow(/no subagent_type/);
+
+    db.prepare(
+      "UPDATE conversations SET subagent_type = 'x', subagent_status = NULL WHERE id = ?",
+    ).run('sub_corrupt');
+    expect(() => service.get('sub_corrupt')).toThrow(/no subagent_status/);
+  });
+
+  it('keeps each conversation-s notification queue separate', () => {
+    const first = createParent('parent-01');
+    const second = createParent('parent-02');
+    service.enqueueNotification({
+      conversationId: first.id,
+      kind: 'subagent_finished',
+      payload: { from: 'first' },
+    });
+    service.enqueueNotification({
+      conversationId: second.id,
+      kind: 'subagent_message',
+      payload: { from: 'second' },
+    });
+    expect(service.peekNotifications(first.id).map((item) => item.payload.from)).toEqual(['first']);
+    expect(service.peekNotifications(second.id).map((item) => item.payload.from)).toEqual([
+      'second',
+    ]);
+  });
+});
+
+describe('appendNotice', () => {
+  let tmpDir: string;
+  let service: SqliteConversationService;
+  let conversationId: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'conversation-notice-'));
+    service = new SqliteConversationService({ dataDir: tmpDir });
+    conversationId = service.create({
+      agentId: 'agent-1',
+      agentName: 'Agent One',
+      requestId: 'req-1',
+    }).id;
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function runOneTurn(turnId: string): void {
+    service.acceptTurn({ agentId: 'agent-1', conversationId, turnId, text: 'do the thing' });
+    service.appendTurnEvent(conversationId, turnId, {
+      type: 'response',
+      content: 'done',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    service.finishTurn({ conversationId, turnId, outcome: 'completed' });
+  }
+
+  it('appends a notice that survives a read of the page', () => {
+    runOneTurn('turn-1');
+
+    const appended = service.appendNotice({
+      conversationId,
+      kind: 'skill_learned',
+      text: 'Learned: write-files',
+    });
+
+    expect(appended).toMatchObject({
+      role: 'assistant',
+      status: 'completed',
+      content: { type: 'notice', kind: 'skill_learned', text: 'Learned: write-files' },
+    });
+
+    // The regression this guards: assistant-role rows normally have their
+    // content rebuilt from the event log, which would blank the notice.
+    const page = service.listMessages({ conversationId, limit: 20 });
+    const notice = page.items.find((m) => m.content.type === 'notice');
+    expect(notice?.content).toEqual({
+      type: 'notice',
+      kind: 'skill_learned',
+      text: 'Learned: write-files',
+    });
+  });
+
+  it('leaves the reviewed turn intact', () => {
+    runOneTurn('turn-1');
+    service.appendNotice({ conversationId, kind: 'skill_learned', text: 'Learned: x' });
+
+    const page = service.listMessages({ conversationId, limit: 20 });
+    const assistant = page.items.find(
+      (m) => m.turnId === 'turn-1' && m.content.type === 'assistant',
+    );
+    expect(assistant?.content).toMatchObject({ type: 'assistant' });
+    expect((assistant?.content as { events: unknown[] }).events.length).toBeGreaterThan(0);
+  });
+
+  it('takes its own turn id so it cannot collide with the turn it reports on', () => {
+    runOneTurn('turn-1');
+    const notice = service.appendNotice({
+      conversationId,
+      kind: 'memory_saved',
+      text: 'Remembered: y',
+    });
+
+    expect(notice?.turnId).not.toBe('turn-1');
+    // UNIQUE(turn_id, role) means a second notice must also get its own id.
+    const second = service.appendNotice({
+      conversationId,
+      kind: 'memory_saved',
+      text: 'Remembered: z',
+    });
+    expect(second?.turnId).not.toBe(notice?.turnId);
+  });
+
+  it('orders after the turn it reports on', () => {
+    runOneTurn('turn-1');
+    service.appendNotice({ conversationId, kind: 'skill_learned', text: 'Learned: x' });
+
+    const items = service.listMessages({ conversationId, limit: 20 }).items;
+    expect(items[items.length - 1].content.type).toBe('notice');
+  });
+
+  it('bumps the conversation revision so clients refetch', () => {
+    runOneTurn('turn-1');
+    const before = service.get(conversationId)?.revision ?? 0;
+    service.appendNotice({ conversationId, kind: 'skill_learned', text: 'Learned: x' });
+    expect(service.get(conversationId)?.revision).toBeGreaterThan(before);
+  });
+
+  it('returns null for a deleted conversation instead of throwing', () => {
+    runOneTurn('turn-1');
+    const revision = service.get(conversationId)?.revision;
+    if (revision === undefined) throw new Error('the conversation under test vanished');
+    service.delete(conversationId, revision);
+    expect(
+      service.appendNotice({ conversationId, kind: 'skill_learned', text: 'Learned: x' }),
+    ).toBeNull();
   });
 });

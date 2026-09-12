@@ -29,6 +29,26 @@ export interface LogsResponse {
   lines: string[];
 }
 
+/** One automatically learned lesson, with how often it has proved out. */
+export interface LessonInfo {
+  id: string;
+  text: string;
+  helpful: number;
+  harmful: number;
+  createdAt: string;
+  lastTouchedAt: string;
+}
+
+/** The lessons behind a learned skill. */
+export interface LessonBookInfo {
+  version: 1;
+  skill: string;
+  description: string;
+  augments: string[];
+  bullets: LessonInfo[];
+  retired: LessonInfo[];
+}
+
 export interface SkillInfo {
   name: string;
   description: string;
@@ -372,7 +392,9 @@ export type SwarmWorkerStatus =
   | 'waiting_input'
   | 'done'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'interrupted'
+  | 'max_turns';
 
 /** A worker as surfaced to the swarm panel. Mirror of `RunWorkerSnapshot`. */
 export interface SwarmRunWorkerSnapshot {
@@ -385,6 +407,16 @@ export interface SwarmRunWorkerSnapshot {
   usage: { inputTokens: number; outputTokens: number };
   startedAt?: number;
   endedAt?: number;
+  /**
+   * Named-child fields. Optional in the mirror: a gateway older than the swarm
+   * `agent` tool (or a run restored from a pre-subagent event log) omits them.
+   */
+  subagentType?: string;
+  description?: string;
+  name?: string;
+  toolCallCount?: number;
+  background?: boolean;
+  oneShot?: boolean;
 }
 
 /** Lightweight run listing (panel). Mirror of `RunSummary`. */
@@ -419,3 +451,35 @@ export interface SwarmWorkerActionResult {
   ok: boolean;
   reason?: string;
 }
+
+// --- Sub-agent runtime (children of a conversation) -------------------------
+//
+// The children-of-conversation family (design §7.7) that replaces the
+// run-scoped calls above on the clients. The wire shapes themselves
+// (`SubagentListEntry`, `SubagentStopResponse`, `SubagentResumeResponse`) live
+// in `@dash/mobile-contract` and are used directly rather than mirrored here:
+// unlike the swarm snapshot shapes above, these are a PUBLISHED contract with a
+// schema and fixtures, so a second copy could only drift away from it.
+
+/**
+ * The outcome of `POST /subagents/:id/stop` as a caller can render it.
+ *
+ * `ok:false` carries the gateway's own sentence rather than an exception
+ * because every consumer is on the far side of an Electron IPC hop, where a
+ * rejection arrives as an `Error` whose message has been rewritten by the
+ * bridge. A refusal that must reach a human has to be a VALUE.
+ */
+export type SubagentStopResult =
+  | { ok: true; status: 'done' | 'failed' | 'cancelled' | 'interrupted' | 'max_turns' }
+  | { ok: false; reason: string };
+
+/**
+ * The outcome of `POST /subagents/:id/resume`. `mode` distinguishes a message
+ * queued onto a still-running child from one that started a new turn on a
+ * parked one. Same value-not-exception rule as {@link SubagentStopResult}: the
+ * gateway's three actionable refusals (one-shot type, unrebuildable grant,
+ * steer cap) all arrive here as `reason`.
+ */
+export type SubagentResumeResult =
+  | { ok: true; status: string; mode: 'queued' | 'resumed' }
+  | { ok: false; reason: string };

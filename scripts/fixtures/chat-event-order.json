@@ -1,0 +1,238 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "adjacent text deltas coalesce",
+      "events": [
+        { "type": "text_delta", "text": "Hello " },
+        { "type": "text_delta", "text": "world." },
+        {
+          "type": "response",
+          "content": "Hello world.",
+          "usage": { "inputTokens": 1, "outputTokens": 1 }
+        }
+      ],
+      "expected": [{ "kind": "text", "text": "Hello world." }]
+    },
+    {
+      "name": "text tool text",
+      "events": [
+        { "type": "text_delta", "text": "Checking the file." },
+        {
+          "type": "tool_use_start",
+          "id": "read-1",
+          "name": "read",
+          "input": { "path": "README.md" }
+        },
+        {
+          "type": "tool_result",
+          "id": "read-1",
+          "name": "read",
+          "content": "contents",
+          "isError": false
+        },
+        { "type": "text_delta", "text": "The file is valid." },
+        {
+          "type": "response",
+          "content": "Checking the file.The file is valid.",
+          "usage": { "inputTokens": 1, "outputTokens": 1 }
+        }
+      ],
+      "expected": [
+        { "kind": "text", "text": "Checking the file." },
+        { "kind": "tool", "id": "read-1", "label": "Read", "status": "succeeded" },
+        { "kind": "text", "text": "The file is valid." }
+      ]
+    },
+    {
+      "name": "tool before final text",
+      "events": [
+        {
+          "type": "tool_use_start",
+          "id": "bash-1",
+          "name": "bash",
+          "input": { "command": "pwd" }
+        },
+        {
+          "type": "tool_result",
+          "id": "bash-1",
+          "name": "bash",
+          "content": "/tmp",
+          "isError": false
+        },
+        { "type": "text_delta", "text": "The command finished." },
+        {
+          "type": "response",
+          "content": "The command finished.",
+          "usage": { "inputTokens": 1, "outputTokens": 1 }
+        }
+      ],
+      "expected": [
+        { "kind": "tool", "id": "bash-1", "label": "Bash", "status": "succeeded" },
+        { "kind": "text", "text": "The command finished." }
+      ]
+    },
+    {
+      "name": "tool start anchors before intervening prose",
+      "events": [
+        {
+          "type": "tool_use_start",
+          "id": "bash-running",
+          "name": "bash",
+          "input": { "command": "sleep 1" }
+        },
+        { "type": "text_delta", "text": "While it runs." },
+        {
+          "type": "tool_result",
+          "id": "bash-running",
+          "name": "bash",
+          "content": "done",
+          "isError": false
+        }
+      ],
+      "expected": [
+        { "kind": "tool", "id": "bash-running", "label": "Bash", "status": "succeeded" },
+        { "kind": "text", "text": "While it runs." }
+      ]
+    },
+    {
+      "name": "alternating text and tools",
+      "events": [
+        { "type": "text_delta", "text": "First note." },
+        {
+          "type": "tool_use_start",
+          "id": "read-a",
+          "name": "read",
+          "input": { "path": "a.txt" }
+        },
+        { "type": "tool_result", "id": "read-a", "name": "read", "content": "A" },
+        { "type": "text_delta", "text": "Middle note." },
+        {
+          "type": "tool_use_start",
+          "id": "bash-b",
+          "name": "bash",
+          "input": { "command": "echo b" }
+        },
+        { "type": "tool_result", "id": "bash-b", "name": "bash", "content": "b" },
+        { "type": "text_delta", "text": "Final note." }
+      ],
+      "expected": [
+        { "kind": "text", "text": "First note." },
+        { "kind": "tool", "id": "read-a", "label": "Read", "status": "succeeded" },
+        { "kind": "text", "text": "Middle note." },
+        { "kind": "tool", "id": "bash-b", "label": "Bash", "status": "succeeded" },
+        { "kind": "text", "text": "Final note." }
+      ]
+    },
+    {
+      "name": "consecutive tools retain order",
+      "events": [
+        { "type": "text_delta", "text": "Before the tools." },
+        {
+          "type": "tool_use_start",
+          "id": "read-first",
+          "name": "read",
+          "input": { "path": "first.txt" }
+        },
+        {
+          "type": "tool_result",
+          "id": "read-first",
+          "name": "read",
+          "content": "first"
+        },
+        {
+          "type": "tool_use_start",
+          "id": "bash-second",
+          "name": "bash",
+          "input": { "command": "echo second" }
+        },
+        {
+          "type": "tool_result",
+          "id": "bash-second",
+          "name": "bash",
+          "content": "second"
+        },
+        { "type": "text_delta", "text": "After the tools." }
+      ],
+      "expected": [
+        { "kind": "text", "text": "Before the tools." },
+        {
+          "kind": "tool",
+          "id": "read-first",
+          "label": "Read",
+          "status": "succeeded"
+        },
+        {
+          "kind": "tool",
+          "id": "bash-second",
+          "label": "Bash",
+          "status": "succeeded"
+        },
+        { "kind": "text", "text": "After the tools." }
+      ]
+    },
+    {
+      "name": "overlapping tools update their own start positions",
+      "events": [
+        { "type": "tool_use_start", "id": "tool-a", "name": "read", "input": {} },
+        { "type": "tool_use_start", "id": "tool-b", "name": "bash", "input": {} },
+        { "type": "tool_result", "id": "tool-a", "name": "read", "content": "a" },
+        { "type": "tool_result", "id": "tool-b", "name": "bash", "content": "b" }
+      ],
+      "expected": [
+        { "kind": "tool", "id": "tool-a", "label": "Read", "status": "succeeded" },
+        { "kind": "tool", "id": "tool-b", "label": "Bash", "status": "succeeded" }
+      ]
+    },
+    {
+      "name": "orphan tool result stays at its event position",
+      "events": [
+        { "type": "text_delta", "text": "Before the orphan." },
+        {
+          "type": "tool_result",
+          "id": "grep-orphan",
+          "name": "grep",
+          "content": "one match",
+          "isError": false
+        },
+        { "type": "text_delta", "text": "After the orphan." }
+      ],
+      "expected": [
+        { "kind": "text", "text": "Before the orphan." },
+        { "kind": "tool", "id": "grep-orphan", "label": "Grep", "status": "succeeded" },
+        { "kind": "text", "text": "After the orphan." }
+      ]
+    },
+    {
+      "name": "thinking and question boundaries",
+      "events": [
+        { "type": "thinking_delta", "text": "Considering " },
+        { "type": "thinking_delta", "text": "options." },
+        { "type": "text_delta", "text": "A decision is needed." },
+        {
+          "type": "question",
+          "id": "question-1",
+          "question": "Proceed now?",
+          "options": ["Yes", "No"]
+        }
+      ],
+      "expected": [
+        { "kind": "thinking", "text": "Considering options." },
+        { "kind": "text", "text": "A decision is needed." },
+        { "kind": "question", "id": "question-1", "text": "Proceed now?" }
+      ]
+    },
+    {
+      "name": "response does not duplicate streamed text",
+      "events": [
+        { "type": "text_delta", "text": "Only once." },
+        {
+          "type": "response",
+          "content": "Only once.",
+          "usage": { "inputTokens": 1, "outputTokens": 1 }
+        }
+      ],
+      "expected": [{ "kind": "text", "text": "Only once." }]
+    }
+  ]
+}

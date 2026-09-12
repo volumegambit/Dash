@@ -126,31 +126,36 @@ private fun UserBubble(text: String) {
 @Composable
 private fun AssistantBubble(message: ChatMessage.Assistant) {
     Column(Modifier.fillMaxWidth()) {
-        if (message.thinking.isNotEmpty()) {
-            ThinkingBlock(message.thinking)
-            Spacer(Modifier.height(6.dp))
-        }
-        message.toolCalls.forEach { call ->
-            ToolCard(call)
-            Spacer(Modifier.height(6.dp))
-        }
-        if (message.text.isNotEmpty()) {
-            Text(message.text)
-        }
-        // The agent asked a question. v1 renders it (and its options) as text;
-        // reply by typing — the live gateway has no in-band answer frame, it
-        // continues the conversation via the next message.
-        message.question?.let { question ->
-            Spacer(Modifier.height(8.dp))
-            Text(question.question, style = MaterialTheme.typography.bodyMedium)
-            question.options.forEach { option ->
-                Text(
-                    "• $option",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 2.dp),
+        message.blocks.forEachIndexed { index, block ->
+            when (block) {
+                is AssistantBlock.Thinking -> ThinkingBlock(block.text)
+                is AssistantBlock.Tool -> ToolCard(block.call)
+                is AssistantBlock.Worker -> ToolCard(
+                    ToolCall(
+                        "${block.worker.runId}:${block.worker.workerId}",
+                        block.worker.role,
+                        block.worker.detail,
+                        block.worker.status == "failed",
+                    ),
                 )
+                is AssistantBlock.Status -> {
+                    Text(block.title, style = MaterialTheme.typography.labelMedium)
+                    block.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
+                is AssistantBlock.Text -> Text(block.text)
+                is AssistantBlock.Question -> {
+                    Text(block.question.question, style = MaterialTheme.typography.bodyMedium)
+                    block.question.options.forEach { option ->
+                        Text(
+                            "• $option",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                }
             }
+            if (index < message.blocks.lastIndex) Spacer(Modifier.height(6.dp))
         }
     }
 }

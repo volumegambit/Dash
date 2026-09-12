@@ -7,6 +7,7 @@ export default defineConfig({
       // Ensure tests resolve @dash/mc and @dash/channels from
       // the worktree's own built dist (not the main-branch copy in the root node_modules).
       '@dash/mc/provider-keys': resolve(__dirname, 'packages/mc/dist/runtime/provider-keys.js'),
+      '@dash/mc/gateway-client': resolve(__dirname, 'packages/mc/dist/runtime/gateway-client.js'),
       '@dash/mc': resolve(__dirname, 'packages/mc/dist/index.js'),
       '@dash/channels': resolve(__dirname, 'packages/channels/dist/index.js'),
       // Without this, a worktree (which has no node_modules of its own) resolves

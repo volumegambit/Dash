@@ -36,6 +36,9 @@ private enum MobileV2FrameCodingKeys: String, CodingKey, CaseIterable {
   case userMessageId
   case assistantMessageId
   case revision
+  case origin
+  case kind
+  case requestId
   case event
   case outcome
   case queueRevision
@@ -62,7 +65,11 @@ private func decodeFrameType(_ decoder: Decoder) throws -> String {
 }
 
 private func validateFrameUUID(_ value: String, _ key: MobileV2FrameCodingKeys) throws {
-  try MobileV2ContractValidation.validateCanonicalUUID(value, field: key.rawValue)
+  if case .conversationId = key {
+    try MobileV2ContractValidation.validateConversationIdentifier(value, field: key.rawValue)
+  } else {
+    try MobileV2ContractValidation.validateCanonicalUUID(value, field: key.rawValue)
+  }
 }
 
 private func validateFrameLegacyRunID(_ value: String, _ key: MobileV2FrameCodingKeys) throws {
@@ -844,7 +851,10 @@ enum MobileV2SequencedFrame: Codable, Hashable, Sendable {
     segmentTurnId: String,
     userMessageId: String,
     assistantMessageId: String,
-    revision: Int
+    revision: Int,
+    origin: MessageOrigin? = nil,
+    kind: ConversationKind? = nil,
+    requestId: String? = nil
   )
   case event(
     id: String,
@@ -937,20 +947,32 @@ enum MobileV2SequencedFrame: Codable, Hashable, Sendable {
         decoder,
         allowed: [
           .type, .id, .conversationId, .v2Seq, .runId, .segmentTurnId, .userMessageId,
-          .assistantMessageId, .revision,
+          .assistantMessageId, .revision, .origin, .kind, .requestId,
         ],
         required: [
           .type, .id, .conversationId, .v2Seq, .runId, .segmentTurnId, .userMessageId,
           .assistantMessageId, .revision,
         ]
       )
+      try MobileV2ContractValidation.validateOptionalNonNull(container, key: .origin)
+      try MobileV2ContractValidation.validateOptionalNonNull(container, key: .kind)
+      try MobileV2ContractValidation.validateOptionalNonNull(container, key: .requestId)
       let base = try decodeRunFrameBase(container)
       let userMessageId = try container.decode(String.self, forKey: .userMessageId)
       let assistantMessageId = try container.decode(String.self, forKey: .assistantMessageId)
       let revision = try container.decode(Int.self, forKey: .revision)
+      let origin = try container.decodeIfPresent(MessageOrigin.self, forKey: .origin)
+      let kind = try container.decodeIfPresent(ConversationKind.self, forKey: .kind)
+      let requestId = try container.decodeIfPresent(String.self, forKey: .requestId)
       try validateFrameUUID(userMessageId, .userMessageId)
       try validateFrameUUID(assistantMessageId, .assistantMessageId)
       try MobileV2ContractValidation.validateNonnegative(revision, field: "revision")
+      if let requestId {
+        try MobileV2ContractValidation.require(
+          (1...256).contains(requestId.unicodeScalars.count),
+          field: "requestId"
+        )
+      }
       self = .accepted(
         id: base.id,
         conversationId: base.conversationId,
@@ -959,7 +981,10 @@ enum MobileV2SequencedFrame: Codable, Hashable, Sendable {
         segmentTurnId: base.segmentTurnId,
         userMessageId: userMessageId,
         assistantMessageId: assistantMessageId,
-        revision: revision
+        revision: revision,
+        origin: origin,
+        kind: kind,
+        requestId: requestId
       )
     case "event":
       try validateFrameKeys(
@@ -1158,7 +1183,10 @@ enum MobileV2SequencedFrame: Codable, Hashable, Sendable {
       segmentTurnId,
       userMessageId,
       assistantMessageId,
-      revision
+      revision,
+      origin,
+      kind,
+      requestId
     ):
       try encodeRunFrameBase(
         &container,
@@ -1171,10 +1199,19 @@ enum MobileV2SequencedFrame: Codable, Hashable, Sendable {
       try validateFrameUUID(userMessageId, .userMessageId)
       try validateFrameUUID(assistantMessageId, .assistantMessageId)
       try MobileV2ContractValidation.validateNonnegative(revision, field: "revision")
+      if let requestId {
+        try MobileV2ContractValidation.require(
+          (1...256).contains(requestId.unicodeScalars.count),
+          field: "requestId"
+        )
+      }
       try container.encode("accepted", forKey: .type)
       try container.encode(userMessageId, forKey: .userMessageId)
       try container.encode(assistantMessageId, forKey: .assistantMessageId)
       try container.encode(revision, forKey: .revision)
+      try container.encodeIfPresent(origin, forKey: .origin)
+      try container.encodeIfPresent(kind, forKey: .kind)
+      try container.encodeIfPresent(requestId, forKey: .requestId)
     case let .event(id, conversationId, v2Seq, runId, segmentTurnId, event):
       try encodeRunFrameBase(
         &container,
@@ -1438,7 +1475,7 @@ enum MobileV2WsServerFrame: Codable, Hashable, Sendable {
 extension MobileV2SequencedFrame {
   var conversationId: String {
     switch self {
-    case let .accepted(_, value, _, _, _, _, _, _),
+    case let .accepted(_, value, _, _, _, _, _, _, _, _, _),
       let .event(_, value, _, _, _, _),
       let .done(_, value, _, _, _, _),
       let .error(_, value, _, _, _, _, _, _),
@@ -1455,7 +1492,7 @@ extension MobileV2SequencedFrame {
 
   var v2Seq: Int {
     switch self {
-    case let .accepted(_, _, value, _, _, _, _, _),
+    case let .accepted(_, _, value, _, _, _, _, _, _, _, _),
       let .event(_, _, value, _, _, _),
       let .done(_, _, value, _, _, _),
       let .error(_, _, value, _, _, _, _, _),

@@ -32,6 +32,7 @@ function summary(patch: Partial<MobileV2ConversationSummary> = {}): MobileV2Conv
     lastMessagePreview: null,
     createdAt,
     updatedAt: createdAt,
+    kind: 'user',
     queuePaused: false,
     queueRevision: 1,
     pendingFollowUpCount: 0,

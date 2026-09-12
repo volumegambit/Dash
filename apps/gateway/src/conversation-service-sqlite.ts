@@ -4,12 +4,17 @@ import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
 import type {
   ConversationContent,
+  ConversationKind,
   ConversationMessage,
+  ConversationMessageOrigin,
   ConversationMessagePage,
+  ConversationNoticeKind,
   ConversationPage,
   ConversationPatchRequest,
   ConversationSummary,
   MobileAgentEvent,
+  SubagentInfo,
+  SubagentStatus,
 } from '@dash/mobile-contract';
 import type {
   MobileV2ControlFrame,
@@ -65,16 +70,23 @@ import { migrateConversationSchema } from './conversation-schema.js';
 import {
   type AcceptTurnInput,
   type AcceptedTurn,
+  type AppendNoticeInput,
   type ConversationService,
   ConversationServiceError,
   type CreateConversationInput,
+  type CreateSubagentConversationInput,
   DEFAULT_CONVERSATION_TITLE,
+  DEFAULT_SUBAGENT_LIST_LIMIT,
   type FinishTurnInput,
   type ListConversationsInput,
   type ListMessagesInput,
   MAX_PENDING_INPUTS_PER_KIND,
   MAX_PENDING_INPUT_BYTES,
+  MAX_QUEUED_NOTIFICATIONS,
+  type PendingNotification,
   type PersistedTurnFrame,
+  type SubagentGrant,
+  type UpdateSubagentInput,
 } from './conversation-service.js';
 import { SqliteEventLogStore } from './event-log-store-sqlite.js';
 import type { EventLogEntry, EventLogPayload, EventLogStore } from './event-log-store.js';
@@ -133,7 +145,55 @@ const SCHEMA_SQL = `
 const POST_MIGRATION_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS stream_events_turn_idx
     ON agent_stream_events(agent_id, conversation_id, msg_id, seq);
+
+  CREATE TABLE IF NOT EXISTS pending_notifications (
+    id              TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL CHECK (kind IN ('subagent_finished','subagent_message')),
+    payload         TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS pending_notifications_queue_idx
+    ON pending_notifications(conversation_id, created_at, id);
 `;
+
+/**
+ * Columns added after the first release. The database already exists in the
+ * field, so these are guarded `ALTER TABLE`s rather than a table rewrite:
+ * `CREATE TABLE IF NOT EXISTS` is a no-op against an older table shape and
+ * would silently leave the new columns missing.
+ */
+const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, ddl: string]> = [
+  ['conversations', 'kind', "TEXT NOT NULL DEFAULT 'user'"],
+  ['conversations', 'parent_conversation_id', 'TEXT'],
+  ['conversations', 'parent_turn_id', 'TEXT'],
+  ['conversations', 'depth', 'INTEGER NOT NULL DEFAULT 0'],
+  ['conversations', 'subagent_type', 'TEXT'],
+  ['conversations', 'subagent_name', 'TEXT'],
+  ['conversations', 'subagent_status', 'TEXT'],
+  ['conversations', 'subagent_meta', 'TEXT'],
+  ['conversations', 'subagent_grant', 'TEXT'],
+  ['conversation_messages', 'origin', "TEXT NOT NULL DEFAULT 'user'"],
+];
+
+/** Indexes that can only be created once {@link ADDED_COLUMNS} are in place. */
+const MIGRATED_INDEX_SQL = `
+  CREATE INDEX IF NOT EXISTS conversations_kind_list_idx
+    ON conversations(kind, updated_at DESC, id DESC);
+  CREATE INDEX IF NOT EXISTS conversations_parent_idx
+    ON conversations(parent_conversation_id, created_at, id);
+`;
+
+/**
+ * Add `column` to `table` when it is absent. Idempotent: re-opening the same
+ * file must not re-run the `ALTER`, which SQLite rejects as a duplicate column.
+ */
+function ensureColumn(db: DatabaseType, table: string, column: string, ddl: string): void {
+  const existing = db.pragma(`table_info(${table})`) as Array<{ name: string }>;
+  if (existing.some((info) => info.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+}
 
 export interface SqliteConversationServiceOptions {
   dataDir: string;
@@ -160,6 +220,29 @@ interface ConversationRow {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  kind: ConversationKind;
+  parent_conversation_id: string | null;
+  parent_turn_id: string | null;
+  depth: number;
+  subagent_type: string | null;
+  subagent_name: string | null;
+  subagent_status: SubagentStatus | null;
+  subagent_meta: string | null;
+  subagent_grant: string | null;
+}
+
+/**
+ * The part of {@link SubagentInfo} that lives in the `subagent_meta` JSON blob.
+ * `type`, `name`, `status` and `depth` are columns so they can be filtered on.
+ */
+type SubagentMeta = Omit<SubagentInfo, 'type' | 'name' | 'status' | 'depth'>;
+
+interface PendingNotificationRow {
+  id: string;
+  conversation_id: string;
+  kind: PendingNotification['kind'];
+  payload: string;
+  created_at: string;
 }
 
 interface ConversationMessageRow {
@@ -176,6 +259,7 @@ interface ConversationMessageRow {
   delivery_status: StoredConversationMessage['deliveryStatus'] | null;
   created_at: string;
   updated_at: string;
+  origin: ConversationMessageOrigin;
 }
 
 interface PendingInputRow {
@@ -245,6 +329,48 @@ function commandFingerprint(operation: CommandOperation, input: object): string 
   return createHash('sha256').update(canonical).digest('hex');
 }
 
+/** Recombine the columnar fields with the `subagent_meta` blob. */
+function mapSubagent(row: ConversationRow): SubagentInfo {
+  // A child row without a type or a status is corrupt. Defaulting would mint a
+  // summary that violates the contract this task just wrote (`type` is
+  // `minLength: 1`) or invent a status for a row whose state is unknown.
+  if (!row.subagent_type) {
+    throw new Error(`Subagent conversation ${row.id} has no subagent_type`);
+  }
+  if (!row.subagent_status) {
+    throw new Error(`Subagent conversation ${row.id} has no subagent_status`);
+  }
+  const meta = (row.subagent_meta ? JSON.parse(row.subagent_meta) : {}) as Partial<SubagentMeta>;
+  return {
+    type: row.subagent_type,
+    ...(row.subagent_name ? { name: row.subagent_name } : {}),
+    status: row.subagent_status,
+    description: meta.description ?? '',
+    prompt: meta.prompt ?? '',
+    model: meta.model ?? '',
+    background: meta.background ?? false,
+    ...(meta.isolation ? { isolation: meta.isolation } : {}),
+    depth: row.depth,
+    startedAt: meta.startedAt ?? row.created_at,
+    ...(meta.endedAt ? { endedAt: meta.endedAt } : {}),
+    ...(meta.usage ? { usage: meta.usage } : {}),
+    toolCallCount: meta.toolCallCount ?? 0,
+    ...(meta.report !== undefined ? { report: meta.report } : {}),
+    oneShot: meta.oneShot ?? false,
+    // Only known once the child's backend has been built (an isolated child's
+    // worktree path is minted there), so an unset value stays absent rather
+    // than defaulting to the parent workspace — which is exactly what
+    // isolation exists to deny.
+    ...(meta.workspace !== undefined ? { workspace: meta.workspace } : {}),
+  };
+}
+
+/** Split {@link SubagentInfo} into the JSON blob half, dropping the columns. */
+function subagentMeta(info: SubagentInfo): SubagentMeta {
+  const { type: _type, name: _name, status: _status, depth: _depth, ...meta } = info;
+  return meta;
+}
+
 function sanitizeJsonValue(value: unknown): unknown {
   if (value instanceof Error) return value.message;
   if (Array.isArray(value)) return value.map((item) => sanitizeJsonValue(item));
@@ -279,6 +405,10 @@ export class SqliteConversationService implements ConversationService {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.db.exec(SCHEMA_SQL);
+    for (const [table, column, ddl] of ADDED_COLUMNS) {
+      ensureColumn(this.db, table, column, ddl);
+    }
+    this.db.exec(MIGRATED_INDEX_SQL);
     migrateConversationSchema(this.db);
     this.db.exec(POST_MIGRATION_SCHEMA_SQL);
     this.eventLog = new SqliteEventLogStore({ database: this.db });
@@ -298,12 +428,21 @@ export class SqliteConversationService implements ConversationService {
       .get(requestId) as ConversationRow | undefined;
   }
 
+  /**
+   * The preview sits where every client shows what the USER last said, and it
+   * feeds their conversation search. A server-initiated turn's user row is the
+   * `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the orchestrator was fed
+   * (sub-agents design 7.3), so `origin = 'user'` filters those out and the
+   * last thing the user actually typed stands. Rows written before the column
+   * existed default to `'user'` (see the guarded ALTER), so nothing older
+   * loses its preview.
+   */
   private lastMessagePreview(conversationId: string): string | null {
     const row = this.db
       .prepare(`
         SELECT content
         FROM conversation_messages
-        WHERE conversation_id = ? AND role = 'user'
+        WHERE conversation_id = ? AND role = 'user' AND origin = 'user'
         ORDER BY ordinal DESC, id DESC
         LIMIT 1
       `)
@@ -352,6 +491,7 @@ export class SqliteConversationService implements ConversationService {
       content: parseContent(row.content),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      origin: row.origin,
     };
   }
 
@@ -412,6 +552,10 @@ export class SqliteConversationService implements ConversationService {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       ...(row.deleted_at ? { deletedAt: row.deleted_at } : {}),
+      kind: row.kind,
+      ...(row.parent_conversation_id ? { parentConversationId: row.parent_conversation_id } : {}),
+      ...(row.parent_turn_id ? { parentTurnId: row.parent_turn_id } : {}),
+      ...(row.kind === 'subagent' ? { subagent: mapSubagent(row) } : {}),
     };
   }
 
@@ -1142,7 +1286,7 @@ export class SqliteConversationService implements ConversationService {
     const allEvents = this.eventLog.readSince(conversation.agent_id, conversation.id, 0);
     return rows.map((row) => {
       const stored = this.mapStoredMessage(row);
-      if (row.role !== 'assistant') return stored;
+      if (row.role !== 'assistant' || stored.content.type !== 'assistant') return stored;
       const events: MobileAgentEvent[] = allEvents
         .filter(
           (entry) =>
@@ -1245,7 +1389,12 @@ export class SqliteConversationService implements ConversationService {
       .prepare(`
         SELECT * FROM conversations
         WHERE deleted_at IS NULL
+          AND kind = :kind
           AND (:agentId IS NULL OR agent_id = :agentId)
+          AND (
+            :parentConversationId IS NULL
+            OR parent_conversation_id = :parentConversationId
+          )
           AND (
             :cursorUpdatedAt IS NULL
             OR updated_at < :cursorUpdatedAt
@@ -1255,7 +1404,11 @@ export class SqliteConversationService implements ConversationService {
         LIMIT :fetchLimit
       `)
       .all({
+        // Children stay hidden unless the caller names their kind (see
+        // ListConversationsInput.kind).
+        kind: input.kind ?? 'user',
         agentId: input.agentId ?? null,
+        parentConversationId: input.parentConversationId ?? null,
         cursorUpdatedAt: cursor?.updatedAt ?? null,
         cursorId: cursor?.id ?? null,
         fetchLimit: input.limit + 1,
@@ -1379,11 +1532,7 @@ export class SqliteConversationService implements ConversationService {
       }
       this.assertRevision(current, expectedRevision, mapper);
       const timestamp = this.now();
-      this.db.prepare('DELETE FROM conversation_pending_inputs WHERE conversation_id = ?').run(id);
-      this.db.prepare('DELETE FROM conversation_command_results WHERE conversation_id = ?').run(id);
-      this.db.prepare('DELETE FROM conversation_v2_events WHERE conversation_id = ?').run(id);
-      this.eventLog.deleteConversation(current.agent_id, id);
-      this.db.prepare('DELETE FROM conversation_messages WHERE conversation_id = ?').run(id);
+      this.purgeConversationContent(current.agent_id, id);
       const tombstoned = this.db
         .prepare(`
           UPDATE conversations
@@ -1405,8 +1554,67 @@ export class SqliteConversationService implements ConversationService {
         }
         throw new Error(`Failed to tombstone conversation ${id}`);
       }
+      this.tombstoneDescendants(id, timestamp);
       return mapper(this.requireConversationRow(id, true));
     })();
+  }
+
+  /**
+   * Drop everything a tombstone must not keep: the transcript, the event log
+   * and the notification queue. The conversation row survives as a tombstone,
+   * so the `pending_notifications` FK cascade never fires — hence the explicit
+   * delete.
+   */
+  private purgeConversationContent(agentId: string, conversationId: string): void {
+    this.db
+      .prepare('DELETE FROM conversation_pending_inputs WHERE conversation_id = ?')
+      .run(conversationId);
+    this.db
+      .prepare('DELETE FROM conversation_command_results WHERE conversation_id = ?')
+      .run(conversationId);
+    this.db
+      .prepare('DELETE FROM conversation_v2_events WHERE conversation_id = ?')
+      .run(conversationId);
+    this.db
+      .prepare('DELETE FROM conversation_messages WHERE conversation_id = ?')
+      .run(conversationId);
+    this.db
+      .prepare('DELETE FROM pending_notifications WHERE conversation_id = ?')
+      .run(conversationId);
+    this.eventLog.deleteConversation(agentId, conversationId);
+  }
+
+  /**
+   * Deleting a conversation deletes its whole subtree. Children carry no FK to
+   * their parent, so nothing else would remove them, and a surviving child is a
+   * privacy leak: `subagent.prompt` can quote the parent context the user just
+   * deleted and `GET /conversations/:childId` has no `kind` gate. Children nest,
+   * so this walks the tree. A child holding an active turn is tombstoned
+   * anyway — the user's delete outranks a runaway child.
+   */
+  private tombstoneDescendants(rootId: string, timestamp: string): void {
+    const selectChildren = this.db.prepare(
+      'SELECT * FROM conversations WHERE parent_conversation_id = ? AND deleted_at IS NULL',
+    );
+    const tombstone = this.db.prepare(`
+      UPDATE conversations
+      SET status = 'deleted', active_turn_id = NULL, revision = revision + 1,
+          updated_at = @now, deleted_at = @now
+      WHERE id = @id
+    `);
+    const queue = [rootId];
+    const seen = new Set<string>([rootId]);
+    while (queue.length > 0) {
+      const parentId = queue.shift() as string;
+      for (const child of selectChildren.all(parentId) as ConversationRow[]) {
+        // Defensive: a cycle would otherwise spin forever.
+        if (seen.has(child.id)) continue;
+        seen.add(child.id);
+        queue.push(child.id);
+        this.purgeConversationContent(child.agent_id, child.id);
+        tombstone.run({ id: child.id, now: timestamp });
+      }
+    }
   }
 
   listMessages(input: ListMessagesInput): ConversationMessagePage {
@@ -1507,13 +1715,14 @@ export class SqliteConversationService implements ConversationService {
         ...(value.images !== undefined ? { images: value.images } : {}),
       };
       const assistantContent: ConversationContent = { type: 'assistant', events: [] };
+      const turnOrigin: ConversationMessageOrigin = value.origin ?? 'user';
       const insertMessage = this.db.prepare(`
         INSERT INTO conversation_messages (
           id, conversation_id, turn_id, run_id, segment_index, ordinal, role, content, status,
-          delivery_kind, delivery_status, created_at, updated_at
+          delivery_kind, delivery_status, origin, created_at, updated_at
         ) VALUES (
           @id, @conversationId, @turnId, @turnId, 0, @ordinal, @role, @content, @status,
-          'normal', NULL, @now, @now
+          'normal', NULL, @origin, @now, @now
         )
       `);
       insertMessage.run({
@@ -1524,6 +1733,7 @@ export class SqliteConversationService implements ConversationService {
         role: 'user',
         content: JSON.stringify(userContent),
         status: 'accepted',
+        origin: turnOrigin,
         now: timestamp,
       });
       insertMessage.run({
@@ -1534,6 +1744,12 @@ export class SqliteConversationService implements ConversationService {
         role: 'assistant',
         content: JSON.stringify(assistantContent),
         status: 'streaming',
+        // `origin` describes the turn, not the row. listMessages pages by
+        // ordinal, so a page boundary can split a turn's two adjacent rows —
+        // an assistant row that did not carry the origin would be unrecoverable
+        // (its sibling is on another page) and a client filtering out
+        // notification turns would drop the question but keep the answer.
+        origin: turnOrigin,
         now: timestamp,
       });
 
@@ -1587,6 +1803,72 @@ export class SqliteConversationService implements ConversationService {
         firstUserMessage: userOrdinal === 1,
       };
     })(input);
+  }
+
+  /**
+   * Append a standalone notice message to a conversation.
+   *
+   * Used for things that happen AFTER a turn is finalised — a skill learned or
+   * a memory saved by the post-turn review. Those cannot be turn events: a
+   * finished turn refuses them (`appendTurnEvent` returns null once
+   * `activeTurnId` has cleared), and a live-only signal would not survive a
+   * reload.
+   *
+   * The notice gets its OWN turn id. `conversation_messages` carries
+   * `UNIQUE(turn_id, role)`, so reusing the reviewed turn's id would collide
+   * with that turn's own assistant row.
+   */
+  appendNotice(input: AppendNoticeInput): ConversationMessage | null {
+    return this.db.transaction((): ConversationMessage | null => {
+      const conversation = this.requireConversationRow(input.conversationId, true);
+      if (conversation.status === 'archived' || conversation.status === 'deleted') return null;
+
+      const ordinal = this.reserveMessageOrdinals(input.conversationId, 1);
+
+      const id = this.uuid();
+      const turnId = this.uuid();
+      const now = this.now();
+      const content: ConversationContent = {
+        type: 'notice',
+        kind: input.kind,
+        text: input.text,
+      };
+
+      this.db
+        .prepare(`
+          INSERT INTO conversation_messages (
+            id, conversation_id, turn_id, ordinal, role, content, status, created_at, updated_at
+          ) VALUES (
+            @id, @conversationId, @turnId, @ordinal, 'assistant', @content, 'completed', @now, @now
+          )
+        `)
+        .run({
+          id,
+          conversationId: input.conversationId,
+          turnId,
+          ordinal,
+          content: JSON.stringify(content),
+          now,
+        });
+
+      this.db
+        .prepare(
+          'UPDATE conversations SET updated_at = @now, revision = revision + 1 WHERE id = @id',
+        )
+        .run({ id: input.conversationId, now });
+
+      return {
+        id,
+        conversationId: input.conversationId,
+        turnId,
+        ordinal,
+        role: 'assistant',
+        status: 'completed',
+        content,
+        createdAt: now,
+        updatedAt: now,
+      };
+    })();
   }
 
   appendTurnEvent(
@@ -1715,6 +1997,258 @@ export class SqliteConversationService implements ConversationService {
         payload,
       };
     })(input);
+  }
+
+  /**
+   * Create a child conversation. Idempotent on `id` so a spawn retry (or a
+   * replayed recovery step) returns the existing row instead of colliding.
+   *
+   * `input.grant` is written INSIDE this transaction — as a column on the
+   * insert, or as the same bare `UPDATE` {@link putSubagentGrant} performs on
+   * the idempotent (resume) path, so a grant narrowed since the child last ran
+   * still replaces the stored one. Writing it afterwards left a window in which
+   * a process death produced a durable child row with no grant, which both
+   * consumers refuse to rebuild.
+   */
+  createSubagent(input: CreateSubagentConversationInput): ConversationSummary {
+    return this.db.transaction((value: CreateSubagentConversationInput) => {
+      const existing = this.selectConversationRow(value.id);
+      if (existing) {
+        if (existing.kind !== 'subagent') {
+          throw new ConversationServiceError(
+            'validation_failed',
+            `Conversation ${value.id} already exists and is not a subagent conversation`,
+            409,
+            false,
+          );
+        }
+        // A tombstone survives forever, so the idempotence branch would
+        // otherwise report a deleted child as a successful spawn and the first
+        // acceptTurn would fail with not_found.
+        if (existing.deleted_at) {
+          throw new ConversationServiceError(
+            'not_found',
+            `Conversation ${value.id} was deleted`,
+            410,
+            false,
+          );
+        }
+        if (value.grant !== undefined) this.writeSubagentGrant(value.id, value.grant);
+        return this.mapConversation(existing);
+      }
+
+      const parent = this.requireConversationRow(value.parentConversationId);
+      const timestamp = this.now();
+      this.db
+        .prepare(`
+          INSERT INTO conversations (
+            id, create_request_id, agent_id, agent_name_snapshot, title,
+            revision, status, active_turn_id, owning_issue_id, project_id,
+            last_seq, created_at, updated_at, deleted_at,
+            kind, parent_conversation_id, parent_turn_id, depth,
+            subagent_type, subagent_name, subagent_status, subagent_meta,
+            subagent_grant
+          ) VALUES (
+            @id, @createRequestId, @agentId, @agentName, @title,
+            1, 'idle', NULL, @owningIssueId, @projectId,
+            0, @createdAt, @updatedAt, NULL,
+            'subagent', @parentConversationId, @parentTurnId, @depth,
+            @subagentType, @subagentName, @subagentStatus, @subagentMeta,
+            @subagentGrant
+          )
+        `)
+        .run({
+          id: value.id,
+          createRequestId: `subagent:${value.id}`,
+          agentId: value.agentId,
+          agentName: value.agentName,
+          title: value.title.trim() || DEFAULT_CONVERSATION_TITLE,
+          // Children inherit their parent's linkage so project/issue filters
+          // keep working once children become addressable.
+          owningIssueId: parent.owning_issue_id,
+          projectId: parent.project_id,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          parentConversationId: value.parentConversationId,
+          parentTurnId: value.parentTurnId,
+          depth: value.subagent.depth,
+          subagentType: value.subagent.type,
+          subagentName: value.subagent.name ?? null,
+          subagentStatus: value.subagent.status,
+          subagentMeta: JSON.stringify(subagentMeta(value.subagent)),
+          subagentGrant: value.grant ? JSON.stringify(value.grant) : null,
+        });
+      return this.mapConversation(this.requireConversationRow(value.id));
+    })(input);
+  }
+
+  putSubagentGrant(id: string, grant: SubagentGrant | undefined): void {
+    this.writeSubagentGrant(id, grant);
+  }
+
+  /**
+   * The grant write itself, so {@link createSubagent} can perform it inside its
+   * own transaction.
+   *
+   * No revision bump and no `updated_at` touch: the grant is gateway-internal
+   * (it is not in `ConversationSummary`), so a client's optimistic-concurrency
+   * token must not move because a child was re-prepared.
+   */
+  private writeSubagentGrant(id: string, grant: SubagentGrant | undefined): void {
+    this.db
+      .prepare('UPDATE conversations SET subagent_grant = @grant WHERE id = @id')
+      .run({ id, grant: grant ? JSON.stringify(grant) : null });
+  }
+
+  getSubagentGrant(id: string): SubagentGrant | undefined {
+    const row = this.selectConversationRow(id);
+    if (!row?.subagent_grant) return undefined;
+    return JSON.parse(row.subagent_grant) as SubagentGrant;
+  }
+
+  updateSubagent(id: string, patch: UpdateSubagentInput): ConversationSummary {
+    return this.db.transaction(() => {
+      const current = this.requireConversationRow(id);
+      if (current.kind !== 'subagent') {
+        throw new ConversationServiceError(
+          'validation_failed',
+          `Conversation ${id} is not a subagent conversation`,
+          409,
+          false,
+        );
+      }
+      const merged: SubagentInfo = {
+        ...mapSubagent(current),
+        ...(patch.info ?? {}),
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+      };
+      this.db
+        .prepare(`
+          UPDATE conversations
+          SET subagent_type = @subagentType,
+              subagent_name = @subagentName,
+              subagent_status = @subagentStatus,
+              subagent_meta = @subagentMeta,
+              depth = @depth,
+              revision = revision + 1,
+              updated_at = @now
+          WHERE id = @id
+        `)
+        .run({
+          id,
+          subagentType: merged.type,
+          subagentName: merged.name ?? null,
+          subagentStatus: merged.status,
+          subagentMeta: JSON.stringify(subagentMeta(merged)),
+          depth: merged.depth,
+          now: this.now(),
+        });
+      return this.mapConversation(this.requireConversationRow(id));
+    })();
+  }
+
+  listSubagents(
+    parentConversationId: string,
+    limit: number = DEFAULT_SUBAGENT_LIST_LIMIT,
+  ): ConversationSummary[] {
+    // Ordered DESC under the LIMIT so the page keeps the NEWEST children, then
+    // reversed back to the oldest-first order every caller reads. Taking the
+    // oldest `limit` instead would hide exactly the children still worth
+    // addressing.
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM conversations
+        WHERE kind = 'subagent' AND parent_conversation_id = ? AND deleted_at IS NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+      `)
+      .all(parentConversationId, Math.max(0, limit)) as ConversationRow[];
+    return rows.reverse().map((row) => this.mapConversation(row));
+  }
+
+  listInterruptedSubagents(): ConversationSummary[] {
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM conversations
+        WHERE kind = 'subagent' AND subagent_status = 'interrupted' AND deleted_at IS NULL
+        ORDER BY created_at ASC, id ASC
+      `)
+      .all() as ConversationRow[];
+    return rows.map((row) => this.mapConversation(row));
+  }
+
+  enqueueNotification(
+    notification: Omit<PendingNotification, 'id' | 'createdAt'>,
+  ): PendingNotification {
+    return this.db.transaction(() => {
+      this.requireConversationRow(notification.conversationId);
+      const queued = this.db
+        .prepare('SELECT COUNT(*) AS total FROM pending_notifications WHERE conversation_id = ?')
+        .get(notification.conversationId) as { total: number };
+      if (queued.total >= MAX_QUEUED_NOTIFICATIONS) {
+        throw new ConversationServiceError(
+          'validation_failed',
+          `Notification queue full for conversation ${notification.conversationId}`,
+          409,
+          false,
+          { conversationId: notification.conversationId, queued: queued.total },
+        );
+      }
+      const id = this.uuid();
+      const createdAt = this.now();
+      const payload = JSON.stringify(sanitizeJsonValue(notification.payload));
+      this.db
+        .prepare(`
+          INSERT INTO pending_notifications (id, conversation_id, kind, payload, created_at)
+          VALUES (@id, @conversationId, @kind, @payload, @createdAt)
+        `)
+        .run({
+          id,
+          conversationId: notification.conversationId,
+          kind: notification.kind,
+          payload,
+          createdAt,
+        });
+      return {
+        id,
+        conversationId: notification.conversationId,
+        kind: notification.kind,
+        // Round-trip so the caller sees exactly what a later drain will yield.
+        payload: JSON.parse(payload) as Record<string, unknown>,
+        createdAt,
+      };
+    })();
+  }
+
+  peekNotifications(conversationId: string): PendingNotification[] {
+    // rowid keeps insertion order stable when several notifications share a
+    // timestamp (they routinely do — a fan-out finishes in one tick).
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM pending_notifications
+        WHERE conversation_id = ?
+        ORDER BY created_at ASC, rowid ASC
+      `)
+      .all(conversationId) as PendingNotificationRow[];
+    return rows.map((row) => this.mapNotification(row));
+  }
+
+  ackNotifications(ids: string[]): void {
+    if (ids.length === 0) return;
+    this.db.transaction(() => {
+      const statement = this.db.prepare('DELETE FROM pending_notifications WHERE id = ?');
+      for (const id of ids) statement.run(id);
+    })();
+  }
+
+  private mapNotification(row: PendingNotificationRow): PendingNotification {
+    return {
+      id: row.id,
+      conversationId: row.conversation_id,
+      kind: row.kind,
+      payload: JSON.parse(row.payload) as Record<string, unknown>,
+      createdAt: row.created_at,
+    };
   }
 
   trySetAutoTitle(id: string, title: string): ConversationSummary | null {
@@ -1858,6 +2392,7 @@ export class SqliteConversationService implements ConversationService {
   recoverInterruptedTurns(): {
     conversationsInterrupted: number;
     terminalsAppended: number;
+    subagentsInterrupted: number;
   } {
     return this.db.transaction(() => {
       const rows = this.db
@@ -1907,13 +2442,33 @@ export class SqliteConversationService implements ConversationService {
           .run({ id: row.id, turnId, lastSeq: terminalSeq, now: timestamp });
         if (changed.changes === 1) conversationsInterrupted++;
       }
-      return { conversationsInterrupted, terminalsAppended };
+      // Design §7.5: nothing is running after a restart, so every child left
+      // non-terminal by the dead process IS interrupted — whether or not it
+      // held a turn lease when the process died (a child can be created, or
+      // parked in `waiting_input`, with no active turn at all). This is what
+      // `listInterruptedSubagents` reads, and therefore what makes the parent
+      // get told; leaving these rows `running` strands the child forever with
+      // no live handle behind it.
+      const sweep = this.db
+        .prepare(`
+          UPDATE conversations
+          SET subagent_status = 'interrupted', revision = revision + 1, updated_at = @now
+          WHERE kind = 'subagent' AND deleted_at IS NULL
+            AND subagent_status IN ('running', 'waiting_input')
+        `)
+        .run({ now: this.now() });
+      return {
+        conversationsInterrupted,
+        terminalsAppended,
+        subagentsInterrupted: sweep.changes,
+      };
     })();
   }
 
   acceptRun(input: AcceptRunInput): AcceptedRun {
     return this.db.transaction((value: AcceptRunInput): AcceptedRun => {
       const current = this.requireConversationRow(value.conversationId);
+      const runOrigin: ConversationMessageOrigin = value.origin ?? 'user';
       this.assertTurnWritable(current);
       if (current.agent_id !== value.agentId) {
         throw new ConversationServiceError(
@@ -2026,10 +2581,10 @@ export class SqliteConversationService implements ConversationService {
       const insertMessage = this.db.prepare(`
         INSERT INTO conversation_messages (
           id, conversation_id, turn_id, run_id, segment_index, ordinal, role, content, status,
-          delivery_kind, delivery_status, created_at, updated_at
+          delivery_kind, delivery_status, origin, created_at, updated_at
         ) VALUES (
           @id, @conversationId, @runId, @runId, 0, @ordinal, @role, @content, @status,
-          'normal', NULL, @now, @now
+          'normal', NULL, @origin, @now, @now
         )
       `);
       insertMessage.run({
@@ -2040,6 +2595,7 @@ export class SqliteConversationService implements ConversationService {
         role: 'user',
         content: JSON.stringify(userContent),
         status: 'accepted',
+        origin: runOrigin,
         now: timestamp,
       });
       insertMessage.run({
@@ -2050,6 +2606,7 @@ export class SqliteConversationService implements ConversationService {
         role: 'assistant',
         content: JSON.stringify({ type: 'assistant', events: [] }),
         status: 'streaming',
+        origin: runOrigin,
         now: timestamp,
       });
 
@@ -3247,7 +3804,32 @@ export class SqliteConversationService implements ConversationService {
         .all()
         .map((row) => (row as { id: string }).id)
         .filter((conversationId) => !excluded.has(conversationId));
-      return { conversationsInterrupted, terminalsAppended, eligibleConversationIds };
+      let subagentsInterrupted = 0;
+      const interruptChild = this.db.prepare(`
+        UPDATE conversations
+        SET subagent_status = 'interrupted', revision = revision + 1, updated_at = @now
+        WHERE id = @id AND kind = 'subagent' AND deleted_at IS NULL
+          AND subagent_status IN ('running', 'waiting_input')
+      `);
+      const childIds = this.db
+        .prepare(`
+          SELECT id FROM conversations
+          WHERE kind = 'subagent' AND deleted_at IS NULL
+            AND subagent_status IN ('running', 'waiting_input')
+          ORDER BY id ASC
+        `)
+        .all()
+        .map((row) => (row as { id: string }).id)
+        .filter((conversationId) => !excluded.has(conversationId));
+      for (const id of childIds) {
+        subagentsInterrupted += interruptChild.run({ id, now: this.now() }).changes;
+      }
+      return {
+        conversationsInterrupted,
+        terminalsAppended,
+        subagentsInterrupted,
+        eligibleConversationIds,
+      };
     })();
   }
 

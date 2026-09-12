@@ -134,9 +134,15 @@ The review is told not to record a few things that look like lessons but age bad
 
 Nothing sensitive should ever be recorded. As with memory, that is an instruction the agent is given, not a filter Dash enforces — so don't paste passwords or keys into chat.
 
+### Seeing it happen
+
+When the review records something, a small chip appears in the conversation where it happened — "Learned: write-files", or "Remembered: …" for a memory. It is part of the conversation, so it is still there when you scroll back or reopen it later. The same chip shows in Mission Control, on iPhone, and on the web.
+
 ### Where it lives
 
 Learned skills sit in the same managed directory as any other agent skill, are labelled **Agent** in Mission Control, and can be read, edited, or deleted there like the rest. Beside each one is a `lessons.json` file holding the individual lessons.
+
+Open a learned skill in Mission Control and you see its lessons one by one, each with how often the agent has judged it helpful or harmful, and a **Retire** button. On iPhone and on the web the list is read-only — you can see what an agent knows and read the lessons, but changing them is done from Mission Control.
 
 Learning only ever writes to skills the agent created itself. A skill you wrote, one installed from the ecosystem, and anything in the bundled library are never modified. When the agent learns something about one of those, it records it in a companion skill that is loaded alongside the original, so the lesson still arrives when it is relevant.
 
@@ -144,7 +150,7 @@ Learning only ever writes to skills the agent created itself. A skill you wrote,
 
 Each lesson carries a count of how often the review judged it right and how often it judged it wrong. A lesson that keeps proving wrong and never proves useful retires itself, and retired lessons are kept in the file rather than deleted, so you can see what happened and put one back by hand.
 
-To correct something immediately, open the skill in Mission Control and edit or delete the lesson. To stop Dash managing a learned skill altogether, delete its `lessons.json` — the skill stays as an ordinary one that learning no longer touches.
+To correct something immediately, open the skill in Mission Control and **Retire** the lesson. Retiring keeps it in the file and stops the agent proposing it again. To stop Dash managing a learned skill altogether, delete its `lessons.json` — the skill stays as an ordinary one that learning no longer touches.
 
 ### Settings
 
@@ -156,7 +162,6 @@ From the agent's **Skills** tab, or via the API:
 | `minToolCalls` | `3` | How much work a turn must involve before it is reviewed. A turn that was just conversation is never reviewed and costs nothing. |
 
 A turn where you **correct** the agent is always reviewed, however little work it involved — "stop doing that", "use X instead", "always do it this way" is the most useful thing a session can teach, and those turns are usually short.
-| `approval` | `false` | When on, nothing is saved until you approve it. |
 
 Each review that runs costs one extra model call, on the agent's own model.
 
@@ -164,22 +169,6 @@ Each review that runs costs one extra model call, on the agent's own model.
 Learning applies to turns that complete normally. A turn that fails or is cancelled is not reviewed — there is no finished outcome to learn from.
 </Note>
 
-### Approving lessons before they are saved
-
-Turn on `approval` when you'd rather see every lesson first. Proposals are then held instead of saved:
-
-```bash
-# List what is waiting
-GET    /agents/{id}/skills/pending
-
-# Save one
-POST   /agents/{id}/skills/pending/{pendingId}/approve
-
-# Discard one
-DELETE /agents/{id}/skills/pending/{pendingId}
-```
-
-A held proposal is applied against your skills as they are **at the moment you approve it**, not as they were when it was proposed — so approving something days later won't undo changes you made in between.
 
 ## Installing skills from the ecosystem
 

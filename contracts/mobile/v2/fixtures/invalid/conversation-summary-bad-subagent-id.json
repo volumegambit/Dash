@@ -1,0 +1,20 @@
+{
+  "id": "sub_01ARZ3NDEKTSV4RRFFQ69G5FAI",
+  "agentId": "agent-01",
+  "agentName": "Mobile Helper",
+  "title": "Invalid child id",
+  "revision": 1,
+  "status": "idle",
+  "activeTurnId": null,
+  "owningIssueId": null,
+  "projectId": null,
+  "lastSeq": 0,
+  "lastMessagePreview": null,
+  "createdAt": "2026-09-06T09:00:00.000Z",
+  "updatedAt": "2026-09-06T09:00:00.000Z",
+  "kind": "subagent",
+  "queuePaused": false,
+  "queueRevision": 0,
+  "pendingFollowUpCount": 0,
+  "v2LastSeq": 0
+}

@@ -9,6 +9,10 @@ import type {
   MobileApiError as MobileApiErrorBody,
   MobileApiErrorCode,
   MobileHealth,
+  MobileSkill,
+  SubagentListResponse,
+  SubagentResumeResponse,
+  SubagentStopResponse,
   WsTicketResponse,
 } from '@dash/mobile-contract';
 import type {
@@ -24,13 +28,31 @@ export interface TokenSource {
 
 /** Thrown for any non-2xx mobile REST response. */
 export class MobileApiError extends Error {
+  readonly apiError?: MobileApiErrorBody;
+  readonly detail?: string;
+
   constructor(
     readonly status: number,
-    readonly code: MobileApiErrorCode | undefined,
-    readonly apiError?: MobileApiErrorBody,
+    readonly code: string | undefined,
+    /**
+     * The gateway's own `error` string, when its structured
+     * `{ code, error, retryable }` envelope carried one. `code` alone is a
+     * machine label; `detail` is the sentence a human can act on — the
+     * sub-agent resume route in particular answers its three refusals
+     * (one-shot type, steer cap, unrebuildable grant) with text that names
+     * which one happened, and a UI that showed only `validation_failed`
+     * would be telling the user nothing.
+     */
+    detailOrApiError?: string | MobileApiErrorBody,
   ) {
     super(code ? `Mobile API error ${status} (${code})` : `Mobile API error ${status}`);
     this.name = 'MobileApiError';
+    if (typeof detailOrApiError === 'string') {
+      this.detail = detailOrApiError;
+    } else if (detailOrApiError) {
+      this.apiError = detailOrApiError;
+      this.detail = detailOrApiError.error;
+    }
   }
 }
 
@@ -46,7 +68,22 @@ interface RequestOptions {
    * revision surfaces as a `revision_conflict` (409) `MobileApiError` rather
    * than silently clobbering a concurrent edit. */
   ifMatch?: number;
+  /** Per-call deadline, passed straight to `fetch`. Set by `resumeSubagent`
+   * only — see the note there. */
+  signal?: AbortSignal;
 }
+
+/**
+ * Deadline for `POST /subagents/:id/resume` (fix round 4, ruling 5).
+ *
+ * Generous against what the route actually does — validate, then
+ * `coordinator.sendToChild`, which either queues a steer or starts a turn:
+ * local work and DB writes, never a wait on a model — and still short enough
+ * that a user whose relay has wedged gets the composer, and their typed text,
+ * back inside the time they would spend wondering. Only this call is bounded;
+ * the client-wide absence of timeouts is pre-existing and out of scope.
+ */
+const RESUME_TIMEOUT_MS = 30_000;
 
 /**
  * Joins `path` onto `baseUrl` without dropping or duplicating the base's own
@@ -178,6 +215,11 @@ export class MobileRestClient {
     return this.request<MobileAgent[]>('GET', '/agents');
   }
 
+  /** Read-only: the mobile namespace exposes no skill mutation. */
+  listAgentSkills(agentId: string): Promise<MobileSkill[]> {
+    return this.request<MobileSkill[]>('GET', `/agents/${encodeURIComponent(agentId)}/skills`);
+  }
+
   listConversations(cursor?: string): Promise<ConversationPage> {
     return this.request<ConversationPage>('GET', '/conversations', { query: { cursor } });
   }
@@ -257,12 +299,101 @@ export class MobileRestClient {
     );
   }
 
+  /**
+   * `GET /conversations/:id/subagents` — the conversation's sub-agent
+   * children, as the tasks panel (design §8.4) lists them.
+   *
+   * The gateway serves this from the child conversation ROWS rather than from
+   * the coordinator's in-memory registry, which is why it is the panel's
+   * model rather than a mere seed for the transcript fold: the rows are
+   * written on every status transition and they are the only source that
+   * survives a gateway restart. It is also the only place a BACKGROUND child
+   * that finished after its spawning turn ended can be seen at all — nothing
+   * about that lands in the parent's own event stream.
+   *
+   * A trimmed row per child (`SubagentListEntry`): no `prompt`, `model`,
+   * `isolation` or `workspace`. Anything that needs those reads the child
+   * conversation itself with `getConversation`.
+   */
+  listSubagents(conversationId: string): Promise<SubagentListResponse> {
+    return this.request<SubagentListResponse>(
+      'GET',
+      `/conversations/${encodeURIComponent(conversationId)}/subagents`,
+    );
+  }
+
+  /**
+   * `POST /subagents/:id/stop` — cancels a child and, depth-first, every
+   * descendant it still holds a handle for.
+   *
+   * No body. A child that is ALREADY terminal is a 409 rather than a silent
+   * success, deliberately, so a client that raced the child's own finish
+   * learns which of the two won — the caller should re-read the list rather
+   * than treat it as a failure.
+   *
+   * The response's `status` is always terminal, and it is the authoritative
+   * one: the route falls back to writing `cancelled` itself when the cascade
+   * reached a child this gateway process no longer holds (after a restart),
+   * so it is not always the status the caller would have guessed.
+   */
+  stopSubagent(subagentId: string): Promise<SubagentStopResponse> {
+    return this.request<SubagentStopResponse>(
+      'POST',
+      `/subagents/${encodeURIComponent(subagentId)}/stop`,
+    );
+  }
+
+  /**
+   * `POST /subagents/:id/resume` — sends a user turn INTO a child (design
+   * §7.7, §8.3). Deliberately not a WS `message` frame addressed to the
+   * child's conversation: only this route reaches
+   * `coordinator.sendToChild` → `ChildHandle.send`, which is the one thing
+   * that resolves a child blocked on `ask_orchestrator`, and the one place
+   * the gateway enforces the one-shot refusal, the steer cap and the grant
+   * rebuild ("one narrowing path, so an HTTP resume can never widen a child
+   * past what the tool would have granted it" —
+   * `apps/gateway/src/subagent-management.ts`). A `message` frame reaches
+   * `hub.start` instead, which either rejects against the child's turn lease
+   * or opens a second, parallel turn while the question stays blocked.
+   *
+   * All three coordinator refusals come back as 409 `validation_failed` with
+   * the reason in `MobileApiError.detail`.
+   *
+   * `requestId` is the caller's correlation id: the SERVER picks the turn id
+   * for a resume, so this is the only thing that comes back on the resulting
+   * `accepted` frame to say which of the caller's in-flight follow-ups that
+   * turn is. Optional — an older gateway ignores it and echoes nothing, and a
+   * caller that gets no echo must not guess.
+   */
+  resumeSubagent(
+    subagentId: string,
+    message: string,
+    requestId?: string,
+  ): Promise<SubagentResumeResponse> {
+    return this.request<SubagentResumeResponse>(
+      'POST',
+      `/subagents/${encodeURIComponent(subagentId)}/resume`,
+      // Omitted rather than sent as `undefined`: the schema is
+      // `additionalProperties: false` and JSON drops the key either way, but
+      // a caller reading the body should see the two cases apart.
+      {
+        body: requestId === undefined ? { message } : { message, requestId },
+        // A hung POST here is stickier than elsewhere: `sending: true` lives in
+        // the store, so it survives the row being collapsed and remounted, and
+        // only a conversation switch would clear it. Aborting turns the hang
+        // into an ordinary rejection, which the composer already renders and
+        // which disarms it.
+        signal: AbortSignal.timeout(RESUME_TIMEOUT_MS),
+      },
+    );
+  }
+
   createWsTicket(): Promise<WsTicketResponse> {
     return this.request<WsTicketResponse>('POST', '/ws-ticket');
   }
 
   private async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
-    const { auth = true, body, query, ifMatch } = options;
+    const { auth = true, body, query, ifMatch, signal } = options;
     const headers: Record<string, string> = {};
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (ifMatch !== undefined) headers['If-Match'] = `"${ifMatch}"`;
@@ -277,6 +408,7 @@ export class MobileRestClient {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
+      ...(signal ? { signal } : {}),
     });
 
     if (!response.ok) {

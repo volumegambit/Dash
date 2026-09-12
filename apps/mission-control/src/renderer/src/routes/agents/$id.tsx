@@ -395,81 +395,69 @@ function OverviewTab({
   agent: GatewayAgent;
   connectedChannels: GatewayChannel[];
 }): JSX.Element {
+  // Agent-detail refinement (2026-09-07). This used to be a fixed 360px column
+  // of cards beside a "Recent Activity" card that nothing ever wrote to — it
+  // read "No activity recorded." for every agent, forever, and took the whole
+  // right half of the window (finding 14). A header is a promise that content
+  // follows, so the placeholder is gone and the real cards share the width in
+  // a grid instead. The Agent Info card also printed the raw `status` enum
+  // (`registered`) next to a header badge that folds `registered` into
+  // "active", so the page disagreed with itself; the badge is now the one
+  // source of status (finding 13).
   return (
-    <div className="flex gap-6">
-      {/* Left column */}
-      <div className="w-[360px] flex flex-col gap-5 shrink-0">
-        {/* Agent Info card */}
-        <div className="bg-card-bg border border-border overflow-hidden">
-          <div className="px-5 py-3 border-b border-border">
-            <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
-              Agent Info
-            </span>
-          </div>
-          <div className="p-5 flex flex-col gap-3">
-            <div className="flex justify-between text-sm">
-              <span className="text-muted">Model</span>
-              <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
-                {agent.config.model}
-              </span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted">Registered</span>
-              <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
-                {new Date(agent.registeredAt).toLocaleDateString('en-GB', {
-                  day: 'numeric',
-                  month: 'short',
-                  year: 'numeric',
-                })}
-              </span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted">Status</span>
-              <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
-                {agent.status}
-              </span>
-            </div>
-          </div>
+    <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+      {/* Agent Info card */}
+      <div className="bg-card-bg border border-border overflow-hidden">
+        {/* `flex items-center` on every card header so the three headers share
+            one height; the Tools card's header is a flex row for its count. */}
+        <div className="px-5 py-3 border-b border-border flex items-center">
+          <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+            Agent Info
+          </span>
         </div>
-
-        {/* Tools card */}
-        <ToolsCard tools={agent.config.tools ?? []} />
-
-        {/* Connected Channels card */}
-        <div className="bg-card-bg border border-border overflow-hidden">
-          <div className="px-5 py-3 border-b border-border">
-            <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
-              Connected Channels
+        <div className="p-5 flex flex-col gap-3">
+          <div className="flex justify-between gap-4 text-sm">
+            <span className="text-muted">Model</span>
+            <span className="text-foreground font-[family-name:var(--font-mono)] text-xs text-right break-all">
+              {agent.config.model}
             </span>
           </div>
-          <div className="p-5 flex flex-col gap-3">
-            {connectedChannels.length === 0 ? (
-              <p className="text-sm text-muted">No channels connected</p>
-            ) : (
-              connectedChannels.map((ch) => (
-                <div key={ch.name} className="flex justify-between text-sm">
-                  <span className="text-foreground">{ch.name}</span>
-                  <span className="text-foreground font-[family-name:var(--font-mono)] text-xs capitalize">
-                    {ch.adapter}
-                  </span>
-                </div>
-              ))
-            )}
+          <div className="flex justify-between gap-4 text-sm">
+            <span className="text-muted">Registered</span>
+            <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
+              {new Date(agent.registeredAt).toLocaleDateString('en-GB', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              })}
+            </span>
           </div>
         </div>
       </div>
 
-      {/* Right column */}
-      <div className="flex-1">
-        <div className="bg-card-bg border border-border overflow-hidden">
-          <div className="px-5 py-3 border-b border-border">
-            <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
-              Recent Activity
-            </span>
-          </div>
-          <div className="flex flex-col gap-0">
-            <div className="px-5 py-3 text-sm text-muted">No activity recorded.</div>
-          </div>
+      {/* Tools card */}
+      <ToolsCard tools={agent.config.tools ?? []} />
+
+      {/* Connected Channels card */}
+      <div className="bg-card-bg border border-border overflow-hidden">
+        <div className="px-5 py-3 border-b border-border flex items-center">
+          <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+            Connected Channels
+          </span>
+        </div>
+        <div className="p-5 flex flex-col gap-3">
+          {connectedChannels.length === 0 ? (
+            <p className="text-sm text-muted">No channels connected</p>
+          ) : (
+            connectedChannels.map((ch) => (
+              <div key={ch.name} className="flex justify-between text-sm">
+                <span className="text-foreground">{ch.name}</span>
+                <span className="text-foreground font-[family-name:var(--font-mono)] text-xs capitalize">
+                  {ch.adapter}
+                </span>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>

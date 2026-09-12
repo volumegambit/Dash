@@ -78,7 +78,11 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(app.buttons["Show thinking"].exists)
     XCTAssertTrue(app.descendants(matching: .any)["chat.question.ui-question"].exists)
     XCTAssertTrue(app.descendants(matching: .any)["chat.tool.ui-tool"].exists)
-    XCTAssertTrue(app.descendants(matching: .any)["chat.worker.ui-worker"].exists)
+    // One card for a child that emits BOTH the legacy `worker_*` mirrors and
+    // the canonical `subagent_*` events — they share an id, so they must never
+    // produce two rows (task D4, ruling 4).
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.subagent.ui-subagent").count, 1)
     XCTAssertTrue(message.exists, "Partial response must remain mounted while reconnecting")
 
     let final = element("chat.final.response", in: app, timeout: 8)
@@ -86,6 +90,364 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertEqual(
       app.descendants(matching: .any).matching(identifier: "chat.final.response").count, 1)
     XCTAssertEqual(message.label, "Assistant message, completed")
+  }
+
+  /// Task D5 (sub-agents design 8.3): expanding a row fetches the child's own
+  /// transcript over REST and renders it through the SAME components as the
+  /// parent's, inside the nesting rail.
+  ///
+  /// Two things this pins that nothing else can:
+  ///
+  /// 1. The nested tool card answers to `chat.subagent.ui-subagent.tool.ui-tool`
+  ///    while the PARENT's own card answers to `chat.tool.ui-tool`. Both
+  ///    exist at once, on purpose — the scripted child reuses the parent's
+  ///    `tool_use` id, because a `tool_use` id is only unique within its own
+  ///    conversation. Without §8.6's namespacing one of these queries would
+  ///    match two elements.
+  /// 2. The orchestrator's brief renders as §8.5's muted "from orchestrator"
+  ///    row, and offers NEITHER Retry nor Edit & Resend. That is the security
+  ///    half of D4's ruling 1: without the row, narrowing `isNotificationRow`
+  ///    would have given the orchestrator's words a user bubble with a context
+  ///    menu that resends them as the user's own.
+  func testExpandingASubagentRowShowsItsNestedTranscript() {
+    let app = launch(scenario: "streaming-reconnect")
+    openFirstConversation(in: app)
+
+    // §8.5's notification row — the brief's Step 1 asks for exactly this and
+    // the first round shipped without it. The gateway started this turn to
+    // wake the orchestrator with a background child's result, so it renders
+    // SUMMARIZED (the body is a machine-written envelope, unlike an
+    // orchestrator row, which keeps its text) and carries no user bubble:
+    // Retry/Edit would resend `[SYSTEM NOTIFICATION - NOT USER INPUT]` as the
+    // user's own words.
+    let notification = element("chat.notification.ui-notification", in: app)
+    XCTAssertTrue(notification.exists)
+    XCTAssertEqual(notification.label, "researcher finished the launch checklist review")
+    XCTAssertFalse(
+      app.descendants(matching: .any)["chat.message.ui-notification"].exists,
+      "A notification row must never render as a user bubble with Retry/Edit"
+    )
+
+    replaceText(
+      in: element("chat.composer", in: app),
+      with: "Prepare the launch plan",
+      clearExisting: false
+    )
+    let send = element("chat.send", in: app)
+    waitUntilEnabled(send)
+    send.tap()
+
+    let row = element("chat.subagent.ui-subagent", in: app)
+    XCTAssertTrue(row.exists)
+    // Collapsed: no nested transcript, no body composer.
+    XCTAssertFalse(
+      app.descendants(matching: .any)["chat.subagent.ui-subagent.tool.ui-tool"].exists)
+    XCTAssertFalse(app.descendants(matching: .any)["chat.subagent.ui-subagent.composer"].exists)
+
+    element("chat.subagent.ui-subagent.header", in: app).tap()
+
+    let nestedTool = element("chat.subagent.ui-subagent.tool.ui-tool", in: app)
+    XCTAssertTrue(nestedTool.exists)
+    XCTAssertEqual(nestedTool.label, "Tool Search, Tool succeeded")
+    // The parent's own card is still there under its unnamespaced id, and
+    // each id matches exactly one element.
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.tool.ui-tool").count, 1)
+    XCTAssertEqual(
+      app.descendants(matching: .any)
+        .matching(identifier: "chat.subagent.ui-subagent.tool.ui-tool").count,
+      1
+    )
+
+    // The orchestrator row keeps its text (that text is the instruction the
+    // child is working from) and is not a resendable user bubble.
+    let orchestrator = element("chat.orchestrator.ui-subagent-brief", in: app)
+    XCTAssertTrue(orchestrator.label.contains("from orchestrator"))
+    XCTAssertTrue(orchestrator.label.contains("Check whether the launch checklist is complete"))
+    XCTAssertFalse(
+      app.descendants(matching: .any)["chat.message.ui-subagent-brief"].exists,
+      "A parent-authored row must never render as a user bubble with Retry/Edit"
+    )
+
+    // The body composer sends through `POST /subagents/:id/resume` (design
+    // 8.3) and the optimistic row it writes must render as an ORCHESTRATOR
+    // row carrying the user's own sentence — not a user bubble, and not the
+    // blank "from orchestrator" line an unreconciled row produces.
+    // Same reason as the parallel-group test: the body composer sits below the
+    // keyboard the parent composer raised, in a region the pinned transcript
+    // will not scroll past.
+    XCTAssertTrue(dismissKeyboard(in: app), "Expected the keyboard to be dismissible")
+    let composer = element("chat.subagent.ui-subagent.composer", in: app)
+    replaceText(in: composer, with: "keep going", clearExisting: false)
+    element("chat.subagent.ui-subagent.composer.send", in: app).tap()
+    let optimistic = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "label CONTAINS[c] %@", "keep going"))
+      .firstMatch
+    XCTAssertTrue(optimistic.waitForExistence(timeout: 5))
+    XCTAssertTrue(optimistic.label.contains("from orchestrator"))
+
+    // The unsent draft survives a collapse (web's `body:<childId>` keying).
+    // `@State` in the composer could not do this — collapsing unmounts the
+    // view — and `ChatState` would re-render the transcript per keystroke.
+    replaceText(
+      in: element("chat.subagent.ui-subagent.composer", in: app),
+      with: "half a sentence I have not sent",
+      clearExisting: false
+    )
+    // D6 hardening, and it is not cosmetic: a second scripted child made this
+    // transcript taller, and the three header taps below then depended on the
+    // row still being on screen and on the disclosure animation having
+    // finished before `.exists` was sampled. It passed on one run of the suite
+    // and failed on the next, at the first `XCTAssertFalse`. Scrolling the
+    // header into reach before each tap and WAITING for the absence rather
+    // than sampling it makes the sequence deterministic; nothing about what is
+    // asserted changed.
+    scrollUntilHittable(element("chat.subagent.ui-subagent.header", in: app), in: app).tap()
+    XCTAssertTrue(waitForNoElement("chat.subagent.ui-subagent.composer", in: app))
+    scrollUntilHittable(element("chat.subagent.ui-subagent.header", in: app), in: app).tap()
+    let reopened = element("chat.subagent.ui-subagent.composer", in: app)
+    XCTAssertEqual(reopened.value as? String, "half a sentence I have not sent")
+
+    scrollUntilHittable(element("chat.subagent.ui-subagent.header", in: app), in: app).tap()
+    XCTAssertTrue(waitForNoElement("chat.subagent.ui-subagent.tool.ui-tool", in: app))
+  }
+
+  /// Task D6 (sub-agents design §8.4): the tasks sheet, the toolbar badge and
+  /// the pinned strip, and the stop that drives all three.
+  ///
+  /// All of it reads `GET /conversations/:id/subagents` and NOTHING from the
+  /// transcript fold — which is why it works before a turn has ever been sent.
+  /// Both scripted children are `background: true`, and a background child's
+  /// finish never reaches the parent's event stream at all, so the list is the
+  /// only surface that can say what is still running.
+  ///
+  /// The identifier layout is load-bearing and has cost this branch time twice:
+  /// a container's accessibility identifier ERASES its children's, so the row's
+  /// tap target and its Stop button are siblings with their own identifiers.
+  /// Tapping Stop must not fire the row, which would dismiss the sheet — that
+  /// is what the "sheet is still up" assertion after each stop is for.
+  ///
+  /// The tail of the test is fix round 1's Critical: a resume the gateway
+  /// REFUSES has to say so on the row that sent it. `chat.tasks.resume.<id>`
+  /// and `chat.tasks.composer.<id>` are queried with a `count == 1` assertion
+  /// here for the same reason the other five are — they were added beyond D6's
+  /// brief, no test rendered them, and that is exactly why the missing error
+  /// surface behind them shipped.
+  func testTasksSheetListsLiveChildrenAndStoppingThemCountsTheBadgeDown() {
+    let app = launch(scenario: "streaming-reconnect")
+    openFirstConversation(in: app)
+
+    // Through `app.buttons`, not `element(_:in:)`, and for a reason worth
+    // stating: a SwiftUI `ToolbarItem` publishes its content as BOTH an `Other`
+    // container and a `Button` carrying the same identifier at the same frame,
+    // so a `descendants(matching: .any)` lookup matches two and the tap fails
+    // with "Multiple matching elements found". Measured from the tree, and
+    // `chat.options` has behaved this way since it was written — which is why
+    // the three existing toolbar tests already reach it this way. As a BUTTON
+    // the identifier resolves to exactly one element, which is the R6 property.
+    let tasks = app.buttons.matching(identifier: "chat.tasks").firstMatch
+    XCTAssertTrue(tasks.waitForExistence(timeout: 8))
+    XCTAssertEqual(app.buttons.matching(identifier: "chat.tasks").count, 1)
+    XCTAssertEqual(tasks.value as? String, "2 running")
+    XCTAssertEqual(
+      element("chat.tasks.strip", in: app).label,
+      "2 agents · 1 running · 1 waiting"
+    )
+    // The strip is NOT in a toolbar, so it resolves to one element under the
+    // ordinary lookup — the duplication above is the toolbar's, not this
+    // feature's.
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.tasks.strip").count, 1)
+
+    tasks.tap()
+    XCTAssertTrue(element("chat.tasks.sheet", in: app).exists)
+    for identifier in [
+      "chat.tasks.sheet",
+      "chat.tasks.row.ui-subagent",
+      "chat.tasks.row.ui-subagent-2",
+      "chat.tasks.stop.ui-subagent",
+      "chat.tasks.stop.ui-subagent-2",
+    ] {
+      XCTAssertEqual(
+        app.descendants(matching: .any).matching(identifier: identifier).count,
+        1,
+        "\(identifier) must resolve to exactly one element"
+      )
+    }
+    XCTAssertEqual(
+      element("chat.tasks.row.ui-subagent", in: app).label,
+      "Agent researcher, Running"
+    )
+    // The wire's `waiting_input` reads as `waiting` here exactly as it does in
+    // the transcript row, because both go through `SubagentCardStatus`.
+    XCTAssertEqual(
+      element("chat.tasks.row.ui-subagent-2", in: app).label,
+      "Agent reviewer, Waiting for input"
+    )
+
+    element("chat.tasks.stop.ui-subagent", in: app).tap()
+    XCTAssertTrue(
+      app.descendants(matching: .any)["chat.tasks.sheet"].exists,
+      "Stop must not also fire the row, which would dismiss the sheet"
+    )
+    // The route's own status is applied before the re-read, and Stop stops
+    // being offered for a child that has finished — the route 409s one.
+    XCTAssertTrue(
+      waitForLabel(
+        element("chat.tasks.row.ui-subagent", in: app),
+        "Agent researcher, Cancelled"
+      )
+    )
+    XCTAssertFalse(app.descendants(matching: .any)["chat.tasks.stop.ui-subagent"].exists)
+
+    element("chat.tasks.stop.ui-subagent-2", in: app).tap()
+    XCTAssertTrue(
+      waitForLabel(
+        element("chat.tasks.row.ui-subagent-2", in: app),
+        "Agent reviewer, Cancelled"
+      )
+    )
+
+    // §8.4's resume, and the defect fix round 1 exists for. `canResume` is
+    // `oneShot == false || status == .waiting`, so Resume is offered on the
+    // child that was just STOPPED — and the gateway refuses a resume it cannot
+    // rebuild a grant for with a 409 carrying actionable prose. That prose used
+    // to reach `ChatState.subagentUI[id].lastError`, whose only render site is
+    // the transcript CARD; a background child that finished after its spawning
+    // turn has no card, so the refusal was rendered by no view at all: the
+    // spinner stopped, the sentence stayed in the field, and nothing said why.
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.tasks.resume.ui-subagent").count,
+      1,
+      "chat.tasks.resume.ui-subagent must resolve to exactly one element"
+    )
+    element("chat.tasks.resume.ui-subagent", in: app).tap()
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.tasks.composer.ui-subagent")
+        .count,
+      1,
+      "chat.tasks.composer.ui-subagent must resolve to exactly one element"
+    )
+    replaceText(
+      in: element("chat.tasks.composer.ui-subagent", in: app),
+      with: "One more pass",
+      clearExisting: false
+    )
+    element("chat.tasks.composer.ui-subagent.send", in: app).tap()
+    XCTAssertTrue(
+      waitForLabel(
+        element("chat.tasks.error.ui-subagent", in: app),
+        #"Agent "scout" cannot be resumed: its grant cannot be rebuilt."#
+      ),
+      "A refused resume must show the gateway's own reason on the row that sent it"
+    )
+    // The refusal did not clear the sentence: it is still there to edit, which
+    // is the whole reason `SubagentComposer` clears only on acceptance.
+    XCTAssertEqual(
+      element("chat.tasks.composer.ui-subagent", in: app).value as? String,
+      "One more pass"
+    )
+
+    // Also a `ToolbarItem`, so also two matches under a bare identifier lookup
+    // — see the note on `chat.tasks` above.
+    app.buttons.matching(identifier: "chat.tasks.done").firstMatch.tap()
+    XCTAssertTrue(
+      waitForValue(app.buttons.matching(identifier: "chat.tasks").firstMatch, "No agents running"),
+      "The badge must count down from what the server says, not from the fold"
+    )
+    XCTAssertFalse(
+      app.descendants(matching: .any)["chat.tasks.strip"].exists,
+      "The strip is pinned only while a child is live"
+    )
+  }
+
+  /// Task D6 (§8.2, §8.1): two children spawned back to back render inside ONE
+  /// parallel group with its summary line, and a child parked on a question
+  /// renders its inline reply composer.
+  ///
+  /// Both are firsts. Every earlier sub-agent UI test ran against a cluster of
+  /// one, where the group header does not exist at all; and D5 closed with its
+  /// reply composer never having been RENDERED by any test — only what it sends
+  /// was pinned, at feature level. The tap on a tasks row is the third thing
+  /// here: §8.4's "clicking a row expands the row in the transcript".
+  func testAParallelGroupRendersItsChromeAndAWaitingChildRepliesFromTheRow() {
+    let app = launch(scenario: "streaming-reconnect")
+    openFirstConversation(in: app)
+
+    replaceText(
+      in: element("chat.composer", in: app),
+      with: "Prepare the launch plan",
+      clearExisting: false
+    )
+    let send = element("chat.send", in: app)
+    waitUntilEnabled(send)
+    send.tap()
+
+    // §8.2's group chrome. The identifier rides the header BUTTON, not a
+    // container around the rows: wrapping them in an identified `.contain`
+    // container made `chat.subagent.<id>` stop existing when D5 tried it.
+    let group = element("chat.subagentGroup.ui-subagent", in: app)
+    XCTAssertEqual(group.label, "2 agents · 1 running · 1 waiting")
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.subagent.ui-subagent").count, 1)
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.subagent.ui-subagent-2").count, 1)
+
+    // §8.1's second line and its inline reply, on a row that is still
+    // COLLAPSED — the affordance does not wait for an expansion.
+    XCTAssertTrue(app.staticTexts["Should the rollback step come first?"].exists)
+    XCTAssertFalse(
+      app.descendants(matching: .any)["chat.subagent.ui-subagent-2.composer"].exists,
+      "The body composer belongs to the expanded body; only the reply is inline"
+    )
+    // The composer still has focus from the send above, and the keyboard covers
+    // the bottom ~430pt of an 874pt transcript that `main`'s expanded tool
+    // bodies made taller — a region the pinned stream will not let a swipe
+    // reach. Retire it first; the row is then plainly on screen.
+    XCTAssertTrue(dismissKeyboard(in: app), "Expected the keyboard to be dismissible")
+    let reply = scrollUntilHittable(
+      element("chat.subagent.ui-subagent-2.reply", in: app),
+      in: app
+    )
+    replaceText(in: reply, with: "Yes, roll back first", clearExisting: false)
+    element("chat.subagent.ui-subagent-2.reply.send", in: app).tap()
+    // Cleared only because the scripted gateway ACCEPTED it. A refusal keeps
+    // the sentence where the user can edit it, which is the whole point of not
+    // clearing on submit.
+    XCTAssertTrue(
+      waitForClearedValue(element("chat.subagent.ui-subagent-2.reply", in: app), "Yes, roll back first")
+    )
+
+    // §8.4: a tap on a sheet row opens that child's row in the transcript, and
+    // dismisses the sheet on the way.
+    app.buttons.matching(identifier: "chat.tasks").firstMatch.tap()
+
+    // R2, closed in fix round 1: the transcript ROW follows the server. Stop
+    // this child from the sheet and the fold learns NOTHING — a background
+    // child's finish reaches no event this conversation's stream carries — so
+    // before the row read `restSubagentStatus` it kept saying `Running` for the
+    // rest of the session while the sheet, the strip and the badge all said
+    // otherwise. That is D5's filed finding, rendered.
+    element("chat.tasks.stop.ui-subagent", in: app).tap()
+    XCTAssertTrue(
+      waitForLabel(
+        element("chat.tasks.row.ui-subagent", in: app),
+        "Agent researcher, Cancelled"
+      )
+    )
+
+    element("chat.tasks.row.ui-subagent", in: app).tap()
+    XCTAssertTrue(
+      element("chat.subagent.ui-subagent.tool.ui-tool", in: app).exists,
+      "Revealing a row from the sheet must expand it in the transcript"
+    )
+    XCTAssertTrue(
+      waitForLabel(
+        element("chat.subagent.ui-subagent", in: app),
+        "Agent researcher, Cancelled"
+      ),
+      "The transcript row must read the server's status, not the fold's Running"
+    )
   }
 
   /// Audit #4 / Task 3: minimal UI smoke test for the jump-to-bottom
@@ -603,6 +965,123 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(element("chat.transcript", in: app).exists)
   }
 
+  /// iPad goal Phase C: the ONE assertion that observes what
+  /// `UIApplication.shared.supportsMultipleScenes` actually reports on each
+  /// device, rather than assuming it. This suite runs on BOTH the iPhone and
+  /// the iPad, and neither branch skips: the "Rename" item proves the menu
+  /// really opened, and "Open in New Window" is then required to be present
+  /// exactly on the wide (iPad) layout and absent on the narrow (iPhone)
+  /// one. An affordance offered where `openWindow` could do nothing would
+  /// fail this on iPhone; a missing affordance on iPad would fail it there.
+  func testOpenInNewWindowIsOfferedOnlyWhereASecondSceneCanExist() {
+    let app = launch(scenario: "paired-online")
+    let row = element("conversation.row.shared-plan", in: app)
+    XCTAssertTrue(row.waitForExistence(timeout: 5))
+    row.press(forDuration: 1.0)
+
+    XCTAssertTrue(
+      app.buttons["Rename"].waitForExistence(timeout: 3),
+      "Expected the conversation row's context menu to open. UI: \(app.debugDescription)"
+    )
+    let supportsMultipleScenes = app.windows.firstMatch.frame.width >= 700
+    XCTAssertEqual(
+      app.buttons["Open in New Window"].exists,
+      supportsMultipleScenes,
+      """
+      "Open in New Window" must appear exactly where a second scene can \
+      exist. Window width \(app.windows.firstMatch.frame.width).
+      """
+    )
+  }
+
+  /// Review fix round 1 (Task 10, "also required"): `.draggable` landed on
+  /// the SAME modifier chain as this row's two `.swipeActions` (leading
+  /// Rename, trailing Delete), and nothing exercised either gesture before
+  /// this task. If the drag interaction claimed the touch first, a swipe
+  /// would lift-and-snap-back like a failed drag instead of revealing its
+  /// action buttons. Runs on both iPhone and iPad — the drag is gated on
+  /// `supportsMultipleScenes` but the swipe actions must survive its mere
+  /// presence in the chain on iPad regardless.
+  func testConversationRowSwipeActionsStillWorkWithDraggableAttached() {
+    let app = launch(scenario: "paired-online")
+    revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
+    let row = element("conversation.row.shared-plan", in: app)
+
+    // Trailing edge: swiping the row left reveals "Delete".
+    row.swipeLeft()
+    let deleteAction = app.buttons["Delete"].firstMatch
+    XCTAssertTrue(
+      deleteAction.waitForExistence(timeout: 3),
+      "Expected the trailing swipe action to reveal Delete. UI: \(app.debugDescription)"
+    )
+    deleteAction.tap()
+    let deleteConfirmation = confirmationDialog(titled: "Delete this conversation?", in: app)
+    XCTAssertTrue(
+      waitUntilHittable(deleteConfirmation.buttons["Delete"].firstMatch, timeout: 5),
+      "Expected the delete confirmation's destructive action to be available"
+    )
+    dismissConfirmation(deleteConfirmation, in: app)
+
+    // Leading edge: swiping the row right reveals "Rename".
+    XCTAssertTrue(
+      waitUntilHittable(row, timeout: 3),
+      "Expected the conversation row to become actionable again after dismissing the confirmation"
+    )
+    row.swipeRight()
+    let renameAction = app.buttons["Rename"].firstMatch
+    XCTAssertTrue(
+      renameAction.waitForExistence(timeout: 3),
+      "Expected the leading swipe action to reveal Rename. UI: \(app.debugDescription)"
+    )
+    renameAction.tap()
+    let renameAlert = app.alerts["Rename conversation"]
+    XCTAssertTrue(renameAlert.waitForExistence(timeout: 3))
+    XCTAssertEqual(renameAlert.textFields.firstMatch.value as? String, "Shared launch plan")
+    let cancelRename = renameAlert.buttons["Cancel"].firstMatch
+    XCTAssertTrue(waitUntilHittable(cancelRename, timeout: 3))
+    cancelRename.tap()
+    XCTAssertTrue(renameAlert.waitForNonExistence(timeout: 3))
+  }
+
+  /// Review fix round 1 (Task 8, Important 1): `.draggable` and
+  /// `.contextMenu` on a user bubble used to be applied to DIFFERENT views —
+  /// `.draggable` inside `UserMessageView`'s own body, `.contextMenu` on the
+  /// ancestor `ChatMessageView.body`'s `.user` case wraps it in. A real
+  /// long-press is the only way `UIContextMenuInteraction` ever fires, and
+  /// nothing in this suite exercised that gesture on a message bubble
+  /// before this test — the only other `press(forDuration:)` coverage is
+  /// `testCachedOfflineHistoryAllowsDraftButBlocksRemoteMutations`'s
+  /// conversation-ROW long-press above, which is a different view entirely.
+  /// This would have FAILED had the inner drag interaction claimed the
+  /// touch before the outer context menu got it.
+  func testLongPressingAUserBubbleShowsItsContextMenu() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    // `cached-user` (text "Saved from your Mac") is the fixture's first
+    // user bubble — non-empty text, non-failed turn, so Copy/Share/Edit &
+    // Resend should all be offered and Retry should not. It also carries an
+    // attached image below the text (needed for the unrelated image-drag
+    // test above), so the press is aimed at a normalized offset over the
+    // TEXT row near the top of the bubble, not the element's raw center —
+    // the center of this particular bubble's frame falls over the image
+    // thumbnail, which has its own `.draggable`/tap handling and would
+    // confound this test with a second, unrelated interaction.
+    let bubble = element("chat.message.cached-user", in: app)
+    bubble.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)).press(forDuration: 1)
+
+    XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 3))
+    XCTAssertTrue(app.buttons["Share"].exists)
+    XCTAssertTrue(app.buttons["Edit & Resend"].exists)
+    XCTAssertFalse(app.buttons["Retry"].exists)
+
+    app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)).tap()
+    XCTAssertTrue(
+      waitUntilHittable(bubble, timeout: 3),
+      "Expected the user bubble to become actionable again after dismissing its context menu"
+    )
+  }
+
   /// Phase 4 Task 4 (audit #19): an attached image is no longer a dead
   /// 88pt thumbnail — tapping it opens the full-screen viewer with Share
   /// and Save, and Close returns to the transcript.
@@ -610,7 +1089,7 @@ final class ConversationUITests: DashUITestCase {
     let app = launch(scenario: "paired-online")
     openFirstConversation(in: app)
 
-    let thumbnail = element("chat.image.0", in: app)
+    let thumbnail = element("chat.message.image.0", in: app)
     XCTAssertTrue(waitUntilHittable(thumbnail, timeout: 5))
     thumbnail.tap()
 
@@ -732,8 +1211,7 @@ final class ConversationUITests: DashUITestCase {
     // the identifier (which would fail its own existence assertion first).
     let row = element("conversation.row.shared-plan", in: app)
 
-    let searchField = app.searchFields.firstMatch
-    XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+    let searchField = revealSearchField(in: app)
     searchField.tap()
     searchField.typeText("nonexistent conversation title")
 
@@ -773,8 +1251,7 @@ final class ConversationUITests: DashUITestCase {
     revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
     let row = element("conversation.row.shared-plan", in: app)
 
-    let searchField = app.searchFields.firstMatch
-    XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+    let searchField = revealSearchField(in: app)
     searchField.tap()
     searchField.typeText("nonexistent conversation title")
     XCTAssertTrue(row.waitForNonExistence(timeout: 5))

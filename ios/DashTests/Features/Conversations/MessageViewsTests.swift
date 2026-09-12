@@ -128,6 +128,136 @@ struct MessageEntranceSignatureTests {
   }
 }
 
+/// Task C7 (sub-agents design 8.5): the user-side row of a turn the GATEWAY
+/// started renders as a compact system row, not a user bubble. Same
+/// ViewInspector-free limitation as the suite above, so this pins the two pure
+/// inputs `ChatMessageView` branches on: which rows are notification rows, and
+/// what a notification row reads.
+@Suite("Notification rows (task C7, sub-agents design 8.5)")
+struct NotificationRowTests {
+  @Test(
+    """
+    each non-user origin gets its OWN row, and both count as system-authored     (task D5 narrows C7's `origin != .user`)
+    """
+  )
+  func originDrivesTheRow() {
+    var notification = userMessage(id: "n1", turnID: "t1", text: "")
+    notification.origin = .notification
+    var fromParent = userMessage(id: "p1", turnID: "t1", text: "")
+    fromParent.origin = .parent
+    var typed = userMessage(id: "u1", turnID: "t1", text: "Hi")
+    typed.origin = .user
+
+    #expect(isNotificationRow(notification))
+    #expect(isOrchestratorRow(notification) == false)
+
+    // CHANGED IN D5, deliberately. C7's predicate was `origin != .user`, so a
+    // `.parent` row collapsed to the generic bell label and threw its text
+    // away. That was tolerable only while `.parent` was unreachable — D5's
+    // `loadSubagentTranscript` makes child transcripts openable, and the text
+    // it was discarding is the instruction the child is working from.
+    #expect(isNotificationRow(fromParent) == false)
+    #expect(isOrchestratorRow(fromParent))
+
+    #expect(isNotificationRow(typed) == false)
+    #expect(isOrchestratorRow(typed) == false)
+
+    // Both are still system-authored, which is what keeps Retry/Edit away.
+    #expect(isSystemAuthoredRow(notification))
+    #expect(isSystemAuthoredRow(fromParent))
+    #expect(isSystemAuthoredRow(typed) == false)
+
+    // Absent origin (an older gateway, or a replayed turn) stays a bubble.
+    #expect(isNotificationRow(userMessage(id: "u2", turnID: "t1", text: "Hi")) == false)
+    #expect(isOrchestratorRow(userMessage(id: "u2", turnID: "t1", text: "Hi")) == false)
+    #expect(isSystemAuthoredRow(userMessage(id: "u2", turnID: "t1", text: "Hi")) == false)
+    #expect(isNotificationRow(assistantMessage(id: "a1", turnID: "t1", status: .completed)) == false)
+    #expect(isOrchestratorRow(assistantMessage(id: "a1", turnID: "t1", status: .completed)) == false)
+  }
+
+  @Test(
+    """
+    a failed reply inside a CHILD transcript offers no Retry either — resending     a parent-origin row would submit the orchestrator's words as the user's
+    """
+  )
+  func orchestratorRowsAreNeverRetryTargets() {
+    var fromParent = userMessage(id: "p1", turnID: "child-turn", text: "Check the logs")
+    fromParent.origin = .parent
+    let failedReply = assistantMessage(id: "a1", turnID: "child-turn", status: .failed)
+    let messages = [fromParent, failedReply]
+
+    // This is the SECURITY half of D4's ruling 1, and it is why the narrowing
+    // and the new row had to land in the same commit: narrowing
+    // `isNotificationRow` alone would have dropped a `.parent` row through to
+    // `case .user:` — a full bubble with a context menu offering Retry and
+    // Edit & Resend on text the user never wrote.
+    #expect(retryTargetID(for: failedReply, in: messages) == nil)
+    #expect(retryTargetID(for: fromParent, in: messages) == nil)
+  }
+
+  @Test("the orchestrator row's attribution is byte-identical to web's")
+  func orchestratorLabelParity() {
+    #expect(orchestratorRowLabel == "from orchestrator")
+  }
+
+  @Test("a failed reply to a notification turn offers no inline Retry — its user row is not user input")
+  func notificationTurnsAreNeverRetryTargets() {
+    var notification = userMessage(id: "n1", turnID: "turn-notification", text: "")
+    notification.origin = .notification
+    let failedReply = assistantMessage(id: "a1", turnID: "turn-notification", status: .failed)
+    let ordinary = userMessage(id: "u1", turnID: "turn-1", text: "Hi")
+    let failedOrdinary = assistantMessage(id: "a2", turnID: "turn-1", status: .failed)
+    let messages = [notification, failedReply, ordinary, failedOrdinary]
+
+    #expect(retryTargetID(for: failedReply, in: messages) == nil)
+    #expect(retryTargetID(for: failedOrdinary, in: messages) == "u1")
+    #expect(retryTargetID(for: notification, in: messages) == nil)
+  }
+
+  @Test("the row reads the notification block's own summary, never the raw prompt")
+  func labelReadsSummary() {
+    let text = [
+      "[SYSTEM NOTIFICATION - NOT USER INPUT]",
+      "This is an automated background-task event, NOT a message from the user.",
+      "",
+      "<task-notification>",
+      "<task-id>sub_01</task-id>",
+      "<status>completed</status>",
+      #"<summary>Agent "Map gateway internals" finished</summary>"#,
+      "<result>",
+      "It is all wired through the hub.",
+      "</result>",
+      "</task-notification>",
+    ].joined(separator: "\n")
+
+    #expect(notificationRowLabel(text) == #"Agent "Map gateway internals" finished"#)
+  }
+
+  @Test("coalesced notifications riding one turn all appear, in order")
+  func labelJoinsCoalescedSummaries() {
+    let text = """
+      <task-notification><summary>Agent "A" finished</summary></task-notification>
+
+      <task-notification><summary>Agent "B" finished</summary></task-notification>
+      """
+
+    #expect(notificationRowLabel(text) == #"Agent "A" finished · Agent "B" finished"#)
+  }
+
+  @Test("a child-to-main message names its sender, with the attribute unescaped")
+  func labelNamesTheSender() {
+    let text = #"<subagent-message from="the &quot;fast&quot; one">Halfway.</subagent-message>"#
+
+    #expect(notificationRowLabel(text) == #"Message from the "fast" one"#)
+  }
+
+  @Test("live, where only the accepted frame has landed, the row falls back to a generic label")
+  func labelFallsBackWithoutText() {
+    #expect(notificationRowLabel("") == notificationRowFallbackLabel)
+    #expect(notificationRowLabel("[SYSTEM NOTIFICATION - NOT USER INPUT]") == notificationRowFallbackLabel)
+  }
+}
+
 private func userMessage(
   id: String,
   turnID: String,

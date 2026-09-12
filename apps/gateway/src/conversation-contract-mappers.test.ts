@@ -91,6 +91,7 @@ describe('conversation contract mappers', () => {
       lastMessagePreview: 'focus here',
       createdAt: NOW,
       updatedAt: NOW,
+      kind: 'user',
     });
     expectNoV2Keys(v1);
     expect(mapConversationV2(stored)).toEqual({
@@ -125,6 +126,48 @@ describe('conversation contract mappers', () => {
     });
 
     expectNoV2Keys(v1);
+  });
+
+  it('preserves child metadata plus notice content and origin in v2', () => {
+    const child = storedConversation();
+    child.kind = 'subagent';
+    child.parentConversationId = 'conversation-parent';
+    child.parentTurnId = 'turn-parent';
+    child.subagent = {
+      type: 'general-purpose',
+      name: 'reviewer',
+      status: 'done',
+      description: 'Review the change',
+      prompt: 'Find regressions',
+      model: 'test-model',
+      background: false,
+      depth: 1,
+      startedAt: NOW,
+      endedAt: NOW,
+      toolCallCount: 2,
+      report: 'No regressions found',
+      oneShot: true,
+    };
+
+    expect(mapConversationV2(child)).toMatchObject({
+      kind: 'subagent',
+      parentConversationId: 'conversation-parent',
+      parentTurnId: 'turn-parent',
+      subagent: child.subagent,
+    });
+
+    const notice = mapMessageV2(
+      steerUserMessage({
+        role: 'assistant',
+        deliveryKind: 'normal',
+        origin: 'notification',
+        content: { type: 'notice', kind: 'skill_learned', text: 'Learned: review-code' },
+      }),
+    );
+    expect(notice).toMatchObject({
+      origin: 'notification',
+      content: { type: 'notice', kind: 'skill_learned', text: 'Learned: review-code' },
+    });
   });
 
   it('omits absent delivery status from v2 messages', () => {

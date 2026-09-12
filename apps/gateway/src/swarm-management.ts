@@ -1,11 +1,25 @@
-import type { SwarmCoordinator } from '@dash/swarm';
+import type { RunSnapshot, RunSummary, SwarmCoordinator } from '@dash/swarm';
 import type { Hono } from 'hono';
 
 import type { AgentRegistry } from './agent-registry.js';
+import type { ConversationService } from './conversation-service.js';
+
+/**
+ * How many of an agent's child conversations the panel walks back through to
+ * find the parents of past runs. The panel shows recent runs, and every row
+ * read parses that child's `subagent_meta`; an agent that has been delegating
+ * for months would otherwise scan its whole history on every panel open.
+ */
+const MAX_SCANNED_CHILDREN = 200;
 
 export interface SwarmManagementDeps {
   swarmCoordinator: SwarmCoordinator;
   agentRegistry: AgentRegistry;
+  /**
+   * Where the panel finds runs from BEFORE this process started. Optional so
+   * embedders that wire a coordinator but no store still get live runs.
+   */
+  conversations?: Pick<ConversationService, 'list'>;
 }
 
 /**
@@ -14,28 +28,62 @@ export interface SwarmManagementDeps {
  * `swarmCoordinator` was wired (so tests/embedders that skip swarm still
  * construct the app). Mirrors the `eventLogStore` replay-route mount pattern.
  *
+ * A RUN IS NOW A VIEW, NOT A MEMORY (design §7.7). The coordinator used to keep
+ * a 20-deep ring buffer of finalized `RunSnapshot`s per agent, which vanished
+ * on restart and could drift from the child transcripts it claimed to
+ * summarise. It is gone: a run is the set of children sharing a
+ * `parentTurnId`, read through `SwarmCoordinator.runsForConversation` (which
+ * merges live handles over persisted child rows). The conversations to look in
+ * are the ones this process holds children for, plus the parents of the agent's
+ * most recent {@link MAX_SCANNED_CHILDREN} child conversations — the second
+ * half is what makes a pre-restart run visible at all.
+ *
  * All routes 404 `{error:'not found'}` for an unknown agent (registry check
  * first, matching `GET /agents/:id/skills`) and for an unknown run.
  *
  * Cancel/send map the coordinator's `{ok, reason?}` result: `ok:true` → 200
- * `{ok:true}`; `ok:false` → 409 `{ok:false, reason}`. The coordinator's reasons
- * (`'run finalized'`, `'worker terminal'`) already encode the failure cause.
+ * `{ok:true}`; `ok:false` → 409 `{ok:false, reason}`. `:runId` is opaque to
+ * both — the coordinator resolves the worker from the cross-turn child
+ * registry, so the panel can steer or cancel a DETACHED background child whose
+ * spawning turn ended long ago.
  */
 export function mountSwarmRoutes(app: Hono, deps: SwarmManagementDeps): void {
-  const { swarmCoordinator, agentRegistry } = deps;
+  const { swarmCoordinator, agentRegistry, conversations } = deps;
+
+  /** Every conversation of this agent that could hold a run, newest first. */
+  function conversationsFor(agentId: string): string[] {
+    const ids = new Set(swarmCoordinator.liveConversations(agentId));
+    const page = conversations?.list({
+      agentId,
+      kind: 'subagent',
+      limit: MAX_SCANNED_CHILDREN,
+    });
+    for (const child of page?.items ?? []) {
+      if (child.parentConversationId) ids.add(child.parentConversationId);
+    }
+    return [...ids];
+  }
+
+  function runsFor(agentId: string): RunSnapshot[] {
+    return conversationsFor(agentId).flatMap((conversationId) =>
+      swarmCoordinator.runsForConversation(agentId, conversationId),
+    );
+  }
 
   // GET /agents/:id/swarm/runs → { runs: RunSummary[] }
   app.get('/agents/:id/swarm/runs', (c) => {
     const id = c.req.param('id');
     if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
-    return c.json({ runs: swarmCoordinator.getRuns(id) });
+    const runs: RunSummary[] = runsFor(id).map(({ workers: _workers, ...summary }) => summary);
+    return c.json({ runs });
   });
 
   // GET /agents/:id/swarm/runs/:runId → RunSnapshot
   app.get('/agents/:id/swarm/runs/:runId', (c) => {
     const id = c.req.param('id');
     if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
-    const snapshot = swarmCoordinator.getRun(id, c.req.param('runId'));
+    const runId = c.req.param('runId');
+    const snapshot = runsFor(id).find((run) => run.runId === runId);
     if (!snapshot) return c.json({ error: 'not found' }, 404);
     return c.json(snapshot);
   });

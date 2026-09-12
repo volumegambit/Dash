@@ -1,6 +1,14 @@
 import SwiftUI
 
 struct ChatView: View {
+  /// What ⌘W does for THIS host (whole-branch final review, blocking 2).
+  /// `UIMenuSystem` is process-wide while `@FocusedValue` is per-scene, so
+  /// the chat-only window publishes `chatCommands` and ⌘W is enabled there
+  /// too — with one hardcoded action it closed nothing and silently
+  /// deselected the conversation in the OTHER window. The main window passes
+  /// the deselect; `ConversationWindowView` passes `dismissWindow`.
+  let onClose: () -> Void
+
   @Environment(ChatFeature.self) private var feature
   @Environment(AppModel.self) private var appModel
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -31,6 +39,12 @@ struct ChatView: View {
   /// a "Load earlier" page lands, so the hold can put that same row back at
   /// exactly that spot. See `ChatScrollGeometry.holdAnchor`.
   @State private var firstRowFrame: CGRect = .zero
+  /// Whether `transcript`'s `onAppear` has already taken its
+  /// `ChatScrollRestoration` decision for THIS host (iPad goal Phase A, Task
+  /// 4 review fix, Important 2). Local `@State` on purpose: it is a
+  /// per-host latch, so resetting to `false` on every re-host is the correct
+  /// behavior, unlike the pinned-vs-anchored intent it guards.
+  @State private var hasRestoredScrollPosition = false
 
   private let bottomID = "chat-bottom"
   /// Named coordinate space for the transcript ScrollView — anchors
@@ -94,6 +108,26 @@ struct ChatView: View {
   }
   @State private var isAgentPickerPresented = false
   @State private var isSwitchingAgent = false
+  /// Bumped by ⌘L (`KeyboardCommand.focusComposer`) and handed to
+  /// `ComposerView`, which owns the `@FocusState` the text field is bound to.
+  /// A counter rather than a flag so a second ⌘L after tapping away still
+  /// changes the value and therefore still fires `ComposerView`'s `onChange`.
+  @State private var composerFocusRequest = 0
+  /// iPad goal Phase B, Task 7 (extended Task 8): whether a drag carrying
+  /// `DroppedImage`s is currently hovering the chat surface — drives the
+  /// dashed drop-target overlay below. Shared with `ComposerView` (passed
+  /// down as a binding) since Task 8 found this destination alone doesn't
+  /// cover a drop released over the composer and gave `ComposerView` its
+  /// OWN `.dropDestination` for that surface — see that modifier's comment
+  /// below for what was actually observed (review fix round 1, Minor 2: the
+  /// original comment here over-claimed the mechanism).
+  @State private var isDropTargeted = false
+
+  /// §8.4's tasks sheet. `ChatView` owns the presentation flag but deliberately
+  /// never reads the live COUNT: `TasksToolbarButton` and `TasksStrip` read it
+  /// from inside their own bodies, so a list re-read on every parent turn's
+  /// `done` invalidates those two views and not this whole screen.
+  @State private var isTasksPresented = false
 
   var body: some View {
     VStack(spacing: 0) {
@@ -111,14 +145,80 @@ struct ChatView: View {
 
       transcript
     }
+    // Handles drops released over the TRANSCRIPT only, in practice — Task 8
+    // found (via `IPadUITests.testDroppingAnImageAttachesIt`, retargeted to
+    // each drop location with everything else held constant) that a drag
+    // released over `chat.transcript` reaches this destination 3/3 isolated
+    // reruns, while one released over `chat.composer` (the `TextField`)
+    // does not, 3/3 isolated reruns. That differential is real and
+    // reproduced, but WHY is not fully isolated: this destination is
+    // applied to the transcript `VStack` before `.safeAreaInset` below adds
+    // the composer, so it may simply never have had a hit-testable region
+    // over the composer's screen area at all (regardless of what view sits
+    // there) — as plausible a cause as the `TextField`'s own built-in drop
+    // interaction claiming the session first. Both explanations point to
+    // the same fix and neither was isolated further (review fix round 1,
+    // Minor 2 — the previous version of this comment asserted the
+    // `TextField`-claims-it mechanism as fact, which was not established).
+    // `ComposerView` below has its OWN `.dropDestination` for that surface,
+    // correct under either explanation, sharing `isDropTargeted` with this
+    // one so the single highlight overlay lights up for either.
+    .dropDestination(for: DroppedImage.self) { items, _ in
+      let selections = DroppedImage.selections(from: items)
+      guard selections.isEmpty == false else { return false }
+      Task { await feature.addSelections(selections) }
+      return true
+    } isTargeted: { isDropTargeted = $0 }
     .safeAreaInset(edge: .bottom, spacing: 0) {
-      ComposerView()
+      VStack(spacing: 0) {
+        // §8.4's pinned strip. It renders nothing while no child is live, so
+        // placing it costs no read of the count here.
+        TasksStrip { isTasksPresented = true }
+        ComposerView(focusRequest: composerFocusRequest, isDropTargeted: $isDropTargeted)
+      }
+    }
+    // Applied AFTER `.safeAreaInset`, not before, so the dashed highlight's
+    // frame is the WHOLE chat surface — transcript AND composer — rather
+    // than just the transcript's bounds from before the composer's
+    // safe-area inset was added. It previously sat directly on the
+    // transcript `VStack` above, ahead of `.safeAreaInset`, which meant the
+    // highlight was sized to the transcript alone and never visibly covered
+    // the composer.
+    .overlay {
+      if isDropTargeted {
+        RoundedRectangle(cornerRadius: DashTheme.Radius.large)
+          .strokeBorder(DashTheme.accent, style: StrokeStyle(lineWidth: 2, dash: [8]))
+          .padding(8)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("chat.dropTarget")
+      }
+    }
+    // iPad goal Phase B: the chat surface's slice of `DashCommands`. The
+    // `can*` flags are the same predicates the composer's own send/stop
+    // buttons are disabled by, so the ⌘ overlay and the on-screen controls
+    // can never disagree. `ComposerView` keeps its per-button
+    // `.keyboardShortcut`s as harmless duplicates — SwiftUI resolves the
+    // first responder, and keeping them leaves iOS 17 behaviour unchanged.
+    .background {
+      ChatCommandPublisher(
+        actions: ChatCommandActions(
+          feature: feature,
+          focusComposer: { composerFocusRequest += 1 },
+          close: onClose
+        )
+      )
+      .equatable()
     }
     .navigationTitle(feature.state.conversation.title)
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       ToolbarItem(placement: .principal) {
         conversationHeader
+      }
+      // §8.4: "a toolbar item beside `chat.options` that shows a badge with the
+      // live count".
+      ToolbarItem(placement: .topBarTrailing) {
+        TasksToolbarButton { isTasksPresented = true }
       }
       ToolbarItem(placement: .topBarTrailing) {
         conversationOptionsMenu
@@ -141,6 +241,17 @@ struct ChatView: View {
         .presentationDetents(
           horizontalSizeClass == .regular ? [.large] : [.medium, .large]
         )
+        // Presentation audit (iPad goal Phase D, Task 11 / design §4): the
+        // detents above only apply at compact width, so without this the
+        // model picker is a full-height iPad card holding a short list.
+        // Kept ALONGSIDE the regular-width `.large` above (merge with main,
+        // 2026-09-07). They are independent controls rather than two
+        // spellings of one fix: `presentationSizing(.form)` chooses the
+        // sheet's iPad SIZE CLASS, `presentationDetents` its height within
+        // that. Neither subsumes the other, so both sides are kept.
+        // Verified together by `testChatToolbarModelPickerChangesTheAgentModel`
+        // on iPad 26.5 and iPad 18.4.
+        .modifier(FormSheetSizing())
       }
     }
     .overlay(alignment: .top) {
@@ -213,7 +324,22 @@ struct ChatView: View {
       }
       Task {
         await feature.disappear()
-        guard stillNavigatedTo == false else { return }
+        // `feature.hasVisibleHosts` (whole-branch final review, blocking 1):
+        // `stillNavigatedTo` above is computed from the MAIN window's
+        // navigation state alone, so it is structurally blind to the
+        // chat-only scene `ConversationWindowView` puts on screen. Without
+        // this second condition, tapping a different conversation in the main
+        // window while the same one is open in its own window ran BOTH
+        // cleanups against a transcript that is still visible — discarding
+        // the other window's scroll position, and deleting the conversation
+        // outright when it was a still-empty compose-created one.
+        guard stillNavigatedTo == false, feature.hasVisibleHosts == false else { return }
+        // Scroll anchor (iPad goal Phase A, Task 4): only drop the
+        // remembered position when the conversation is genuinely being
+        // left, mirroring the compose-cleanup branch right below — a
+        // transient re-host (size-class flip) also fires `onDisappear` but
+        // keeps `stillNavigatedTo == true`, so the anchor survives it.
+        feature.clearScrollAnchor()
         await appModel.conversationListFeature?.discardIfUnusedComposeCreation(
           id: conversationID,
           hasActivity: hasActivity
@@ -229,27 +355,6 @@ struct ChatView: View {
       }
     } message: {
       Text("Enter a title for this conversation.")
-    }
-    // Final-review fix m6: verbatim copy per the plan (docs/plans/2026-09-01-
-    // chat-ux-phase3-plan.md, "delete confirm 'Delete this conversation?
-    // This can't be undone.' (both platforms verbatim)") — split across the
-    // dialog's title/message the same way this app's other confirmation
-    // dialogs do (a short question as the title, the consequence as the
-    // message), previously a per-conversation-title interpolation plus a
-    // different, non-verbatim sentence. `ConversationListView`'s own delete
-    // confirmation shares this exact copy — see its matching comment.
-    .confirmationDialog(
-      "Delete this conversation?",
-      isPresented: $isDeletePresented,
-      titleVisibility: .visible
-    ) {
-      Button("Delete", role: .destructive) {
-        let conversationID = feature.state.conversation.id
-        Task { await appModel.conversationListFeature?.delete(id: conversationID, confirmed: true) }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("This can't be undone.")
     }
     .alert("Conversation update failed", isPresented: chatMutationErrorPresented) {
       Button("OK") { appModel.conversationListFeature?.mutationError = nil }
@@ -273,6 +378,12 @@ struct ChatView: View {
         onCancel: { editingMessage = nil }
       )
     }
+    .sheet(isPresented: $isTasksPresented) {
+      TasksSheet { childID in
+        feature.revealSubagent(childID)
+      }
+      .environment(feature)
+    }
     .sheet(isPresented: $isAgentPickerPresented) {
       AgentPickerSheet(
         agents: appModel.conversationListFeature?.agents ?? [],
@@ -282,6 +393,8 @@ struct ChatView: View {
           Task { await switchAgent(to: agent.id) }
         }
       )
+      // Presentation audit (iPad goal Phase D, Task 11 / design §4).
+      .modifier(FormSheetSizing())
     }
   }
 
@@ -362,9 +475,36 @@ struct ChatView: View {
     )
   }
 
+  /// UI-test probe (Task 4 review fix, Important 1): surfaces the id
+  /// `.scrollPosition(id:)` is currently tracking so a real-swipe UI test can
+  /// assert it is a genuine transcript row identity (`ChatMessageState.rowID`
+  /// since main re-keyed the `ForEach`) rather than one of the outer stack's
+  /// children. DEBUG-only AND gated on the single
+  /// `long-transcript` scenario, so no shipping build and no other UI suite
+  /// ever sees this element. Invisible rather than hidden: `.hidden()` /
+  /// zero opacity would also remove it from the accessibility tree, which is
+  /// the one thing it exists for.
+  #if DEBUG
+    @ViewBuilder
+    private var scrollAnchorProbe: some View {
+      if UITestProbe.isScrollAnchorProbeEnabled {
+        Text(feature.scrollAnchorMessageID ?? "none")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("chat.scrollAnchor")
+      }
+    }
+  #endif
+
   private var transcript: some View {
     ScrollViewReader { proxy in
       scrollView(proxy)
+        .overlay(alignment: .topLeading) {
+          #if DEBUG
+            scrollAnchorProbe
+          #endif
+        }
         .overlay(alignment: .bottomTrailing) {
           if showsJumpToBottom {
             JumpToBottomButton {
@@ -377,7 +517,76 @@ struct ChatView: View {
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: showsJumpToBottom)
         .onAppear {
-          scrollToBottom(proxy, animated: false)
+          // Scroll anchor (iPad goal Phase A, Task 4; review fix, Important
+          // 2): the restore decision is taken from state that SURVIVES a
+          // re-host — `feature.scrollAnchorMessageID` and
+          // `feature.scrollWasPinnedToBottom` — never from the local
+          // `isNearBottom` `@State`, which resets to its `true` default on
+          // exactly the re-host this feature exists for and is not
+          // guaranteed to have been refreshed by
+          // `onScrollGeometryChange`/`onPreferenceChange` before this
+          // closure runs. The choice itself is `ChatScrollRestoration`'s,
+          // so it is unit-testable without rendering SwiftUI.
+          switch ChatScrollRestoration.decide(
+            anchor: feature.scrollAnchorMessageID,
+            wasPinnedToBottom: feature.scrollWasPinnedToBottom,
+            // `rowID`, not `id` (merge with main, 2026-09-07): main re-keyed
+            // `MessageListView`'s `ForEach` to `\.rowID`, so the identity
+            // `scrollPosition(id:)` reports and `scrollTo` matches is the
+            // rowID. Comparing a stored rowID against a set of `id`s would
+            // have compiled and quietly stopped restoring as soon as an ack
+            // rewrote an id.
+            messageIDs: Set(feature.state.messages.map(\.rowID))
+          ) {
+          case .bottom:
+            // Clear the anchor before pinning so the declarative
+            // `.scrollPosition(id:)` binding below cannot immediately pull
+            // the transcript back up to a stale position (the Minor note's
+            // "two mechanisms on one ScrollView": this is how they are kept
+            // in agreement rather than by adding a third).
+            feature.scrollAnchorMessageID = nil
+            // Record the intent this branch just acted on (deferred Task 4
+            // fix). `decide` also returns `.bottom` when the anchor no
+            // longer exists in the loaded transcript — with
+            // `scrollWasPinnedToBottom == false` that left the feature
+            // claiming "scrolled away" while the transcript was in fact
+            // pinned to the bottom, and nothing corrected it until an
+            // `isNearBottom` transition that a user sitting at the bottom
+            // never makes.
+            feature.recordScrollPinnedToBottom(true)
+            isPinnedToBottom = true
+            scrollToBottom(proxy, animated: false)
+          case .message(let id):
+            // Unpin BEFORE scrolling (merge with main, 2026-09-07).
+            // `isPinnedToBottom` is `@State` and re-initializes to `true` on
+            // the very re-host this restore serves, so without this main's
+            // `defaultScrollAnchor(.bottom, for: .sizeChanges)` would still
+            // be armed and would drag the restored position back to the tail
+            // on the next content change — and `showsJumpToBottom` would stay
+            // false, hiding the jump button for a user who is demonstrably
+            // not at the bottom.
+            isPinnedToBottom = false
+            proxy.scrollTo(id, anchor: .top)
+          }
+          hasRestoredScrollPosition = true
+        }
+        .onChange(of: showsJumpToBottom) { _, showsJump in
+          // Mirror the pinned-vs-scrolled-away intent onto the feature, which
+          // outlives this view. Gated on the restore having already run: a
+          // fresh host starts at content offset 0, so a geometry report that
+          // lands BEFORE `onAppear` describes the un-restored ScrollView, not
+          // where the user actually was. Ignoring those leaves the feature
+          // holding its pre-re-host value, which is precisely the truth the
+          // restore needs.
+          //
+          // Keyed on `showsJumpToBottom`, not on `isNearBottom` (merge with
+          // main, 2026-09-07): main's iOS 18+ geometry callback stopped
+          // writing `isNearBottom` altogether — it maintains
+          // `isPinnedToBottom` instead — so an `onChange(of: isNearBottom)`
+          // would be dead code on every OS the fleet actually runs, and the
+          // feature would keep its stale `true` forever.
+          guard hasRestoredScrollPosition else { return }
+          feature.recordScrollPinnedToBottom(showsJump == false)
         }
         .onChange(of: transcriptSignature) { oldValue, newValue in
           // iOS 17 only: follow the stream by scrolling to the sentinel on
@@ -394,6 +603,38 @@ struct ChatView: View {
           holdReadingPosition(proxy, previousFirst: previousFirst, currentFirst: currentFirst)
         }
     }
+  }
+
+  /// Two-way binding onto `feature.scrollAnchorMessageID` for
+  /// `scrollPosition(id:anchor:)` below: SwiftUI both reads it (to restore
+  /// position on a re-host) and writes it (as the user scrolls, tracking
+  /// the topmost visible row) through this binding.
+  ///
+  /// PIN-GATED (merge with main, 2026-09-07). This is the one place our
+  /// scroll-anchor work and main's anchor-driven pinning genuinely fight: a
+  /// non-nil `scrollPosition(id:)` holds the tracked row in place through
+  /// content growth, which is exactly what
+  /// `defaultScrollAnchor(.bottom, for: .sizeChanges)` must be free to
+  /// override while a reply streams. So the GETTER reports an id only while
+  /// the transcript is scrolled away from the bottom (`showsJumpToBottom`) —
+  /// where holding the user's row is the correct behaviour and agrees with
+  /// main's `.top` size-change anchor — and reports `nil` while pinned,
+  /// leaving main's bottom anchor as the sole authority over the offset.
+  ///
+  /// The SETTER always records, so tracking keeps working while pinned; a
+  /// `nil` from SwiftUI is ignored rather than written, because with the
+  /// getter deliberately reporting `nil` a write-back of `nil` would erase a
+  /// good anchor. The two places that genuinely mean "forget it" —
+  /// `ChatFeature.clearScrollAnchor()` and the `.bottom` restore branch —
+  /// set the property directly, not through this binding.
+  private var anchorBinding: Binding<String?> {
+    Binding(
+      get: { showsJumpToBottom ? feature.scrollAnchorMessageID : nil },
+      set: { newValue in
+        guard let newValue else { return }
+        feature.scrollAnchorMessageID = newValue
+      }
+    )
   }
 
   /// "Load earlier" (transcript scroll fix, 2026-09-05): a page prepends
@@ -425,6 +666,11 @@ struct ChatView: View {
     }
   }
 
+  /// Whether the transcript is currently scrolled away from its tail — the
+  /// single "am I pinned?" question, answered by main's `isPinnedToBottom`
+  /// on iOS 18+ and by audit #4's `isNearBottom` on iOS 17. Everything that
+  /// used to read `isNearBottom` directly now goes through this, so nothing
+  /// reads a value that main stopped updating on iOS 18+.
   private var showsJumpToBottom: Bool {
     if #available(iOS 18.0, *) {
       return isPinnedToBottom == false
@@ -571,6 +817,7 @@ struct ChatView: View {
             messages: feature.state.messages,
             firstRowFrameCoordinateSpace: Self.scrollSpace,
             isAnsweringEnabled: feature.canAnswerQuestions,
+            isScrollTarget: true,
             onAnswer: { questionID, answer in
               Task { await feature.answer(questionID: questionID, answer: answer) }
             },
@@ -581,7 +828,40 @@ struct ChatView: View {
               guard let text = feature.state.messages.first(where: { $0.id == id })?.user?.text
               else { return }
               editingMessage = EditingMessage(id: id, text: text)
-            }
+            },
+            subagentInteraction: SubagentInteraction(
+              state: { feature.state.subagentUI[$0] ?? SubagentUIState() },
+              // Called synchronously, INSIDE the row's `withAnimation` — the
+              // state write has to land in that transaction or the disclosure
+              // does not animate. `setSubagentExpanded` writes the reducer
+              // straight through and returns its network follow-up.
+              setExpanded: { childID, isExpanded, loadsTranscript in
+                feature.setSubagentExpanded(
+                  childID,
+                  isExpanded,
+                  loadsTranscript: loadsTranscript
+                )
+              },
+              send: { childID, text in
+                await feature.sendToSubagent(childID, text: text)
+              },
+              // Read INSIDE `SubagentComposer.body`, never here: constructing a
+              // closure is not an access, so `ChatView.body` never subscribes
+              // to `subagentComposerDrafts` and the per-keystroke fan-out
+              // stays at one composer.
+              draft: { feature.subagentComposerDraft($0) },
+              setDraft: { feature.setSubagentComposerDraft($0, $1) },
+              // Gated on `unauthorized` ALONE, never on socket state: the send
+              // is REST, and a reconnect must not stop the user answering a
+              // child parked in `waiting_input`, whose `waitForQuestion` fails
+              // the child's tool call ten minutes later.
+              isEnabled: feature.connection != .repairRequired,
+              // Read inside `SubagentCardView.body`, never here, for the same
+              // reason as `draft`: constructing a closure is not an access, so
+              // a list re-read invalidates the sub-agent ROWS and not
+              // `ChatView.body`'s whole transcript.
+              restStatus: { feature.restSubagentStatus($0) }
+            )
           )
         }
 
@@ -604,7 +884,14 @@ struct ChatView: View {
             }
           )
       }
-      .frame(maxWidth: 760)
+      // NOTE (Task 4 review fix, Important 1): `.scrollTargetLayout()`
+      // deliberately does NOT live here. This stack's direct arranged
+      // children are `olderMessagesControl`, `MessageListView` as one opaque
+      // box, and the bottom sentinel — none of which carry a transcript row
+      // identity. The tag lives on `MessageListView`'s own stack instead
+      // (`isScrollTarget: true` above), which is the container that actually
+      // holds `ForEach(messages, id: \.rowID)`.
+      .frame(maxWidth: DashTheme.Layout.readableWidth)
       .padding(.horizontal)
       .padding(.vertical, 12)
       .frame(maxWidth: .infinity)
@@ -612,6 +899,7 @@ struct ChatView: View {
     .coordinateSpace(name: Self.scrollSpace)
     .onPreferenceChange(FirstMessageRowFrameKey.self) { firstRowFrame = $0 }
     .scrollDismissesKeyboard(.interactively)
+    .scrollPosition(id: anchorBinding, anchor: .top)
     .accessibilityIdentifier("chat.transcript")
   }
 
@@ -803,6 +1091,35 @@ struct ChatView: View {
     }
     .accessibilityLabel("Conversation options")
     .accessibilityIdentifier("chat.options")
+    // Presentation audit (iPad goal Phase D, Task 11): a `confirmationDialog`
+    // is a POPOVER at iPad regular width, and UIKit takes its source rect
+    // from the view the modifier is attached to. Attached to `body`'s root —
+    // where this used to live — it anchored to the middle-left edge of the
+    // whole chat pane, diagonally opposite the toolbar button that opened it.
+    // Attached here it anchors to this menu's own ellipsis button. Compact
+    // width is unaffected: there it is still a bottom action sheet.
+    //
+    // Final-review fix m6: verbatim copy per the plan (docs/plans/2026-09-01-
+    // chat-ux-phase3-plan.md, "delete confirm 'Delete this conversation?
+    // This can't be undone.' (both platforms verbatim)") — split across the
+    // dialog's title/message the same way this app's other confirmation
+    // dialogs do (a short question as the title, the consequence as the
+    // message), previously a per-conversation-title interpolation plus a
+    // different, non-verbatim sentence. `ConversationListView`'s own delete
+    // confirmation shares this exact copy — see its matching comment.
+    .confirmationDialog(
+      "Delete this conversation?",
+      isPresented: $isDeletePresented,
+      titleVisibility: .visible
+    ) {
+      Button("Delete", role: .destructive) {
+        let conversationID = feature.state.conversation.id
+        Task { await appModel.conversationListFeature?.delete(id: conversationID, confirmed: true) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("This can't be undone.")
+    }
   }
 
   /// Same "action failed" alert `ConversationListView` shows, reusing
@@ -903,9 +1220,12 @@ struct ChatTranscriptSignature: Equatable {
     let textCount: Int = assistant?.text.count ?? 0
     let thinkingCount: Int = assistant?.thinking.count ?? 0
     let toolCount: Int = assistant?.toolCards.count ?? 0
-    let workerCount: Int = assistant?.workerCards.count ?? 0
+    // The DRAFT count, not `subagentCards.count`: they are always equal, and
+    // this signature runs on every transcript change, so it must not pay for
+    // the fold's sort.
+    let subagentCount: Int = assistant?.subagentDrafts.count ?? 0
     let statusCount: Int = assistant?.statusRows.count ?? 0
-    let contentCount = textCount + thinkingCount + toolCount + workerCount + statusCount
+    let contentCount = textCount + thinkingCount + toolCount + subagentCount + statusCount
     return ChatTranscriptSignature(
       messageID: last.id,
       status: last.status,
@@ -1038,6 +1358,54 @@ struct TranscriptScrollMetrics: Equatable {
   var viewportHeight: CGFloat
 }
 
+/// What a freshly-hosted `ChatView` should do with its transcript's scroll
+/// position (iPad goal Phase A, Task 4 review fix, Important 2 + 3).
+///
+/// Spec §1.3 requires that a re-hosted `ChatView` restore its position
+/// instead of jumping, and that a transcript that was pinned to the bottom
+/// stay pinned. Both halves reduce to one decision, and that decision is
+/// pure — so it lives here, testable as a table, rather than inline in an
+/// `onAppear` closure where the only way to observe it is to render SwiftUI
+/// and watch a scroll view move.
+///
+/// This is the RE-HOST question and nothing else. It does not overlap with
+/// main's `ChatScrollGeometry` pin rules (merge, 2026-09-07), which answer
+/// the WITHIN-a-host question of whether a live transcript should follow its
+/// tail. `ChatScrollRestoration` decides where a brand-new host opens;
+/// `ChatScrollGeometry` decides what it does from then on. The two meet at
+/// exactly one point: this decision seeds `ChatView.isPinnedToBottom`, so
+/// the geometry rules start from the state the user actually left behind.
+///
+/// Deliberately NOT a function of `ChatView.isNearBottom` /
+/// `isPinnedToBottom`: both are view `@State`, destroyed and re-initialized
+/// by exactly the re-host this decision serves. The inputs are instead the
+/// two facts that survive on `ChatFeature` (cached per conversation by
+/// `AppModel`), plus the row identities currently in the transcript — an
+/// anchor that no longer exists (edit & resend truncation, a cache reload
+/// that dropped it) must fall back to the bottom rather than silently scroll
+/// nowhere and strand the user at the top.
+///
+/// `messageIDs` are `ChatMessageState.rowID`s, matching what
+/// `MessageListView`'s `ForEach` is keyed on and therefore what
+/// `scrollPosition(id:)` reports and `scrollTo` matches.
+enum ChatScrollRestoration: Equatable {
+  /// Pin to the bottom sentinel — the pre-existing behavior, and the
+  /// fallback whenever there is nothing trustworthy to restore.
+  case bottom
+  /// Restore the remembered message to the top of the viewport.
+  case message(id: String)
+
+  static func decide(
+    anchor: String?,
+    wasPinnedToBottom: Bool,
+    messageIDs: Set<String>
+  ) -> ChatScrollRestoration {
+    guard wasPinnedToBottom == false else { return .bottom }
+    guard let anchor, messageIDs.contains(anchor) else { return .bottom }
+    return .message(id: anchor)
+  }
+}
+
 /// Sentinel-offset-within-viewport `PreferenceKey` feeding the iOS 17
 /// fallback in `scrollView` (audit #4).
 private struct BottomSentinelOffsetKey: PreferenceKey {
@@ -1057,7 +1425,7 @@ private struct ScrollViewportHeightKey: PreferenceKey {
 }
 
 /// Floating "scroll to latest" affordance (audit #4): a bottom-trailing
-/// overlay shown while `isNearBottom == false`. Styled as a native circular
+/// overlay shown while `showsJumpToBottom`. Styled as a native circular
 /// floating-action button — matching the app's existing icon-only circular
 /// controls (`ComposerView`'s send/cancel buttons) — rather than porting the
 /// web pill verbatim, per the app's own rounded-native design language.
@@ -1080,6 +1448,7 @@ private struct JumpToBottomButton: View {
         .contentShape(Circle())
     }
     .buttonStyle(.plain)
+    .hoverEffect(.lift)
     .frame(minWidth: 44, minHeight: 44)
     .accessibilityLabel("Jump to latest messages")
     .accessibilityIdentifier("chat.jumpToBottom")

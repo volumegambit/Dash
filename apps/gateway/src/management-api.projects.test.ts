@@ -168,7 +168,7 @@ describe('gateway backend projects tools injection', () => {
     // Mirrors the createBackend wiring in index.ts: the projects tools are
     // built with a session accessor bound to the backend instance and the
     // agent's registry name as the agent id.
-    const backend = new PiAgentBackend(
+    const backend: PiAgentBackend = new PiAgentBackend(
       { model: 'claude-sonnet-4-20250514', systemPrompt: 'test' },
       async () => ({}),
       undefined,

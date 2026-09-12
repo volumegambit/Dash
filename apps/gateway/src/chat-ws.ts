@@ -1,6 +1,7 @@
 import type { AgentEvent, ImageBlock } from '@dash/agent';
 import type { MobileWsClientFrame, MobileWsServerFrame } from '@dash/mobile-contract';
 import { CHAT_INPUT_QUEUE_CAPABILITY, type MobileV2WsServerFrame } from '@dash/mobile-contract-v2';
+import { isTransientAgentEvent } from '@dash/swarm';
 import type { Env, Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import { type AdmissionLease, GatewayAdmissionController } from './admission-controller.js';
@@ -61,7 +62,14 @@ export interface ChatWsLifecycle {
   flushAndCloseAll(code: number, reason: string, timeoutMs: number): Promise<void>;
 }
 
-const KNOWN_CLIENT_FRAME_TYPES = new Set(['message', 'resume', 'answer', 'cancel']);
+const KNOWN_CLIENT_FRAME_TYPES = new Set([
+  'message',
+  'resume',
+  'answer',
+  'cancel',
+  'subscribe',
+  'unsubscribe',
+]);
 const V2_ONLY_CLIENT_FRAME_TYPES = new Set([
   'subscribe_conversation',
   'enqueue_input',
@@ -211,6 +219,17 @@ export function parseChatClientFrame(msg: unknown): MobileWsClientFrame | null {
 
   if (m.type === 'answer') {
     if (typeof m.questionId !== 'string' || typeof m.answer !== 'string') return null;
+    return msg as MobileWsClientFrame;
+  }
+
+  if (m.type === 'subscribe' || m.type === 'unsubscribe') {
+    if (
+      typeof m.agentId !== 'string' ||
+      typeof m.conversationId !== 'string' ||
+      !isValidConversationId(m.conversationId)
+    ) {
+      return null;
+    }
     return msg as MobileWsClientFrame;
   }
 
@@ -782,6 +801,19 @@ export function mountChatWs<E extends Env>(app: Hono<E>, options: ChatWsOptions)
             return;
           }
 
+          if (msg.type === 'subscribe' || msg.type === 'unsubscribe') {
+            // Bookkeeping only: no acknowledgement frame, so a client that
+            // subscribes to a quiet conversation sees nothing until a turn runs.
+            dispatchHub(ws, msg.id, msg.conversationId, () => {
+              if (msg.type === 'subscribe') {
+                resumableChatHub.subscribe(msg.agentId, msg.conversationId, sink);
+              } else {
+                resumableChatHub.unsubscribe(msg.agentId, msg.conversationId, sink);
+              }
+            });
+            return;
+          }
+
           if (msg.type === 'resume') {
             conversationOwners.set(msg.conversationId, msg.agentId);
             knownRunOwners.set(msg.id, {
@@ -979,10 +1011,15 @@ export function mountChatWs<E extends Env>(app: Hono<E>, options: ChatWsOptions)
                   // the WS. Order matters: if the WS is already
                   // dead, the log still captures the event so MC
                   // can replay it on reconnect.
-                  const seq = logPayload(agentId, convId, msg.id, {
-                    type: 'event',
-                    event: agentEvent,
-                  });
+                  // Transient events (spec §7.2) are live-stream only: broadcast
+                  // but never appended, so they carry no seq and never show up
+                  // in a resume replay.
+                  const seq = isTransientAgentEvent(agentEvent)
+                    ? undefined
+                    : logPayload(agentId, convId, msg.id, {
+                        type: 'event',
+                        event: agentEvent,
+                      });
                   sendServerMessage(ws, { type: 'event', id: msg.id, seq, event: agentEvent });
                 }
                 if (!controller.signal.aborted) {

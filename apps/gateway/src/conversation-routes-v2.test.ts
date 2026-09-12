@@ -3,8 +3,15 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type {
+  MobileApiError,
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationPage,
+  MobileV2ConversationSummary,
+  MobileV2ReplayPage,
+} from '@dash/mobile-contract-v2';
 import addFormats from 'ajv-formats';
-import Ajv2020 from 'ajv/dist/2020.js';
+import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { parse } from 'yaml';
 import { AgentRegistry } from './agent-registry.js';
@@ -19,8 +26,16 @@ const MANAGEMENT_JSON = { ...MANAGEMENT_AUTH, 'Content-Type': 'application/json'
 const contractRoot = fileURLToPath(new URL('../../../contracts/mobile/v2/', import.meta.url));
 const openapi = parse(readFileSync(join(contractRoot, 'openapi.yaml'), 'utf8')) as object;
 const ajv = new Ajv2020({ allErrors: true, strict: false });
-addFormats(ajv);
+(addFormats as unknown as (instance: Ajv2020) => void)(ajv);
 ajv.addSchema(openapi, 'mobile-v2-openapi-routes');
+
+type RevisionConflictResponse = MobileApiError & {
+  details: { current: MobileV2ConversationSummary };
+};
+
+type ConversationBusyResponse = MobileApiError & {
+  details: { activeTurnId: string };
+};
 
 function expectSchema(schema: string, value: unknown): void {
   const validate = ajv.compile({
@@ -171,7 +186,7 @@ describe('mobile v2 conversation REST routes', () => {
       headers: MOBILE_AUTH,
     });
     expect(listResponse.status).toBe(200);
-    const list = await listResponse.json();
+    const list = (await listResponse.json()) as MobileV2ConversationPage;
     expectSchema('MobileV2ConversationPage', list);
     expect(list.items[0]).toMatchObject({
       queueRevision: 1,
@@ -183,7 +198,7 @@ describe('mobile v2 conversation REST routes', () => {
       headers: MOBILE_AUTH,
     });
     expect(getResponse.status).toBe(200);
-    const current = await getResponse.json();
+    const current = (await getResponse.json()) as MobileV2ConversationSummary;
     expectSchema('MobileV2ConversationSummary', current);
 
     for (const method of ['PATCH', 'DELETE']) {
@@ -197,7 +212,7 @@ describe('mobile v2 conversation REST routes', () => {
         },
       });
       expect(response.status, method).toBe(409);
-      const conflict = await response.json();
+      const conflict = (await response.json()) as RevisionConflictResponse;
       expectSchema('RevisionConflictError', conflict);
       expect(conflict.details.current).toEqual(current);
       expect(conflict.details.current).toMatchObject({
@@ -229,9 +244,9 @@ describe('mobile v2 conversation REST routes', () => {
       inputId: '50000000-0000-4000-8000-000000000102',
       expectedRevision: 1,
     });
-    const deletable = await (
+    const deletable = (await (
       await harness.app.request(`/mobile/v2/conversations/${created.id}`, { headers: MOBILE_AUTH })
-    ).json();
+    ).json()) as MobileV2ConversationSummary;
     const deletedResponse = await harness.app.request(`/mobile/v2/conversations/${created.id}`, {
       method: 'DELETE',
       headers: { ...MOBILE_AUTH, 'If-Match': `"${deletable.revision}"` },
@@ -270,7 +285,7 @@ describe('mobile v2 conversation REST routes', () => {
       headers: { ...MOBILE_AUTH, 'If-Match': `"${busy.revision}"` },
     });
     expect(busyResponse.status).toBe(409);
-    const body = await busyResponse.json();
+    const body = (await busyResponse.json()) as ConversationBusyResponse;
     expectSchema('ConversationBusyError', body);
     expect(body.details.activeTurnId).toBe('turn-01');
 
@@ -309,7 +324,7 @@ describe('mobile v2 conversation REST routes', () => {
     ] as const) {
       const response = await harness.app.request(path, { headers });
       expect(response.status, path).toBe(200);
-      const bootstrap = await response.json();
+      const bootstrap = (await response.json()) as MobileV2ConversationBootstrap;
       expectSchema('MobileV2ConversationBootstrap', bootstrap);
       expect(bootstrap.v2ThroughSeq).toBe(bootstrap.conversation.v2LastSeq);
       expect(bootstrap.queueRevision).toBe(bootstrap.conversation.queueRevision);
@@ -383,7 +398,7 @@ describe('mobile v2 conversation REST routes', () => {
     ] as const) {
       const response = await harness.app.request(path, { headers });
       expect(response.status, path).toBe(200);
-      const page = await response.json();
+      const page = (await response.json()) as MobileV2ReplayPage;
       expectSchema('MobileV2ReplayPage', page);
       expect(page.frames.map((frame: { type: string }) => frame.type)).toEqual([
         'accepted',

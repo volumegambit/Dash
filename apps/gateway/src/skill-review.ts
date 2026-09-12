@@ -1,12 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import type { LessonBook, LessonDelta } from '@dash/agent';
-import {
-  listBooks,
-  looksLikeCorrection,
-  mergeDeltas,
-  persistBook,
-  stagePending,
-} from '@dash/agent';
+import { listBooks, looksLikeCorrection, mergeDeltas, persistBook, readBook } from '@dash/agent';
 import type { StructuredLogger } from '@dash/logging';
 import type { ConversationService } from './conversation-service.js';
 
@@ -40,8 +34,6 @@ export interface SkillReviewOptions {
   shouldReview(agentId: string): boolean;
   /** Minimum completed tool calls in the run before a review is worth paying for. */
   minToolCalls(agentId: string): number;
-  /** When true, proposals are staged for human approval instead of applied. */
-  requiresApproval?(agentId: string): boolean;
   /**
    * Every skill name already visible to the agent — plugin, installed,
    * user-authored, and agent-authored via `create_skill`.
@@ -181,25 +173,6 @@ export function createSkillReviewService(options: SkillReviewOptions): SkillRevi
       return;
     }
 
-    // The approval gate. Deltas are staged rather than merged, so approving
-    // later re-runs every merge rule against the library as it is at that
-    // point rather than as it was when the review ran.
-    if (options.requiresApproval?.(input.agentId)) {
-      const id = `${input.runId}`.replace(/[^a-z0-9-]/gi, '').slice(0, 64) || randomUUID();
-      await stagePending(managedDir, {
-        id,
-        conversationId: input.conversationId,
-        deltas,
-      });
-      options.logger?.info('skill review staged lessons for approval', {
-        agentId: input.agentId,
-        conversationId: input.conversationId,
-        id,
-        lessons: deltas.length,
-      });
-      return;
-    }
-
     const merged = mergeDeltas(books, deltas, { reservedNames });
 
     for (const dropped of merged.dropped) {
@@ -280,27 +253,35 @@ export function createSkillReviewService(options: SkillReviewOptions): SkillRevi
 }
 
 /**
- * Apply a previously staged proposal.
+ * Remove one lesson from a book, by id.
  *
- * Shares the merge with the unattended path deliberately: approval decides
- * *whether* lessons land, never *how*. Returns the books that changed.
+ * Retires rather than deletes, for the same reason the merge does: a lesson
+ * that is gone without trace cannot be understood later, and a retired lesson
+ * is also protected from being re-proposed by a future review.
+ *
+ * Returns the updated book, or null when the skill or the lesson is unknown.
  */
-export async function applyPendingLessons(
+export async function retireLesson(
   managedDir: string,
-  deltas: LessonDelta[],
-  reservedNames?: string[],
-): Promise<{ skills: string[]; created: string[] }> {
-  const books = await listBooks(managedDir);
-  const merged = mergeDeltas(books, deltas, { reservedNames });
+  skill: string,
+  lessonId: string,
+): Promise<LessonBook | null> {
+  const skillDir = join(managedDir, skill);
+  const book = await readBook(skillDir);
+  if (!book) return null;
 
-  const written: string[] = [];
-  for (const book of merged.books) {
-    await persistBook(managedDir, book);
-    written.push(book.skill);
-  }
+  const lesson = book.bullets.find((bullet) => bullet.id === lessonId);
+  if (!lesson) return null;
 
-  return {
-    skills: written,
-    created: merged.created.filter((name) => written.includes(name)),
+  const updated: LessonBook = {
+    ...book,
+    bullets: book.bullets.filter((bullet) => bullet.id !== lessonId),
+    retired: [
+      ...book.retired,
+      { ...lesson, retiredAt: new Date().toISOString().slice(0, 10), retiredReason: 'harmful' },
+    ],
   };
+
+  await persistBook(managedDir, updated);
+  return updated;
 }

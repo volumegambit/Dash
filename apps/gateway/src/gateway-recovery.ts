@@ -2,15 +2,20 @@ import type { GatewayAdmissionController } from './admission-controller.js';
 import type { ConversationService } from './conversation-service.js';
 import type { EventLogStore } from './event-log-store.js';
 import {
-  type SwarmLogRecoveryOptions,
+  type PendingDeliveryTarget,
+  type SubagentChildRecoveryResult,
+  type SubagentRecoveryConversations,
+  type SubagentTailRecoveryResult,
   type SwarmLogRecoveryResult,
+  queueInterruptedSubagentNotifications,
   recoverInterruptedSwarmTurns,
 } from './swarm-log-recovery.js';
 
 type RecoveryConversations = Pick<
   ConversationService,
   'listActiveRunsForRecovery' | 'appendCurrentRunEvent' | 'recoverV2State'
->;
+> &
+  SubagentRecoveryConversations;
 
 export interface GatewayRecoveryOptions {
   eventLog: EventLogStore;
@@ -20,7 +25,6 @@ export interface GatewayRecoveryOptions {
     'markRecoveryRequired' | 'beginRecoveryCleanup' | 'clearRecoveryRequired'
   >;
   isDeletionMarked?: (agentId: string) => boolean;
-  restoreRun?: SwarmLogRecoveryOptions['restoreRun'];
   log?: (message: string) => void;
 }
 
@@ -28,6 +32,10 @@ export interface GatewayRecoveryResult {
   swarm: SwarmLogRecoveryResult;
   conversations: ReturnType<RecoveryConversations['recoverV2State']>;
   excludedConversationIds: string[];
+  subagents: SubagentTailRecoveryResult;
+  notifiedChildren: SubagentChildRecoveryResult;
+  /** Parents with durable notifications to deliver after the hub exists. */
+  pendingDelivery: PendingDeliveryTarget[];
 }
 
 const recoveryQuarantines = new WeakMap<object, Set<string>>();
@@ -40,6 +48,7 @@ export function recoverGatewayTurns(options: GatewayRecoveryOptions): GatewayRec
   const activeRuns = options.conversations.listActiveRunsForRecovery();
   const swarm = recoverInterruptedSwarmTurns({
     eventLog: options.eventLog,
+    conversations: options.conversations,
     canonicalRuns: activeRuns.map((run) => ({
       agentId: run.agentId,
       conversationId: run.conversationId,
@@ -47,7 +56,6 @@ export function recoverGatewayTurns(options: GatewayRecoveryOptions): GatewayRec
     })),
     appendCurrentRunEvent: (agentId, conversationId, outerRunId, event) =>
       options.conversations.appendCurrentRunEvent(agentId, conversationId, outerRunId, event),
-    restoreRun: options.restoreRun,
     log: options.log,
   });
 
@@ -70,6 +78,14 @@ export function recoverGatewayTurns(options: GatewayRecoveryOptions): GatewayRec
   const conversations = options.conversations.recoverV2State({
     excludeConversationIds: excluded,
   });
+  const notifiedChildren = queueInterruptedSubagentNotifications({
+    conversations: options.conversations,
+    log: options.log,
+  });
+  const pendingDelivery = new Map<string, PendingDeliveryTarget>();
+  for (const target of [...swarm.pendingDelivery, ...notifiedChildren.pendingDelivery]) {
+    pendingDelivery.set(target.conversationId, target);
+  }
 
   for (const conversationId of swarm.canonicalConversationsRepaired) {
     if (excluded.has(conversationId)) continue;
@@ -84,7 +100,10 @@ export function recoverGatewayTurns(options: GatewayRecoveryOptions): GatewayRec
 
   return {
     swarm,
+    subagents: swarm,
     conversations,
+    notifiedChildren,
+    pendingDelivery: [...pendingDelivery.values()],
     excludedConversationIds: [...excluded],
   };
 }

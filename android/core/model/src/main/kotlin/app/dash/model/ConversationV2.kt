@@ -29,6 +29,8 @@ internal object MobileV2ContractValidation {
         "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-" +
             "[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
     )
+    private val subagentConversationPattern =
+        Regex("^sub_[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$")
     private val rfc3339Pattern = Regex(
         "^(\\d{4})-(\\d{2})-(\\d{2})[Tt](\\d{2}):(\\d{2}):(\\d{2})" +
             "(?:\\.\\d+)?([Zz]|([+-])(\\d{2}):(\\d{2}))$",
@@ -37,6 +39,12 @@ internal object MobileV2ContractValidation {
 
     fun requireCanonicalUuid(value: String, field: String) {
         require(uuidPattern.matches(value)) { "$field must be a canonical UUID" }
+    }
+
+    fun requireConversationIdentifier(value: String, field: String) {
+        require(uuidPattern.matches(value) || subagentConversationPattern.matches(value)) {
+            "$field must be a canonical UUID or sub_<ULID>"
+        }
     }
 
     fun requireLegacyRunId(value: String, field: String) {
@@ -299,6 +307,21 @@ private fun encodeKnownAgentEvent(value: AgentEvent): JsonObject {
                 AgentEvent.AgentSpawned.serializer(),
                 value,
             ).jsonObject
+        is AgentEvent.WorkerSpawned ->
+            "worker_spawned" to DashJson.instance.encodeToJsonElement(
+                AgentEvent.WorkerSpawned.serializer(),
+                value,
+            ).jsonObject
+        is AgentEvent.WorkerStatus ->
+            "worker_status" to DashJson.instance.encodeToJsonElement(
+                AgentEvent.WorkerStatus.serializer(),
+                value,
+            ).jsonObject
+        is AgentEvent.WorkerDone ->
+            "worker_done" to DashJson.instance.encodeToJsonElement(
+                AgentEvent.WorkerDone.serializer(),
+                value,
+            ).jsonObject
         is AgentEvent.AgentRetry ->
             "agent_retry" to DashJson.instance.encodeToJsonElement(
                 AgentEvent.AgentRetry.serializer(),
@@ -493,6 +516,36 @@ enum class ConversationStatus {
 }
 
 @Serializable
+enum class MobileV2ConversationKind {
+    @SerialName("user") USER,
+    @SerialName("subagent") SUBAGENT,
+}
+
+@Serializable
+enum class MobileV2ConversationOrigin {
+    @SerialName("user") USER,
+    @SerialName("notification") NOTIFICATION,
+    @SerialName("parent") PARENT,
+}
+
+@Serializable
+enum class MobileV2NoticeKind {
+    @SerialName("skill_learned") SKILL_LEARNED,
+    @SerialName("memory_saved") MEMORY_SAVED,
+}
+
+@Serializable
+enum class MobileV2SubagentStatus {
+    @SerialName("running") RUNNING,
+    @SerialName("waiting_input") WAITING_INPUT,
+    @SerialName("done") DONE,
+    @SerialName("failed") FAILED,
+    @SerialName("cancelled") CANCELLED,
+    @SerialName("interrupted") INTERRUPTED,
+    @SerialName("max_turns") MAX_TURNS,
+}
+
+@Serializable
 enum class ConversationRole {
     @SerialName("user") USER,
     @SerialName("assistant") ASSISTANT,
@@ -583,6 +636,66 @@ sealed interface ConversationContent {
             @Serializable(with = MobileV2StrictAgentEventSerializer::class) AgentEvent,
         >,
     ) : ConversationContent
+
+    @Serializable
+    @SerialName("notice")
+    data class Notice(
+        val kind: MobileV2NoticeKind,
+        val text: String,
+    ) : ConversationContent
+}
+
+@Serializable
+data class MobileV2SubagentUsage(
+    val inputTokens: Long,
+    val outputTokens: Long,
+) {
+    init {
+        MobileV2ContractValidation.requireSafeInteger(
+            inputTokens,
+            field = "subagent.usage.inputTokens",
+        )
+        MobileV2ContractValidation.requireSafeInteger(
+            outputTokens,
+            field = "subagent.usage.outputTokens",
+        )
+    }
+}
+
+@Serializable
+data class MobileV2SubagentInfo(
+    val type: String,
+    val name: String? = null,
+    val status: MobileV2SubagentStatus,
+    val description: String,
+    val prompt: String,
+    val model: String,
+    val background: Boolean,
+    val isolation: String? = null,
+    val depth: Long,
+    val startedAt: String,
+    val endedAt: String? = null,
+    val usage: MobileV2SubagentUsage? = null,
+    val toolCallCount: Long,
+    val report: String? = null,
+    val oneShot: Boolean,
+    val workspace: String? = null,
+) {
+    init {
+        MobileV2ContractValidation.requireNonEmpty(type, "subagent.type")
+        name?.let { MobileV2ContractValidation.requireNonEmpty(it, "subagent.name") }
+        isolation?.let { require(it == "worktree") { "subagent.isolation must be worktree" } }
+        MobileV2ContractValidation.requireSafeInteger(depth, field = "subagent.depth")
+        MobileV2ContractValidation.requireRfc3339(startedAt, "subagent.startedAt")
+        endedAt?.let { MobileV2ContractValidation.requireRfc3339(it, "subagent.endedAt") }
+        MobileV2ContractValidation.requireSafeInteger(
+            toolCallCount,
+            field = "subagent.toolCallCount",
+        )
+        workspace?.let {
+            MobileV2ContractValidation.requireNonEmpty(it, "subagent.workspace")
+        }
+    }
 }
 
 @Serializable(with = MobileV2ConversationSummarySerializer::class)
@@ -601,13 +714,17 @@ data class MobileV2ConversationSummary(
     val createdAt: String,
     val updatedAt: String,
     val deletedAt: String? = null,
+    val kind: MobileV2ConversationKind,
+    val parentConversationId: String? = null,
+    val parentTurnId: String? = null,
+    val subagent: MobileV2SubagentInfo? = null,
     val queuePaused: Boolean,
     val queueRevision: Long,
     val pendingFollowUpCount: Long,
     val v2LastSeq: Long,
 ) {
     init {
-        MobileV2ContractValidation.requireCanonicalUuid(id, "conversation.id")
+        MobileV2ContractValidation.requireConversationIdentifier(id, "conversation.id")
         MobileV2ContractValidation.requireNonEmpty(agentId, "conversation.agentId")
         MobileV2ContractValidation.requireNonEmpty(agentName, "conversation.agentName")
         MobileV2ContractValidation.requireSafeInteger(revision, 1, "conversation.revision")
@@ -619,6 +736,15 @@ data class MobileV2ConversationSummary(
         MobileV2ContractValidation.requireRfc3339(updatedAt, "conversation.updatedAt")
         deletedAt?.let {
             MobileV2ContractValidation.requireRfc3339(it, "conversation.deletedAt")
+        }
+        parentConversationId?.let {
+            MobileV2ContractValidation.requireConversationIdentifier(
+                it,
+                "conversation.parentConversationId",
+            )
+        }
+        parentTurnId?.let {
+            MobileV2ContractValidation.requireNonEmpty(it, "conversation.parentTurnId")
         }
         MobileV2ContractValidation.requireSafeInteger(
             queueRevision,
@@ -647,10 +773,14 @@ data class MobileV2ConversationMessage(
     val segmentIndex: Long,
     val deliveryKind: MobileV2DeliveryKind,
     val deliveryStatus: MobileV2DeliveryStatus? = null,
+    val origin: MobileV2ConversationOrigin? = null,
 ) {
     init {
         MobileV2ContractValidation.requireCanonicalUuid(id, "message.id")
-        MobileV2ContractValidation.requireCanonicalUuid(conversationId, "message.conversationId")
+        MobileV2ContractValidation.requireConversationIdentifier(
+            conversationId,
+            "message.conversationId",
+        )
         MobileV2ContractValidation.requireLegacyRunId(turnId, "message.turnId")
         MobileV2ContractValidation.requireSafeInteger(ordinal, 1, "message.ordinal")
         MobileV2ContractValidation.requireRfc3339(createdAt, "message.createdAt")
@@ -779,6 +909,8 @@ object MobileV2ConversationContentSerializer : KSerializer<ConversationContent> 
             "user" -> input.json.decodeFromJsonElement(ConversationContent.User.serializer(), payload)
             "assistant" ->
                 input.json.decodeFromJsonElement(ConversationContent.Assistant.serializer(), payload)
+            "notice" ->
+                input.json.decodeFromJsonElement(ConversationContent.Notice.serializer(), payload)
             else -> throw SerializationException("Unknown mobile v2 content type: $type")
         }
     }
@@ -793,6 +925,10 @@ object MobileV2ConversationContentSerializer : KSerializer<ConversationContent> 
             ).jsonObject
             is ConversationContent.Assistant -> "assistant" to output.json.encodeToJsonElement(
                 ConversationContent.Assistant.serializer(),
+                value,
+            ).jsonObject
+            is ConversationContent.Notice -> "notice" to output.json.encodeToJsonElement(
+                ConversationContent.Notice.serializer(),
                 value,
             ).jsonObject
         }
@@ -811,7 +947,16 @@ object MobileV2ConversationSummarySerializer : KSerializer<MobileV2ConversationS
     override fun deserialize(decoder: Decoder): MobileV2ConversationSummary {
         val input = decoder.requireV2JsonDecoder("conversation summary")
         val source = input.decodeV2Object("conversation summary")
-        rejectExplicitNulls(source, setOf("deletedAt"))
+        rejectExplicitNulls(
+            source,
+            setOf("deletedAt", "parentConversationId", "parentTurnId", "subagent"),
+        )
+        (source["subagent"] as? JsonObject)?.let { subagent ->
+            rejectExplicitNulls(
+                subagent,
+                setOf("name", "isolation", "endedAt", "usage", "report", "workspace"),
+            )
+        }
         return input.json.decodeFromJsonElement(
             MobileV2ConversationSummarySurrogate.serializer(),
             source,
@@ -842,6 +987,10 @@ private data class MobileV2ConversationSummarySurrogate(
     val createdAt: String,
     val updatedAt: String,
     val deletedAt: String? = null,
+    val kind: MobileV2ConversationKind,
+    val parentConversationId: String? = null,
+    val parentTurnId: String? = null,
+    val subagent: MobileV2SubagentInfo? = null,
     val queuePaused: Boolean,
     val queueRevision: Long,
     val pendingFollowUpCount: Long,
@@ -862,6 +1011,10 @@ private data class MobileV2ConversationSummarySurrogate(
         value.createdAt,
         value.updatedAt,
         value.deletedAt,
+        value.kind,
+        value.parentConversationId,
+        value.parentTurnId,
+        value.subagent,
         value.queuePaused,
         value.queueRevision,
         value.pendingFollowUpCount,
@@ -883,6 +1036,10 @@ private data class MobileV2ConversationSummarySurrogate(
         createdAt,
         updatedAt,
         deletedAt,
+        kind,
+        parentConversationId,
+        parentTurnId,
+        subagent,
         queuePaused,
         queueRevision,
         pendingFollowUpCount,
@@ -896,7 +1053,7 @@ object MobileV2ConversationMessageSerializer : KSerializer<MobileV2ConversationM
     override fun deserialize(decoder: Decoder): MobileV2ConversationMessage {
         val input = decoder.requireV2JsonDecoder("conversation message")
         val source = input.decodeV2Object("conversation message")
-        rejectExplicitNulls(source, setOf("deliveryStatus"))
+        rejectExplicitNulls(source, setOf("deliveryStatus", "origin"))
         return input.json.decodeFromJsonElement(
             MobileV2ConversationMessageSurrogate.serializer(),
             source,
@@ -926,6 +1083,7 @@ private data class MobileV2ConversationMessageSurrogate(
     val segmentIndex: Long,
     val deliveryKind: MobileV2DeliveryKind,
     val deliveryStatus: MobileV2DeliveryStatus? = null,
+    val origin: MobileV2ConversationOrigin? = null,
 ) {
     constructor(value: MobileV2ConversationMessage) : this(
         value.id,
@@ -941,6 +1099,7 @@ private data class MobileV2ConversationMessageSurrogate(
         value.segmentIndex,
         value.deliveryKind,
         value.deliveryStatus,
+        value.origin,
     )
 
     fun toValue() = MobileV2ConversationMessage(
@@ -957,6 +1116,7 @@ private data class MobileV2ConversationMessageSurrogate(
         segmentIndex,
         deliveryKind,
         deliveryStatus,
+        origin,
     )
 }
 

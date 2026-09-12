@@ -85,6 +85,8 @@ struct AgentEditorView: View {
         .accessibilityIdentifier("agent.editor.save")
       }
     }
+    .frame(maxWidth: DashTheme.Layout.readableWidth)
+    .frame(maxWidth: .infinity)
     .navigationTitle(original == nil ? "Create agent" : "Edit agent")
     .searchable(text: $modelSearch, prompt: "Search models")
     .task { await feature.loadModels() }

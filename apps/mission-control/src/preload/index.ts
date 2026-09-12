@@ -9,7 +9,11 @@ import type {
   McpStatusChange,
   MissionControlAPI,
 } from '../shared/ipc.js';
-import { unwrapChatIpcResult } from '../shared/ipc.js';
+import {
+  CHAT_SUBAGENT_RESUBSCRIBED,
+  CHAT_SUBAGENT_WATCH_LOST,
+  unwrapChatIpcResult,
+} from '../shared/ipc.js';
 import type { ProjectsEvent } from '../shared/projects-ipc.js';
 
 type ApiResult<K extends keyof MissionControlAPI> = MissionControlAPI[K] extends (
@@ -191,9 +195,24 @@ const api: MissionControlAPI = {
     ipcRenderer.on('chat:conversationRenamed', listener);
     return () => ipcRenderer.removeListener('chat:conversationRenamed', listener);
   },
+  onSubagentResubscribed: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, conversationId: string) =>
+      callback(conversationId);
+    ipcRenderer.on(CHAT_SUBAGENT_RESUBSCRIBED, listener);
+    return () => ipcRenderer.removeListener(CHAT_SUBAGENT_RESUBSCRIBED, listener);
+  },
+  onSubagentWatchLost: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, conversationId: string) =>
+      callback(conversationId);
+    ipcRenderer.on(CHAT_SUBAGENT_WATCH_LOST, listener);
+    return () => ipcRenderer.removeListener(CHAT_SUBAGENT_WATCH_LOST, listener);
+  },
 
   // Skills
   skillsList: (agentId) => ipcRenderer.invoke('skills:list', agentId),
+  skillsLessons: (agentId, skillName) => ipcRenderer.invoke('skills:lessons', agentId, skillName),
+  skillsRetireLesson: (agentId, skillName, lessonId) =>
+    ipcRenderer.invoke('skills:retireLesson', agentId, skillName, lessonId),
   skillsGet: (agentId, skillName) => ipcRenderer.invoke('skills:get', agentId, skillName),
   skillsUpdateContent: (agentId, skillName, content) =>
     ipcRenderer.invoke('skills:updateContent', agentId, skillName, content),
@@ -215,12 +234,18 @@ const api: MissionControlAPI = {
   memoryUpdateConfig: (agentId, patch) => ipcRenderer.invoke('memory:updateConfig', agentId, patch),
 
   // Swarm panel
-  swarmListRuns: (agentId) => ipcRenderer.invoke('swarm:listRuns', agentId),
-  swarmGetRun: (agentId, runId) => ipcRenderer.invoke('swarm:getRun', agentId, runId),
-  swarmCancelWorker: (agentId, runId, workerId) =>
-    ipcRenderer.invoke('swarm:cancelWorker', agentId, runId, workerId),
-  swarmSend: (agentId, runId, workerId, message) =>
-    ipcRenderer.invoke('swarm:send', agentId, runId, workerId, message),
+  subagentsList: (conversationId) => ipcRenderer.invoke('subagents:list', conversationId),
+  subagentStop: (subagentId) => ipcRenderer.invoke('subagents:stop', subagentId),
+  subagentResume: (subagentId, message, requestId) =>
+    ipcRenderer.invoke('subagents:resume', subagentId, message, requestId),
+  conversationMessages: (conversationId, before) =>
+    ipcRenderer.invoke('conversations:messages', conversationId, before),
+  subagentSubscribe: (agentId, conversationId) =>
+    ipcRenderer.send('subagents:watch', { watch: true, agentId, conversationId }),
+  subagentUnsubscribe: (conversationId) =>
+    ipcRenderer.send('subagents:watch', { watch: false, conversationId }),
+  subagentRewatch: (agentId, conversationId) =>
+    ipcRenderer.send('subagents:watch', { watch: true, rewatch: true, agentId, conversationId }),
 
   // Settings
   settingsGet: () => ipcRenderer.invoke('settings:get'),

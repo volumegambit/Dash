@@ -66,7 +66,10 @@ final class AccountUITests: DashUITestCase {
     let app = launch(scenario: "approve-device")
 
     selectTab("tab.settings", in: app)
-    element("account.approve-device", in: app).tap()
+    // Two-column iPad layout (design §1.1): Settings presents as a form sheet
+    // whose viewport is far shorter than the old full-height Settings column,
+    // so this row now sits below the fold and has to be scrolled to.
+    scrollSettingsToElement("account.approve-device", in: app).tap()
 
     XCTAssertTrue(
       app.staticTexts["Allow \"Chrome on MacBook\" to access ui-approve-gateway?"]

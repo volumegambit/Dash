@@ -347,7 +347,11 @@ describe('gateway shutdown coordination', () => {
     const mutation = admission.acquire();
     const coordinator = createGatewayShutdownCoordinator({
       admission,
-      resumableChatHub: { suspend: vi.fn(async () => calls.push('hub.suspend')) },
+      resumableChatHub: {
+        suspend: vi.fn(async () => {
+          calls.push('hub.suspend');
+        }),
+      },
       getChatLifecycles: () => [],
       getProjectsLifecycle: () => undefined,
       mcpManager: { stop: vi.fn(async () => calls.push('mcp.stop')) },
@@ -407,6 +411,8 @@ describe('gateway shutdown coordination', () => {
       onMessage(handler) {
         messageHandler = handler;
       },
+      getHealth: () => 'connected',
+      onHealthChange: () => {},
       async trigger(message) {
         await messageHandler?.(message);
       },
@@ -499,7 +505,7 @@ describe('gateway shutdown coordination', () => {
       onMessage: vi.fn((handler) => {
         messageHandler = handler;
       }),
-      getHealth: vi.fn(() => 'connected'),
+      getHealth: vi.fn(() => 'connected' as const),
       onHealthChange: vi.fn(),
       async trigger(message) {
         await messageHandler?.(message);
@@ -615,7 +621,12 @@ describe('gateway shutdown coordination', () => {
       },
       gateway: { stop: vi.fn(async () => calls.push('gateway.stop')) },
       backgroundFlushes: [
-        { label: 'learning', flush: vi.fn(async () => calls.push('learning.flush')) },
+        {
+          label: 'learning',
+          flush: vi.fn(async () => {
+            calls.push('learning.flush');
+          }),
+        },
       ],
       getManagementServer: () => managementServer,
       getLanServer: () => lanServer,

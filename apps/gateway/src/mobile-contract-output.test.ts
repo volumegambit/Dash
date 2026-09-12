@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ConversationSummary, MobileWsServerFrame } from '@dash/mobile-contract';
+import type { MobileV2ConversationBootstrap } from '@dash/mobile-contract-v2';
 import addFormats from 'ajv-formats';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { WebSocket } from 'ws';
@@ -304,7 +305,7 @@ describe('mobile harness emitted contract output', () => {
         `/conversations/${created.id as string}/bootstrap?limit=10`,
       );
       expect(bootstrapResponse.status).toBe(200);
-      const bootstrap = await bootstrapResponse.json();
+      const bootstrap = (await bootstrapResponse.json()) as MobileV2ConversationBootstrap;
       expectV2Schema('openapi', 'MobileV2ConversationBootstrap', bootstrap);
       expect(bootstrap.v2ThroughSeq).toBe(bootstrap.conversation.v2LastSeq);
 

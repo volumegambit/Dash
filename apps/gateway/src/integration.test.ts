@@ -514,6 +514,7 @@ describe('Follow Up v2 harness integration', () => {
             frame.type === 'event' &&
             frame.runId === runId &&
             frame.event.type === 'text_delta' &&
+            typeof frame.event.text === 'string' &&
             frame.event.text.includes('Steered'),
         ),
       ).toBe(false);

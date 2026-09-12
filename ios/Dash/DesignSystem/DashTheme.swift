@@ -74,4 +74,10 @@ enum DashTheme {
     /// `@@` hunk header, which orients the reader without being content.
     static let contentTertiary = 0.55
   }
+
+  /// iPad goal Phase A (design §1.2): the centred reading column for the
+  /// transcript, composer and agent forms at regular width.
+  enum Layout {
+    static let readableWidth: CGFloat = 760
+  }
 }

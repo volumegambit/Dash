@@ -173,7 +173,45 @@ protocol ChatFeatureSynchronizing: Actor {
     conversationID: String,
     sinceSeq: Int
   ) async throws -> [ReplayEntryDTO]
+  /// A child conversation's own messages and its `oneShot` fact, for an
+  /// expanded sub-agent row (design 8.3).
+  ///
+  /// Deliberately NOT `refresh(conversationID:)`, even though that method
+  /// accepts any id: `refresh` PERSISTS what it reads into the conversation
+  /// cache and reconciles a `notFound` into a deletion, both of which are
+  /// wrong for a child. A child is not in the user's conversation list
+  /// (`conversation-routes.ts` refuses a `kind` filter), so caching one would
+  /// put a row in the cache that nothing lists and nothing evicts, and a
+  /// pruned child would look like the OPEN conversation being deleted.
+  func subagentTranscript(childID: String) async throws -> SubagentTranscriptSnapshot
+  /// Type into a child (design 7.7). See `SubagentResumeRequest` for why this
+  /// is REST and not a `message` frame.
+  func resumeSubagent(id: String, message: String, requestID: String) async throws
+  /// This conversation's sub-agent children (design 7.7, §8.4) — the tasks
+  /// sheet's SOLE model.
+  ///
+  /// Deliberately not merged with the transcript fold. The fold sees only
+  /// children whose events sit in a message this client has loaded, it exempts
+  /// a background child from end-of-stream terminalization (so that row reads
+  /// `running` forever once its spawning turn ends), and after a gateway
+  /// restart the recovered child ROWS are all there is. Worse, the fold's
+  /// `done` comes from a PERSISTED event that never changes, so a resumed
+  /// child would read `done` for the whole of its second run — the persistent
+  /// bug web's D3 found and rejected the merge over.
+  func subagents(conversationID: String) async throws -> [SubagentListEntryDTO]
+  /// Cancel a child, returning the route's own terminal status — which is
+  /// authoritative rather than guessable (`SubagentStopResponseDTO`).
+  func stopSubagent(id: String) async throws -> String
   func shutdown() async
+}
+
+/// One read of a child conversation for an expanded row.
+struct SubagentTranscriptSnapshot: Equatable, Sendable {
+  let messages: [ConversationMessageDTO]
+  /// `SubagentInfoDTO.oneShot`. `nil` when the summary carries no `subagent`
+  /// block at all — an older gateway, or a conversation that is not a child —
+  /// in which case the body composer stays enabled and the server decides.
+  let oneShot: Bool?
 }
 
 protocol ChatFeatureTransporting: Actor {
@@ -195,6 +233,10 @@ protocol ChatFeatureTransporting: Actor {
   ) async throws
   func answer(turnID: String, questionID: String, answer: String) async throws
   func cancel(turnID: String) async throws
+  /// Watch the conversation the user has open, so server-initiated turns
+  /// reach this client (sub-agents design 7.6).
+  func subscribe(agentID: String, conversationID: String) async throws
+  func unsubscribe(agentID: String, conversationID: String) async throws
   func suspendForDetachment() async
   func shutdown() async
 }
@@ -324,6 +366,14 @@ actor LiveChatFeatureTransport: ChatFeatureTransporting {
 
   func cancel(turnID: String) async throws {
     try await connection.cancel(turnID: turnID)
+  }
+
+  func subscribe(agentID: String, conversationID: String) async throws {
+    try await connection.subscribe(agentID: agentID, conversationID: conversationID)
+  }
+
+  func unsubscribe(agentID: String, conversationID: String) async throws {
+    try await connection.unsubscribe(agentID: agentID, conversationID: conversationID)
   }
 
   func suspendForDetachment() async {
@@ -479,6 +529,44 @@ actor LiveChatSynchronizer: ChatFeatureSynchronizing {
     }
   }
 
+  func subagentTranscript(childID: String) async throws -> SubagentTranscriptSnapshot {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    let api = try await resolvedAPI()
+    try validate(lifecycle)
+    let page = try await api.messages(conversationID: childID, limit: 100, before: nil)
+    try validate(lifecycle)
+    // Best-effort: a child whose summary cannot be read still renders its
+    // transcript, with `oneShot` unknown. Refusing the whole expansion because
+    // one FACT is missing would be a worse trade — §8.3's body is the point.
+    let oneShot = try? await api.conversation(id: childID).subagent?.oneShot
+    return SubagentTranscriptSnapshot(messages: page.items, oneShot: oneShot)
+  }
+
+  func resumeSubagent(id: String, message: String, requestID: String) async throws {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    let api = try await resolvedAPI()
+    try validate(lifecycle)
+    _ = try await api.resumeSubagent(id: id, message: message, requestID: requestID)
+  }
+
+  func subagents(conversationID: String) async throws -> [SubagentListEntryDTO] {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    let api = try await resolvedAPI()
+    try validate(lifecycle)
+    return try await api.subagents(conversationID: conversationID).subagents
+  }
+
+  func stopSubagent(id: String) async throws -> String {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    let api = try await resolvedAPI()
+    try validate(lifecycle)
+    return try await api.stopSubagent(id: id).status
+  }
+
   private func resolvedAPI() async throws -> GatewayAPI {
     if let api { return api }
     let created = try await makeAPI()
@@ -577,6 +665,29 @@ final class ChatFeature {
   private(set) var bufferedV2Frames: [MobileV2WsServerFrame] = []
   private(set) var v2ProtocolCloseError: V2ProtocolCloseError?
 
+  /// Scroll anchor (iPad goal Phase A, Task 4): the id of the last visible
+  /// transcript message, tracked by `ChatView`'s `scrollPosition(id:)`
+  /// binding. View-owned, not persisted — it only needs to survive a
+  /// re-host of `ChatView` within the same process, which is exactly what
+  /// this cached-per-conversation `ChatFeature` instance already does (see
+  /// `AppModel.chatFeatures`). Cleared by `clearScrollAnchor()`, which
+  /// `ChatView`'s `onDisappear` only calls when the conversation is
+  /// genuinely being left, not on a transient re-host.
+  var scrollAnchorMessageID: String?
+
+  /// Whether the transcript was sitting at (or within
+  /// `ChatScrollGeometry.nearBottomThreshold` of) its bottom when it was
+  /// last observed — the other half of the re-host restore decision (Task 4
+  /// review fix, Important 2), consumed by `ChatScrollRestoration.decide`.
+  ///
+  /// This lives here, next to the anchor, for the same reason the anchor
+  /// does: `ChatView`'s own `isNearBottom` is view `@State` and is
+  /// re-initialized to `true` by the very re-host the restore has to survive,
+  /// so deriving "was the user pinned?" from it reads `true` for everybody
+  /// and makes the restore branch dead code. `true` by default: a transcript
+  /// nobody has scrolled yet is pinned to the bottom.
+  private(set) var scrollWasPinnedToBottom = true
+
   var canSend: Bool {
     guard
       sendAuthorityIsAvailable,
@@ -605,6 +716,61 @@ final class ChatFeature {
       && state.activeTurnID.map(localTurnIDs.contains) == true
       && cancelRequestSent == false
       && cancelRequestInFlight == false
+  }
+
+  /// The newest assistant reply's raw markdown, or `nil` when no assistant
+  /// message has produced text yet, or its text is empty/whitespace-only.
+  private var lastAssistantMarkdown: String? {
+    guard
+      let text = state.messages.last(where: { $0.role == .assistant })?.assistant?.text,
+      text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    else { return nil }
+    return text
+  }
+
+  /// Whether ⌘⇧C (`KeyboardCommand.copyLastResponse`) has anything to copy.
+  ///
+  /// MUST agree with `lastAssistantText`'s emptiness (Task 5 review fix,
+  /// Important 1): `copyLastResponse()` writes `lastAssistantText` straight
+  /// to `UIPasteboard.general.string`, so if this predicate says "copyable"
+  /// while the flattened text is actually empty, ⌘⇧C silently wipes the
+  /// user's clipboard — and, via Handoff, their Universal Clipboard — on a
+  /// keypress that looked enabled. That was reachable with no race at all:
+  /// a reply that is only a thematic break (`"---"`) is non-empty raw
+  /// markdown but flattens to `""`, because `markdownPlainTextAccessibilityLabel`
+  /// drops horizontal rules entirely.
+  ///
+  /// This is NOT simply `lastAssistantText != nil`, though: that would
+  /// re-parse the whole reply through `attributedInlineMarkdown` (which
+  /// builds an `AttributedString(markdown:)` and runs an `NSDataDetector`
+  /// pass) every time this predicate is read, and per the design's own
+  /// tradeoff (see `ChatCommandActions`'s doc comment) enablement is
+  /// re-derived through `@Observable` whenever `state.messages` mutates —
+  /// i.e. potentially once per streamed frame while a reply is still
+  /// arriving. That cost is what previously starved the main thread badly
+  /// enough that typing into the composer stopped landing. Instead this
+  /// reuses `segmentMarkdown`'s cheap, single-pass block split and
+  /// `markdownBlocksHaveVisibleText`'s raw-text check, which approximates
+  /// "will this flatten to nothing" without the expensive inline parse.
+  /// `copyLastResponse()` still guards again at the write for the residual
+  /// gap between "approximately agrees" and "byte-for-byte agrees".
+  var canCopyLastAssistantText: Bool {
+    guard let markdown = lastAssistantMarkdown else { return false }
+    return markdownBlocksHaveVisibleText(segmentMarkdown(markdown))
+  }
+
+  /// The newest assistant reply as plain text, for ⌘⇧C. Computed on demand —
+  /// i.e. when the command actually fires — never per frame; see
+  /// `canCopyLastAssistantText` for why that distinction matters.
+  ///
+  /// Flattened with the SAME `markdownPlainTextAccessibilityLabel(for:)` the
+  /// assistant bubble's context-menu Copy uses (`MessageViews.swift`,
+  /// `assistantContextMenuItems`), deliberately rather than a second
+  /// flattener: copying the last response from the keyboard has to put the
+  /// exact same characters on the pasteboard as long-pressing that bubble
+  /// and choosing Copy.
+  var lastAssistantText: String? {
+    lastAssistantMarkdown.map { markdownPlainTextAccessibilityLabel(for: $0) }
   }
 
   var composerDisabledReason: String? {
@@ -679,7 +845,15 @@ final class ChatFeature {
   /// existing thread looked "fresh" and stole focus (keyboard up on open —
   /// seen in the 2026-09-05 transcript-scroll test videos).
   private(set) var hasLoadedCache = false
-  @ObservationIgnored private var isVisible = false
+  /// How many hosts currently have this feature on screen (whole-branch
+  /// final review, blocking 1). Task 10 made one `ChatFeature` serve TWO
+  /// hosts at once — the main window's detail column and the chat-only
+  /// scene `ConversationWindowView` opens — and this used to be a single
+  /// `Bool` (`isVisible`), so the first host to tear down suspended the
+  /// transport out from under a host that was still visible. Incremented by
+  /// `appear()`, decremented by `disappear()`; only the transition to zero
+  /// detaches.
+  @ObservationIgnored private var visibleHostCount = 0
   @ObservationIgnored private var isConnected = false
   @ObservationIgnored private var wasReconnecting = false
   @ObservationIgnored private var cancelRequestSent = false
@@ -693,6 +867,14 @@ final class ChatFeature {
   @ObservationIgnored private var draftWriteRevision: UInt64 = 0
   @ObservationIgnored private var attachmentIntentRevision: UInt64 = 0
   @ObservationIgnored private var attachmentRequested = false
+  /// Whether this conversation is currently WATCHED over the live socket
+  /// (sub-agents design 7.6). Reset whenever the transport stops being
+  /// connected, so the next appear/reconnect re-establishes it.
+  @ObservationIgnored private var isSubscribed = false
+  /// Child conversations this socket is watching for §8.3's live nested
+  /// transcript. One entry per EXPANDED row; cleared with the socket, like
+  /// `isSubscribed`, because a reconnect drops the gateway's subscriptions.
+  @ObservationIgnored private var subscribedSubagentIDs: Set<String> = []
   @ObservationIgnored private var canonicalRefreshRevision: UInt64 = 0
   @ObservationIgnored private var recoveryClassificationRevision: UInt64?
   @ObservationIgnored private var recoveryClassificationTurnID: String?
@@ -803,10 +985,18 @@ final class ChatFeature {
     lifecycleChangeHandler = handler
   }
 
+  /// Whether any host still has this transcript on screen. `ChatView`'s
+  /// `onDisappear` cleanup (`clearScrollAnchor()` and the empty-compose
+  /// discard) is computed from the MAIN window's navigation state alone, so
+  /// it cannot tell "the user left this conversation" from "one of two
+  /// windows showing it went away" — this is what lets it tell the
+  /// difference.
+  var hasVisibleHosts: Bool { visibleHostCount > 0 }
+
   func appear() async {
     guard rejectIfShutdown() == false else { return }
+    visibleHostCount += 1
     let attachmentIntent = beginAttachmentIntent(attached: true)
-    isVisible = true
     startEventTaskIfNeeded()
     await startRecoveryChangeObservation()
     guard isShutdown == false else { return }
@@ -823,16 +1013,62 @@ final class ChatFeature {
     await refreshCanonical(preserveLiveProjection: true)
     guard isCurrentAttachmentIntent(attachmentIntent, attached: true) else { return }
     await attachToCanonicalTurnIfNeeded()
+    await subscribeToOpenConversation()
+    await resubscribeExpandedSubagents()
+    // §8.4's first read. The gateway replays nothing on a `subscribe`, so the
+    // only way to learn about a child that started — or finished — while this
+    // client was not watching is to ask.
+    await refreshSubagents()
   }
 
   func disappear() async {
     guard isShutdown == false else { return }
+    // Count down synchronously, before the first `await`: an appear from the
+    // other host can interleave around `persistDraft()` below, and a count
+    // read after that suspension is not the count this teardown belongs to.
+    // `> 0` rather than an unconditional decrement so an unbalanced extra
+    // teardown cannot drive the count negative, which would leave the next
+    // genuine departure unable to detach at all.
+    guard visibleHostCount > 0 else { return }
+    visibleHostCount -= 1
+    guard visibleHostCount == 0 else {
+      // Another host still has this transcript on screen. The draft is still
+      // worth flushing (it is shared state and this host may never run
+      // again), but nothing else about detachment applies — in particular
+      // NOT `beginAttachmentIntent(attached: false)`, which would cancel the
+      // other host's in-flight `appear()` at its `isCurrentAttachmentIntent`
+      // guards.
+      await persistDraft()
+      return
+    }
     let attachmentIntent = beginAttachmentIntent(attached: false)
-    isVisible = false
     await persistDraft()
     guard isCurrentAttachmentIntent(attachmentIntent, attached: false) else { return }
     guard state.activeTurnID == nil else { return }
     await suspendForDetachment()
+  }
+
+  /// Drops the remembered scroll position. Callers must only do this when
+  /// the conversation is genuinely being left (see `ChatView`'s
+  /// `onDisappear` and its `stillNavigatedTo` check) — a transient re-host
+  /// must leave `scrollAnchorMessageID` intact so the transcript can
+  /// restore its position. Also resets `scrollWasPinnedToBottom` to its
+  /// pinned default, so a later return to this conversation starts at the
+  /// bottom rather than inheriting a stale "was scrolled away" intent with
+  /// no anchor to go with it.
+  func clearScrollAnchor() {
+    scrollAnchorMessageID = nil
+    scrollWasPinnedToBottom = true
+  }
+
+  /// Records the transcript's current pinned-to-bottom state so it outlives
+  /// `ChatView` (Task 4 review fix, Important 2). Called from `ChatView`'s
+  /// `onChange(of: isNearBottom)` — the two-arm
+  /// `onScrollGeometryChange`/`PreferenceKey` mechanism (audit #4) stays the
+  /// single source of that signal; this only mirrors it somewhere that
+  /// survives a re-host.
+  func recordScrollPinnedToBottom(_ pinned: Bool) {
+    scrollWasPinnedToBottom = pinned
   }
 
   func loadOlder() async {
@@ -1065,6 +1301,14 @@ final class ChatFeature {
       let index = state.messages.firstIndex(where: { $0.id == id && $0.role == .user }),
       let user = state.messages[index].user
     else { return false }
+    // A `.user` row the user did not write (sub-agents design 8.5). Two of
+    // them now: a NOTIFICATION row's text is the
+    // `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the orchestrator was fed,
+    // and a PARENT row's is the orchestrator's own instruction inside a
+    // child's transcript. Resending either would submit somebody else's words
+    // as the user's. `MessageListView` withholds the affordance too; this
+    // guard holds regardless of caller.
+    guard isSystemAuthoredRow(state.messages[index]) == false else { return false }
     guard composerMutationAllowed, sendAuthorityIsAvailable else { return false }
 
     let attachments: [PreparedAttachment] = user.images.compactMap { image in
@@ -1119,6 +1363,688 @@ final class ChatFeature {
     state.attachments = attachmentsSnapshot
     await persistDraft()
     return true
+  }
+
+  // MARK: - Sub-agent rows (design 8.1-8.3)
+
+  /// Toggle one row's expanded body.
+  ///
+  /// The reducer write happens FIRST and unconditionally, so the disclosure
+  /// animates immediately and never depends on the network; the fetch and the
+  /// subscription follow. Both are best-effort by design: an unopenable child
+  /// must not take the parent transcript down with it (web reached the same
+  /// rule in D2), so a failure lands on that row's own error line.
+  /// `loadsTranscript` is false for a row at `maxSubagentDepth`, whose body
+  /// opens no transcript: fetching and subscribing there would hold a live
+  /// subscription nothing renders.
+  ///
+  /// **Synchronous on purpose, returning its follow-up rather than awaiting
+  /// it.** The caller runs this inside `withAnimation`, and a `Task` there
+  /// would put the state write outside the transaction — SwiftUI would commit
+  /// an empty animation and the row would pop open. The expansion write is
+  /// effect-free, so it goes straight through `ChatReducer.reduce` the way
+  /// `answer(questionID:answer:)` already does for `.answerSubmitted`; only
+  /// the network follow-up is deferred. The returned `Task` is what tests
+  /// await; callers in the view ignore it.
+  @discardableResult
+  func setSubagentExpanded(
+    _ childID: String,
+    _ isExpanded: Bool,
+    loadsTranscript: Bool = true
+  ) -> Task<Void, Never> {
+    guard rejectIfShutdown() == false else { return Task {} }
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .subagentExpanded(
+        id: childID,
+        isExpanded: isExpanded,
+        opensTranscript: loadsTranscript
+      )
+    )
+    guard loadsTranscript else { return Task {} }
+    return Task { [self] in
+      if isExpanded {
+        await loadSubagentTranscript(childID: childID)
+        await subscribeToSubagent(childID)
+      } else {
+        await unsubscribeFromSubagent(childID)
+      }
+    }
+  }
+
+  /// The child's own transcript (REST) plus its `oneShot` fact.
+  ///
+  /// Re-read on EVERY expansion rather than once: the row is collapsed most of
+  /// the time, and while it is collapsed no subscription is held, so anything
+  /// the child said in between reached nobody. A cached-once transcript would
+  /// silently be stale exactly when the user goes looking.
+  func loadSubagentTranscript(childID: String) async {
+    guard isShutdown == false else { return }
+    do {
+      let snapshot = try await synchronizer.subagentTranscript(childID: childID)
+      guard isShutdown == false, state.subagentUI[childID] != nil else { return }
+      await applyReducerAction(
+        .subagentTranscriptLoaded(id: childID, messages: snapshot.messages)
+      )
+      if let oneShot = snapshot.oneShot {
+        await applyReducerAction(.subagentInfoLoaded(id: childID, oneShot: oneShot))
+      }
+    } catch is CancellationError {
+      return
+    } catch {
+      guard isShutdown == false else { return }
+      // Reported on the row, NOT through `applyFailure`: a child that 404s
+      // (pruned, or on a gateway that does not know it) must not drive the
+      // whole conversation into a repair state. `unauthorized` is the one
+      // exception worth escalating, because every later request will fail too.
+      if case GatewayError.unauthorized = error {
+        await applyFailure(error)
+        return
+      }
+      await applyReducerAction(
+        .subagentTranscriptFailed(
+          id: childID,
+          message: subagentFailureText(error, fallback: "Couldn't load this agent's transcript.")
+        )
+      )
+    }
+  }
+
+  /// Unsent composer text for sub-agent rows, keyed `reply:<childId>` and
+  /// `body:<childId>` — web's keying verbatim
+  /// (`apps/web/src/ui/blocks/SubagentBlock.tsx:674`, `:689`). One child can
+  /// render BOTH a `waiting_input` reply and a body composer at once, so a
+  /// bare child id would make them share one buffer.
+  ///
+  /// **Why it is a property here and not in `ChatState.subagentUI`.** `ChatView`
+  /// reads `feature.state`, so a draft routed through the reducer invalidates
+  /// every reader of `state` — the whole transcript — on each keystroke. That
+  /// is the fan-out web measured (six Markdown re-renders per keystroke) and
+  /// it is a real reason to keep the draft out of `ChatState`. It is not a
+  /// reason to drop the draft: Swift Observation tracks access **per stored
+  /// property**, so reading this one from inside `SubagentComposer.body`
+  /// invalidates that composer and nothing else. The first round ruled out
+  /// `ChatState` correctly and then stopped looking, and the cost was a
+  /// divergence from web that the goal's parity requirement does not allow.
+  ///
+  /// **`Composer` is in the name deliberately.** `ChatAssistantState` already
+  /// has an unrelated `subagentDrafts` (`ChatReducer.swift:198`) — the
+  /// accumulating `[SubagentDraft]` sub-agent *cards*, which `ChatView` reads
+  /// for the transcript signature. Two different things sharing one name in
+  /// two files a reader of this feature has open at once is how a future
+  /// reader chasing "the draft store" lands in the wrong one; the compiler
+  /// would not stop them, because it separates the two by type, not by intent.
+  var subagentComposerDrafts: [String: String] = [:]
+
+  func subagentComposerDraft(_ key: String) -> String { subagentComposerDrafts[key] ?? "" }
+
+  /// Empty text REMOVES the key rather than storing `""`, so a session that
+  /// visits many rows does not accumulate one entry per composer it rendered.
+  func setSubagentComposerDraft(_ key: String, _ text: String) {
+    if text.isEmpty {
+      subagentComposerDrafts.removeValue(forKey: key)
+    } else {
+      subagentComposerDrafts[key] = text
+    }
+  }
+
+  // MARK: - Tasks sheet (§8.4)
+
+  /// This conversation's sub-agent children, from `GET
+  /// /conversations/{id}/subagents` and from NOTHING ELSE (§8.4, ruling R1).
+  ///
+  /// **Why this LIST is not merged with the transcript fold.** Web tried the
+  /// merge (fold ∪ REST, terminal-wins) in its D3 and rejected it over a bug
+  /// that never goes away: a resume restarts a `done` child, but the fold's
+  /// `done` comes from a PERSISTED event that never changes, so the merged list
+  /// would read `done` for the whole of the child's second run. The fold has
+  /// three more limits on top of that — it sees only children anchored in a
+  /// message this client has loaded, it exempts a background child from
+  /// end-of-stream terminalization (which is correct for the ROW and wrong for
+  /// a list that claims to say what is live), and after a gateway restart the
+  /// recovered child rows are all there is.
+  ///
+  /// **A transcript ROW is not this list and does not follow that rule.** It
+  /// reads `restSubagentStatus` when the server has an entry for it and its own
+  /// fold otherwise — when-present, not terminal-wins. That rule shows the
+  /// fresher value ONLY while this list is fresh, so a resume that leaves it
+  /// unread reproduces D3's bug from the other side: same trigger, same
+  /// symptom, same duration, with the stale value coming from REST instead of
+  /// the fold. `sendToSubagent` therefore re-reads on every ACCEPTED SEND, the
+  /// way `stopSubagent` always has — not only on a resume. `POST
+  /// /subagents/:id/resume` is also how a LIVE child is steered or answered,
+  /// which `coordinator.sendToChild` serves as `mode: 'queued'`
+  /// (`packages/swarm/src/coordinator.ts:676-682`), and all three composers —
+  /// the row's inline reply, the row's body, the sheet's — go through the one
+  /// path. See `restSubagentStatus` for the two costs this does carry and the
+  /// one it cannot fix.
+  ///
+  /// **Why a property on the feature and not a `ChatState` field.** Swift
+  /// Observation tracks access per STORED property, and `ChatState` is one
+  /// stored property that `ChatView`'s whole transcript reads. A list that
+  /// re-reads on every parent `done` would therefore invalidate the transcript
+  /// once per assistant turn — web measured exactly this fan-out as its D3 I3a
+  /// and paid a fix round for it. Here the readers are the badge, the strip,
+  /// the sheet and — since `restSubagentStatus` — each depth-0 sub-agent ROW,
+  /// every one of them reading INSIDE its own body, so a list write invalidates
+  /// those views and nothing else. `feature.state` is untouched by it, which is
+  /// what keeps the transcript out of the fan-out and is pinned by
+  /// `aListWriteDoesNotInvalidateTheTranscript`. Same reasoning, and the same
+  /// precedent, as `subagentComposerDrafts`.
+  private(set) var subagents: [SubagentListEntryDTO] = []
+
+  /// Children with a `POST /subagents/{id}/stop` in flight. Held here rather
+  /// than in the sheet's `@State` so the disabled Stop button survives the
+  /// sheet being dismissed and re-presented mid-request.
+  private(set) var stoppingSubagentIDs: Set<String> = []
+
+  /// The last stop refusal per child, verbatim from the gateway. Cleared on the
+  /// next attempt and by a re-read that shows the child terminal.
+  private(set) var subagentStopErrors: [String: String] = [:]
+
+  /// The one error line a tasks-sheet row can show, whichever of the row's two
+  /// actions produced it.
+  ///
+  /// **Why this exists at all.** A refused RESUME does not land here — it lands
+  /// on `ChatState.subagentUI[id].lastError`, whose only other render site is
+  /// the transcript card. The sheet's headline case is a background child that
+  /// finished after its spawning turn, which the transcript has NO card for, so
+  /// before this accessor the gateway's three actionable 409s
+  /// (`coordinator.ts:674/717/726` — one-shot type, unrebuildable grant, steer
+  /// cap) were rendered by no view anywhere: the spinner stopped, the sentence
+  /// stayed in the field, and nothing said why.
+  ///
+  /// **Precedence is fixed — the stop's slot first — and the two writers are
+  /// what make that "whichever action was taken last".** `stopSubagent` clears
+  /// BOTH slots on its attempt and `sendToSubagent` clears both on its, so a
+  /// row acted on ONE ACTION AT A TIME shows the refusal of the action the user
+  /// just took and never an older one.
+  ///
+  /// **That guarantee is sequential only, and the sheet permits both actions at
+  /// once.** Stop is disabled on `stoppingSubagentIDs`
+  /// (`TasksSheet.swift:286`, the `.disabled` on the row's Stop button) and the
+  /// resume composer's Send on its own `isSending` (`TasksSheet.swift:320`, the
+  /// `isSending:` argument to `SubagentComposer`) — two independent gates on
+  /// one row. The symbols are named beside the numbers because `4dc6f3a6` cited
+  /// these two lines while moving them and this round moved them again, so a
+  /// bare number here has been wrong twice in three commits. With both
+  /// requests out, both attempts have cleared both slots, and then the fixed
+  /// precedence decides: if the STOP's answer lands first the row shows its
+  /// line and the resume's, which landed later, is silent. Which action was
+  /// STARTED first is irrelevant; only which answer arrives first is — so the
+  /// cure is gates on BOTH buttons (Send disabled while a stop is in flight AND
+  /// Stop disabled while a send is), because one gate closes only one of the
+  /// two initiation orders. Not fixed here: a reader is the wrong place for a
+  /// gate, and this comment is restated rather than left standing so that
+  /// nothing rests on the stronger claim it used to make.
+  ///
+  /// **`lastError` has a second writer, so this line is not only about
+  /// actions.** `.subagentTranscriptFailed` puts a failed EXPANSION in the same
+  /// slot (`ChatReducer.swift:648-652`), so "Couldn't load this agent's
+  /// transcript" renders on the sheet's row as well as on the card, and a stop
+  /// taken from the sheet clears a transcript error the user may never have
+  /// seen. Accepted: one line per child was already the model, and a failed
+  /// expansion re-reports itself on the next attempt.
+  func subagentRowError(_ childID: String) -> String? {
+    subagentStopErrors[childID] ?? state.subagentUI[childID]?.lastError
+  }
+
+  /// Monotonic cursor for list reads, so only the NEWEST one ever writes.
+  ///
+  /// Every trigger fires in bursts — two children starting inside one turn is
+  /// two reads, and the notification `accepted` and the turn's `done` are two
+  /// more — and nothing makes REST answer them in order, so a read issued
+  /// before a child finished can resolve after one issued after it.
+  /// Last-write-wins would park the sheet on the older snapshot with nothing
+  /// left to correct it.
+  @ObservationIgnored private var subagentReadSeq: UInt64 = 0
+  @ObservationIgnored private var appliedSubagentReadSeq: UInt64 = 0
+
+  /// The most recent triggered list read. Production ignores it; it exists so a
+  /// test can await the read a FRAME started, the same way
+  /// `setSubagentExpanded` returns its own follow-up.
+  @ObservationIgnored private(set) var subagentRefreshTask: Task<Void, Never>?
+
+  /// How many children have not finished — §8.4's badge number, and what makes
+  /// the pinned strip visible.
+  ///
+  /// Counts every entry the gateway returned, including one whose `depth`
+  /// puts it past `maxSubagentDepth`: the cap governs whether a ROW opens a
+  /// transcript, not whether a child is real.
+  var liveSubagentCount: Int {
+    subagents.count { SubagentCardStatus(wire: $0.status).isTerminal == false }
+  }
+
+  /// Re-read the child list. Every trigger funnels through here.
+  func refreshSubagents() async {
+    guard isShutdown == false else { return }
+    subagentReadSeq &+= 1
+    let readSeq = subagentReadSeq
+    let entries: [SubagentListEntryDTO]
+    do {
+      entries = try await synchronizer.subagents(conversationID: state.conversation.id)
+    } catch is CancellationError {
+      return
+    } catch {
+      // Only a dead credential is worth escalating; every other failure leaves
+      // the sheet on the snapshot it had, and a start, a finish, a turn end, a
+      // reconnect, a foreground, a stop or a resume fires this again.
+      if case GatewayError.unauthorized = error { await applyFailure(error) }
+      return
+    }
+    apply(entries, readSeq: readSeq)
+  }
+
+  private func apply(_ entries: [SubagentListEntryDTO], readSeq: UInt64) {
+    // The iOS counterpart of web's conversation-switch guard. Web needs that
+    // one because one store serves every conversation; here `AppModel` keys a
+    // `ChatFeature` by (gateway, conversation) and `consumeCanonicalSummary`
+    // refuses a summary for any other id, so a read can only ever land on the
+    // conversation that issued it. What CAN happen is the feature being
+    // retired while a read is in flight.
+    guard isShutdown == false else { return }
+    guard readSeq > appliedSubagentReadSeq else { return }
+    appliedSubagentReadSeq = readSeq
+    // The "did anything change?" skip below is here for the TOOLCHAIN, not for
+    // web's reason. Web needed one (its D3 I3a) because its store subscribers
+    // compare by reference and an identical read re-rendered every mounted row.
+    // This branch first measured Swift Observation de-duplicating an equal
+    // write — three probe shapes, none fired, a different value did — and
+    // recorded "no guard; it would be dead code". That probe ran on Xcode 26.
+    // CI builds with Xcode 16.3, whose Observation notifies on an equal write,
+    // and `anIdenticalListReadInvalidatesNothing` failed there on code
+    // byte-identical to the local green (merge report §6.1). So: dead under
+    // Xcode 26, load-bearing under 16.3. The property it protects — an
+    // identical read invalidates nobody — is what that test pins, and CI is
+    // the toolchain on which it can fail. Plan amendment 34.
+    guard entries != subagents else { return }
+    subagents = entries
+  }
+
+  /// The server's status for one child, for a transcript ROW to lay over the
+  /// fold's (R2, fix round 1).
+  ///
+  /// **What this fixes.** The fold exempts a background child from
+  /// end-of-stream terminalization and that child's finish never reaches the
+  /// parent's event stream, so a collapsed row read `Running` for it forever —
+  /// D5's filed finding, and what R2 asked for.
+  ///
+  /// **Two costs, both real, both handled rather than hidden.**
+  ///
+  /// 1. **Depth.** `listSubagents(parentConversationId)` returns only the open
+  ///    conversation's DIRECT children, so a row rendered inside a child's
+  ///    transcript has no entry here and keeps folding. Same for a child older
+  ///    than the route's newest-100 page. The fold is the FALLBACK, not the
+  ///    loser of a merge — `nil` means "the server said nothing about this
+  ///    row", never "the server says it is not running".
+  /// 2. **A REST terminal over a live fold question.** Handled at the render
+  ///    site: `SubagentInteraction.resolvedQuestion` gates §8.1's inline reply
+  ///    on the RESOLVED status, so a server `done` clears a question the fold
+  ///    is still holding. Without that this would have broken D1's rule that a
+  ///    question never survives onto a terminal row, by a third path.
+  ///
+  /// **And one this cannot fix, so it is stated instead.** REST is at most one
+  /// round trip stale behind a live `subagent_finished`, which terminalizes the
+  /// fold immediately and only then triggers a read — so a foreground child
+  /// finishing mid-turn can read `running` from here for the length of that
+  /// read. Patching this list from a live event to close it would be the
+  /// fold ∪ REST merge D3 rejected, for a window bounded by a request already
+  /// in flight.
+  ///
+  /// **And one that is closed only for THIS client's own send.**
+  /// `sendToSubagent` re-reads the list after every ACCEPTED SEND — a resume,
+  /// a steer or an answer alike — so a resume taken here can no longer leave a
+  /// terminal status laid over a running child. A resume taken somewhere else
+  /// — web, Mission Control, another device — reaches this client through
+  /// nothing at all while its parent has no live turn
+  /// (`packages/swarm/src/coordinator.ts:1549-1554`), so this list keeps the
+  /// terminal status until the next `appear`, foreground, reconnect or parent
+  /// turn corrects it (`appear()`, a reconnect, a foreground, any parent
+  /// `done`) — worst case, for a user who stays in a foregrounded conversation
+  /// with no parent turn running, the whole of that second run. For a
+  /// FOREGROUND child that is exactly what the fold said before this accessor
+  /// existed, because its terminal event is persisted and never changes; for a
+  /// BACKGROUND child the fold said `running` and was accidentally right, so
+  /// that one case is genuinely worse here than it was. It is the price of the
+  /// case this exists for — a background child whose finish the fold can never
+  /// learn — and it cannot be bought back without a trigger the gateway does
+  /// not offer.
+  func restSubagentStatus(_ childID: String) -> SubagentCardStatus? {
+    guard let entry = subagents.first(where: { $0.id == childID }) else { return nil }
+    return SubagentCardStatus(wire: entry.status)
+  }
+
+  /// Cancel a child and, depth-first, its descendants (§8.4's Stop).
+  @discardableResult
+  func stopSubagent(_ childID: String) async -> Bool {
+    guard rejectIfShutdown() == false else { return false }
+    guard stoppingSubagentIDs.insert(childID).inserted else { return false }
+    subagentStopErrors[childID] = nil
+    // BOTH slots, because the row shows ONE line: leaving a previous resume
+    // refusal up while a stop is in flight reads as though the stop had failed
+    // for a reason that has nothing to do with it, and a stop that then
+    // succeeds would leave it there for good.
+    await applyReducerAction(.subagentRowErrorCleared(id: childID))
+    defer { stoppingSubagentIDs.remove(childID) }
+    do {
+      let status = try await synchronizer.stopSubagent(id: childID)
+      guard isShutdown == false else { return false }
+      // Applied BEFORE the re-read so the row stops offering a Stop on this
+      // frame rather than one round trip later, and applied from the
+      // RESPONSE because the route's status is authoritative: it terminalizes
+      // the row itself when the cascade reached a child this gateway process
+      // no longer holds a handle for, which is not a status the client could
+      // have guessed.
+      applyStopped(status, to: childID)
+      await refreshSubagents()
+      return true
+    } catch is CancellationError {
+      return false
+    } catch {
+      guard isShutdown == false else { return false }
+      if case GatewayError.unauthorized = error { await applyFailure(error) }
+      // The re-read comes FIRST, and then decides whether there is anything to
+      // report. A stop that merely raced the child's own finish is refused
+      // with the gateway's "already <status>" text, and web tells that case
+      // apart by the 409 — which iOS cannot do, because
+      // `HTTPTransport.swift:214` maps every `validation_failed` to
+      // `GatewayError.validation(String)` and drops the status. Asking the
+      // server what is true now is better evidence than the status code
+      // anyway: if the child is terminal the stop's purpose is served,
+      // whoever achieved it, and an error line would be noise. A partial
+      // cascade that killed descendants before the refusal is picked up by
+      // the same read.
+      await refreshSubagents()
+      guard isShutdown == false else { return false }
+      if let entry = subagents.first(where: { $0.id == childID }),
+        SubagentCardStatus(wire: entry.status).isTerminal
+      {
+        return true
+      }
+      subagentStopErrors[childID] = subagentFailureText(
+        error,
+        fallback: "Couldn't stop this agent. Try again."
+      )
+      return false
+    }
+  }
+
+  private func applyStopped(_ status: String, to childID: String) {
+    guard let index = subagents.firstIndex(where: { $0.id == childID }) else { return }
+    // The list is being written by something that is NOT a read, so the read
+    // cursor has to move with it. A read issued before the stop and still in
+    // flight otherwise satisfies `readSeq > appliedSubagentReadSeq` when it
+    // lands, restores the pre-stop row and re-offers Stop for a child that is
+    // already gone. Costs at most one dropped read, and the stop's own
+    // re-read — issued immediately after this and therefore newer than the
+    // cursor — replaces the whole list anyway.
+    appliedSubagentReadSeq = subagentReadSeq
+    let entry = subagents[index]
+    subagents[index] = SubagentListEntryDTO(
+      id: entry.id,
+      name: entry.name,
+      type: entry.type,
+      description: entry.description,
+      status: status,
+      background: entry.background,
+      depth: entry.depth,
+      startedAt: entry.startedAt,
+      endedAt: entry.endedAt,
+      usage: entry.usage,
+      toolCallCount: entry.toolCallCount,
+      report: entry.report,
+      oneShot: entry.oneShot
+    )
+  }
+
+  /// Open this child's row in the transcript, for a tap on a tasks-sheet row.
+  ///
+  /// **§8.4 asks no scrolling of this client.** "Clicking scrolls to and
+  /// expands the row" is §8.4's **Web** bullet
+  /// (`docs/plans/2026-09-04-subagents-design.md:340`); the **iOS** bullet
+  /// (`:341`) asks for the sheet, the toolbar badge and the pinned strip and
+  /// says nothing about what a row tap does. Expanding is what this surface can
+  /// honestly offer — a `List` inside a sheet has no handle on the transcript's
+  /// `ScrollView` behind it — and `ChatView` does not dismiss the sheet on a
+  /// reveal (`ChatView.swift:217-221`), so the row is opened behind it.
+  ///
+  /// **Guarded on the row existing.** The sheet's model is REST and the
+  /// transcript's is the fold, and the two do not always overlap — a background
+  /// child that finished after its spawning turn, or one whose start event sits
+  /// in a message this client has not loaded, is in the list with no row to
+  /// open. Expanding it anyway would fetch its transcript and hold a live
+  /// subscription that nothing renders, which is the leak class D2, D3 and D5's
+  /// own second defect all paid for.
+  ///
+  /// A row reached from here is a DIRECT child of the open conversation, so it
+  /// renders at view depth 0 and `subagentRowIsNested` decides whether its
+  /// expansion opens a transcript at all — the same call the row's own
+  /// disclosure makes.
+  func revealSubagent(_ childID: String) {
+    guard hasSubagentCard(childID) else { return }
+    setSubagentExpanded(childID, true, loadsTranscript: subagentRowIsNested(depth: 0))
+  }
+
+  /// Whether the open transcript renders a row for this child.
+  func hasSubagentCard(_ childID: String) -> Bool {
+    state.messages.contains { message in
+      message.assistant?.subagentCards.contains { $0.id == childID } ?? false
+    }
+  }
+
+  /// Fire a list read a frame or a lifecycle event asked for, without making
+  /// the caller wait: `consume` runs the socket's event loop, and awaiting a
+  /// REST round trip there would hold up every frame behind it.
+  private func triggerSubagentRefresh() {
+    subagentRefreshTask = Task { [self] in await refreshSubagents() }
+  }
+
+  /// Type into a child (design 8.3) through `POST /subagents/{id}/resume`.
+  ///
+  /// **Not a `message` WS frame.** That frame reaches `hub.start` →
+  /// `acceptTurn` and can never reach `ChildHandle.answerQuestion`, the only
+  /// thing that resolves a child parked on `ask_orchestrator`; against a busy
+  /// child it is refused as `conversation_busy`, against an idle one it opens
+  /// a second turn while the question stays blocked; and it bypasses the
+  /// coordinator's one-shot, steer-cap and grant checks entirely.
+  ///
+  /// **Optimism is derived here, from `subscribedSubagentIDs`, and is not a
+  /// parameter.** The rule is "optimistic exactly when a subscription is
+  /// held", and this is the only place that knows whether one is. Every proxy
+  /// for it has been wrong in both directions: `isExpanded && nested` is true
+  /// for a row whose `subscribeToSubagent` swallowed a failure and true again
+  /// after the app is backgrounded (which clears the set and the gateway's
+  /// side with it), and in both states the `accepted` never arrives, the
+  /// optimistic row is never adopted, and `.subagentTranscriptLoaded` keeps it
+  /// forever beside the real server row — the user's sentence rendered twice
+  /// for the life of the conversation. A hardcoded `false` is wrong the other
+  /// way: a queued STEER *does* echo, finds nothing in `pendingRequestIDs`,
+  /// and `applyChildFrame`'s else-branch appends a blank "from orchestrator"
+  /// line. Web converged on the same rule after three rounds.
+  @discardableResult
+  func sendToSubagent(_ childID: String, text: String) async -> Bool {
+    guard rejectIfShutdown() == false else { return false }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.isEmpty == false else { return false }
+    let optimistic = subscribedSubagentIDs.contains(childID)
+    // The tasks row shows ONE error line for the child, so the action being
+    // taken now owns it — `.subagentReplyStarted` clears `lastError` below and
+    // this clears the stop's slot, which is the other half of the same rule.
+    subagentStopErrors[childID] = nil
+    let requestID = makeID()
+    await applyReducerAction(
+      .subagentReplyStarted(
+        id: childID,
+        requestID: requestID,
+        text: trimmed,
+        optimistic: optimistic
+      )
+    )
+    do {
+      try await synchronizer.resumeSubagent(id: childID, message: trimmed, requestID: requestID)
+      guard isShutdown == false else { return false }
+      // BEFORE `.subagentReplySucceeded`, which is what clears `isSending`.
+      // `SubagentComposer.canSend` is `isEnabled && isSending == false && text
+      // non-empty` and the field empties only when `onSend` returns `true`, so
+      // reporting the send done first would re-arm the Send button with the
+      // user's sentence still in it for the length of this GET — on a resume
+      // the gateway has already accepted. `stopSubagent` spans its own re-read
+      // the same way: its `defer { stoppingSubagentIDs.remove(...) }` fires
+      // after the read, not before it.
+      //
+      // A resume RESTARTS a child, so the list that every surface reads is now
+      // wrong about it, and this is the only thing that can say so. Outside a
+      // live parent turn `Coordinator.emitToParent` has no turn to emit into
+      // (`packages/swarm/src/coordinator.ts:1549-1554`), so not one of the
+      // child's frames — started, progress or finished — reaches this socket,
+      // and the next trigger in `refreshesSubagentList` is the SECOND run's
+      // notification turn. Without this read the row, the sheet, the strip and
+      // the badge all keep the pre-resume status for the whole of that run,
+      // which since the row began reading REST is a terminal one beating a
+      // fold that was right. `stopSubagent` has had the mirror-image read from
+      // the start; this is the same asymmetry, closed.
+      //
+      // The whole ENTRY rather than the route's `status`: `startedAt`,
+      // `endedAt`, `report`, `toolCallCount` and `usage` are RUN-scoped, so a
+      // resume changes all five of them beside the status, and the list is the
+      // only thing that carries them.
+      //
+      // **That reason was FALSE when `b9a2e979` wrote it, and is struck here
+      // rather than quietly repaired.** The gateway rewrote NOTHING but the
+      // status on a resume: `ChildHandle.start()` persisted
+      // `{ status: 'running' }` alone, `createSubagent` early-returns an
+      // existing row untouched, and `updateSubagent` merges over the stored
+      // meta — so the entry this read returns was `running` beside the
+      // PREVIOUS run's numbers. A non-terminal `SubagentTaskRow` takes
+      // `SubagentMetaView`'s live `TimelineView(.periodic(from: startedAt,
+      // by: 1))` branch, so the row read the old tool count next to an elapsed
+      // ticking upward from the old start, for the whole second run. That is
+      // the exact state `b9a2e979`'s message claimed the REJECTED alternative
+      // would cause, and it was what shipped. `0da16410` made the reason true,
+      // gateway-side, for every client that reads this list — web's
+      // `TasksPanel` had the identical defect. The resume persist now writes
+      // run 2's `startedAt` and clears the other four. The reason holds from
+      // that commit forward and not before it.
+      //
+      // The status is also the one field the client could have guessed —
+      // `ChildHandle.start()` persists `running` before the route answers
+      // (`packages/swarm/src/child-handle.ts:316-327`) — so plumbing
+      // `SubagentResumeResponseDTO.status` back through `ChatSynchronizing`
+      // would widen a protocol for the least of it.
+      await refreshSubagents()
+      guard isShutdown == false else { return false }
+      await applyReducerAction(.subagentReplySucceeded(id: childID, requestID: requestID))
+      return true
+    } catch is CancellationError {
+      return false
+    } catch {
+      guard isShutdown == false else { return false }
+      if case GatewayError.unauthorized = error {
+        await applyFailure(error)
+      }
+      await applyReducerAction(
+        .subagentReplyFailed(
+          id: childID,
+          requestID: requestID,
+          // The coordinator's three refusals (one-shot type, steer cap,
+          // unrebuildable grant) arrive as 409 `validation_failed` with
+          // actionable text. Showing it verbatim is design 8.3's "shows the
+          // reason"; collapsing it to a generic line throws the only useful
+          // part away.
+          message: subagentFailureText(error, fallback: "Couldn't reach this agent.")
+        )
+      )
+      return false
+    }
+  }
+
+  private func subagentFailureText(_ error: Error, fallback: String) -> String {
+    switch error as? GatewayError {
+    case let .validation(message): message
+    case let .server(body, _): body.error
+    case .notFound: "This agent is no longer available."
+    case .unauthorized: "Sign in again to reach this agent."
+    default: fallback
+    }
+  }
+
+  private func subscribeToSubagent(_ childID: String) async {
+    guard isShutdown == false, connection == .online else { return }
+    do {
+      try await ensureConnected()
+      guard isShutdown == false else { return }
+      // The user can collapse the row while the REST read or the connect is in
+      // flight. `unsubscribeFromSubagent` would have found nothing in the set
+      // and returned, so without this the late subscribe would leak a live
+      // subscription on a COLLAPSED row that nothing releases until the socket
+      // resets — the refcount class D2 and D3 both paid for.
+      guard state.subagentUI[childID]?.isExpanded == true else { return }
+      try await transport.subscribe(
+        agentID: state.conversation.agentId,
+        conversationID: childID
+      )
+      subscribedSubagentIDs.insert(childID)
+    } catch is CancellationError {
+      return
+    } catch {
+      // A missing subscription costs live streaming into the open body, not
+      // correctness: the REST read already populated it, and collapsing plus
+      // re-expanding re-reads. Not worth driving the conversation into a
+      // failure state for.
+      return
+    }
+  }
+
+  /// Re-establish the child subscriptions a socket reset dropped, beside the
+  /// parent's own `subscribeToOpenConversation`.
+  ///
+  /// `subscribedSubagentIDs.removeAll()` fires in `ensureConnected`, on a
+  /// terminal receive-loop failure and in `consume(.state)` for
+  /// `.idle`/`.detached`. Clearing the set is correct — the gateway really has
+  /// dropped those subscriptions — but until this existed, nothing put them
+  /// back. A transient reconnect was already covered (`ChatConnection`'s
+  /// `replayTurnSubscriptions` re-sends every conversation subscribe on
+  /// `.reconnecting` → `.connected`); **backgrounding the app was not**, and
+  /// that is the most routine lifecycle event on a phone. The mechanism, stated
+  /// exactly: `suspendForDetachment` calls `ChatConnection.suspend()`, which
+  /// cancels the socket, `clearAllTurns()`s the transport's own map and only
+  /// then transitions to **`.idle`** — so the drop is genuine, but this set is
+  /// cleared *asynchronously*, when the event task drains that `.idle` in
+  /// `consume(.state)`'s `.idle`/`.detached` branch below. (`.detached` is
+  /// what the FEATURE reduces into `state.transport`; the transport never
+  /// emits it here.) Meanwhile the open body went on looking live while every
+  /// send from it was optimistic against a subscription no longer held.
+  ///
+  /// The REST re-read is as load-bearing as the subscribe: everything the
+  /// child said while this client was detached reached nobody, and the page is
+  /// the only thing that fills the hole.
+  ///
+  /// Rows already in the set are skipped, so an `appear()` that did not reset
+  /// the socket re-reads nothing. Rows at `maxSubagentDepth` are skipped by
+  /// `opensTranscript`, which is the recorded fact rather than a guess:
+  /// `setSubagentExpanded(loadsTranscript: false)` deliberately neither
+  /// fetches nor subscribes, and a reconnect must not undo that.
+  private func resubscribeExpandedSubagents() async {
+    guard isShutdown == false, hasVisibleHosts, connection == .online else { return }
+    let dropped =
+      state.subagentUI
+      .filter { $0.value.isExpanded && $0.value.opensTranscript }
+      .map(\.key)
+      .filter { subscribedSubagentIDs.contains($0) == false }
+      .sorted()
+    for childID in dropped {
+      guard isShutdown == false else { return }
+      await loadSubagentTranscript(childID: childID)
+      await subscribeToSubagent(childID)
+    }
+  }
+
+  private func unsubscribeFromSubagent(_ childID: String) async {
+    guard subscribedSubagentIDs.remove(childID) != nil, isConnected else { return }
+    try? await transport.unsubscribe(
+      agentID: state.conversation.agentId,
+      conversationID: childID
+    )
   }
 
   func answer(questionID: String, answer: String) async {
@@ -1201,6 +2127,11 @@ final class ChatFeature {
       return
     }
     await attachToCanonicalTurnIfNeeded()
+    await subscribeToOpenConversation()
+    await resubscribeExpandedSubagents()
+    // Same gap one level up: children that started or finished while the
+    // socket was down left no trace on this client at all.
+    await refreshSubagents()
   }
 
   func sceneDidEnterBackground() async {
@@ -1218,6 +2149,11 @@ final class ChatFeature {
     await refreshCanonical(preserveLiveProjection: true)
     guard isCurrentAttachmentIntent(attachmentIntent, attached: true) else { return }
     await attachToCanonicalTurnIfNeeded()
+    await subscribeToOpenConversation()
+    await resubscribeExpandedSubagents()
+    // Same gap one level up: children that started or finished while the
+    // socket was down left no trace on this client at all.
+    await refreshSubagents()
   }
 
   func prepareForShutdown() {
@@ -1236,7 +2172,7 @@ final class ChatFeature {
     deferredReplayTurnID = nil
     deferredRecoveryFrames.removeAll()
     _ = beginAttachmentIntent(attached: false)
-    isVisible = false
+    visibleHostCount = 0
     eventTask?.cancel()
     cacheLoadGeneration &+= 1
     cacheLoadTask?.cancel()
@@ -1800,16 +2736,55 @@ final class ChatFeature {
     }
   }
 
+  /// Watches the conversation the user has open, connecting first if nothing
+  /// else has (sub-agents design 7.6, ruling 1). Without this an idle open
+  /// conversation never hears the server-initiated turn that carries a
+  /// background sub-agent's result — the whole point of the subscription.
+  private func subscribeToOpenConversation() async {
+    guard isShutdown == false, hasVisibleHosts, connection == .online else { return }
+    do {
+      try await ensureConnected()
+      guard isSubscribed == false, isShutdown == false else { return }
+      try await transport.subscribe(
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id
+      )
+      isSubscribed = true
+    } catch is CancellationError {
+      return
+    } catch {
+      await applyFailure(error)
+    }
+  }
+
   private func ensureConnected() async throws {
     startEventTaskIfNeeded()
     guard isConnected == false else { return }
     try await transport.connect()
+    // A fresh connect replaces the socket, and `ChatConnection.connect()`
+    // clears its subscriptions with it — so nothing is watched until
+    // `subscribeToOpenConversation` says so again.
+    isSubscribed = false
+    // Same reason, for the expanded sub-agent rows (design 8.3): the gateway
+    // is no longer watching those children, so the set must not claim it is.
+    // A row already open re-subscribes on its next expansion; until then it
+    // keeps the transcript the REST read gave it.
+    subscribedSubagentIDs.removeAll()
     isConnected = true
     _ = ChatReducer.reduce(state: &state, action: .transportChanged(.connected))
   }
 
   private func suspendForDetachment() async {
     guard isConnected || state.transport != .detached else { return }
+    // Drop the conversation subscription on the way out, so a long session
+    // that visits many conversations never accumulates them (ruling 1).
+    if isSubscribed {
+      isSubscribed = false
+      try? await transport.unsubscribe(
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id
+      )
+    }
     await transport.suspendForDetachment()
     isConnected = false
     wasReconnecting = false
@@ -1836,6 +2811,8 @@ final class ChatFeature {
         finishEventTask(generation: generation)
         guard isShutdown == false else { return }
         isConnected = false
+        isSubscribed = false
+        subscribedSubagentIDs.removeAll()
         wasReconnecting = false
         if let pendingSendReconciliation {
           await reconcileAmbiguousSend(pendingSendReconciliation)
@@ -1857,12 +2834,33 @@ final class ChatFeature {
       let reconnectCompleted = wasReconnecting && transportState == .connected
       wasReconnecting = if case .reconnecting = transportState { true } else { false }
       isConnected = transportState == .connected
+      // Mirror the transport truthfully rather than guessing from
+      // "not connected": `ChatConnection` REPLAYS its conversation
+      // subscriptions across a transient reconnect (`.reconnecting` →
+      // `.connected`), and only drops them where it calls `clearAllTurns` —
+      // `suspend()` (`.idle`) and `detach()` (`.detached`). A stale `false`
+      // here would make the next `subscribeToOpenConversation` send a
+      // duplicate frame for a conversation the gateway is already watching.
+      switch transportState {
+      case .idle, .detached:
+        isSubscribed = false
+        subscribedSubagentIDs.removeAll()
+      case .connecting, .connected, .reconnecting: break
+      }
       _ = ChatReducer.reduce(state: &state, action: .transportChanged(transportState))
       if reconnectCompleted {
         await replayAndResumeActiveTurn()
       }
 
     case .frame(let frame):
+      // BEFORE the recovery deferral below, deliberately: the deferral is
+      // about classifying a LOCAL send and returns early, and a list read has
+      // nothing to do with that decision. Placed here it cannot be swallowed
+      // by a path that was designed for something else, and the worst case is
+      // one extra GET.
+      if frame.refreshesSubagentList, isParentFrame(frame) {
+        triggerSubagentRefresh()
+      }
       if shouldDeferForRecoveryClassification(frame) {
         deferredRecoveryFrames.append(frame)
         if frame.isAcceptedForFeature {
@@ -1945,10 +2943,22 @@ final class ChatFeature {
         cancelRequestSent = false
         isCancelling = false
       }
-      if isVisible == false, state.activeTurnID == nil {
+      if hasVisibleHosts == false, state.activeTurnID == nil {
         await suspendForDetachment()
       }
     }
+  }
+
+  /// A frame about THIS conversation rather than about a child of it.
+  ///
+  /// A child's frames reach this socket because the client subscribed to the
+  /// child (design 7.6), and none of them says anything about which children
+  /// the PARENT has. A missing `conversationId` is the parent's by convention
+  /// — an older gateway omits it — which is the same rule
+  /// `ChatReducer.frameBelongsToConversation` applies.
+  private func isParentFrame(_ frame: MobileWSServerFrame) -> Bool {
+    guard let conversationID = frame.conversationIDForFeature else { return true }
+    return conversationID == state.conversation.id
   }
 
   private func shouldDeferForRecoveryClassification(_ frame: MobileWSServerFrame) -> Bool {
@@ -2841,6 +3851,51 @@ final class ChatFeature {
 }
 
 extension MobileWSServerFrame {
+  fileprivate var conversationIDForFeature: String? {
+    switch self {
+    case let .accepted(_, conversationID, _, _, _, _, _, _, _): conversationID
+    case let .event(_, conversationID, _, _): conversationID
+    case let .done(_, conversationID, _, _): conversationID
+    case let .error(_, conversationID, _, _, _, _, _): conversationID
+    }
+  }
+
+  /// True for a frame that changes which of a conversation's children are
+  /// live, or that reports one having changed (§8.4).
+  ///
+  /// Four triggers, each covering a case the others do not:
+  ///
+  /// 1. `subagent_started` / `subagent_finished` — a FOREGROUND child's row
+  ///    moving while its spawning turn is still running. The retired
+  ///    `worker_*` mirrors are excluded because nothing emits one (D8); a
+  ///    persisted pre-D8 one arrives only on a replay, where the list is read
+  ///    anyway. `subagent_progress` is excluded for a different reason — it is
+  ///    transient and never persisted, so refreshing on it would be a round
+  ///    trip per tool call for a row whose only live field ticks locally
+  ///    anyway.
+  /// 2. `accepted` with `origin == .notification` — the ONLY thing that tells
+  ///    a parent about a BACKGROUND child's finish. Nothing about that finish
+  ///    reaches the parent's own event stream, and the gateway starts a
+  ///    notification turn to wake the orchestrator with the result. Without
+  ///    this the sheet would read `running` for the whole length of the turn
+  ///    that child's own finish triggered. An ordinary user turn's `accepted`
+  ///    says nothing about any child, and its `done` already reads.
+  /// 3. `done` — the backstop for every trigger above going missing, and the
+  ///    only way to see a child that was spawned DURING a turn on a client
+  ///    that missed the start. One read per parent turn.
+  fileprivate var refreshesSubagentList: Bool {
+    switch self {
+    case let .accepted(_, _, _, _, _, _, origin, _, _): origin == .notification
+    case .done: true
+    case let .event(_, _, _, event):
+      switch event {
+      case .subagentStarted, .subagentFinished: true
+      default: false
+      }
+    case .error: false
+    }
+  }
+
   fileprivate var isAcceptedForFeature: Bool {
     if case .accepted = self { return true }
     return false
@@ -2872,7 +3927,7 @@ extension MobileWSServerFrame {
 
   fileprivate var turnIDForFeature: String {
     switch self {
-    case .accepted(let id, _, _, _, _, _),
+    case .accepted(let id, _, _, _, _, _, _, _, _),
       .event(let id, _, _, _),
       .done(let id, _, _, _),
       .error(let id, _, _, _, _, _, _):
@@ -2882,7 +3937,7 @@ extension MobileWSServerFrame {
 
   fileprivate var sequenceForFeature: Int? {
     switch self {
-    case .accepted(_, _, _, _, _, let seq):
+    case .accepted(_, _, _, _, _, let seq, _, _, _):
       seq
     case .event(_, _, let seq, _),
       .done(_, _, let seq, _):

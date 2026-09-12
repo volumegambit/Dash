@@ -113,15 +113,27 @@
       "tier": 9
     },
     {
+      "pattern": "gpt-6-astra*",
+      "tier": 6
+    },
+    {
+      "pattern": "gpt-6*",
+      "tier": 7
+    },
+    {
       "pattern": "gpt-5.6*",
       "tier": 8
+    },
+    {
+      "pattern": "gpt-5.5-pro*",
+      "tier": 9
     },
     {
       "pattern": "gpt-5.5",
       "tier": 10
     },
     {
-      "pattern": "gpt-5.4-pro",
+      "pattern": "gpt-5.4-pro*",
       "tier": 11
     },
     {
@@ -211,7 +223,7 @@
     "davinci*",
     "babbage-*"
   ],
-  "reviewedAt": "2026-08-30",
+  "reviewedAt": "2026-09-07",
   "ui": {
     "keyConsoleUrl": "https://platform.openai.com/api-keys",
     "keyPlaceholder": "sk-...",

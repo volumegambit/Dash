@@ -41,6 +41,10 @@ struct MobileV2ContractFixtureTests {
       MobileV2ConversationSummary.self,
       "conversation-summary.json"
     )
+    try expectRoundTrip(
+      MobileV2ConversationSummary.self,
+      "conversation-summary-subagent.json"
+    )
     try expectRoundTrip(MobileV2ConversationPage.self, "conversation-page.json")
     try expectRoundTrip(
       MobileV2ConversationBootstrap.self,
@@ -55,15 +59,138 @@ struct MobileV2ContractFixtureTests {
       "conversation-message-page.json"
     )
     try expectRoundTrip(
+      MobileV2ConversationMessage.self,
+      "conversation-message-notice.json"
+    )
+    try expectRoundTrip(
       MobileV2ReplayPage.self,
       "conversation-replay-page.json"
     )
   }
 
+  @Test("v2 conversation identifiers include subagent ULIDs without widening entity ids")
+  func subagentConversationIdentifiers() throws {
+    let child = try MobileV2FixtureLoader.decode(
+      MobileV2ConversationSummary.self,
+      "conversation-summary-subagent.json"
+    )
+    #expect(child.id == "sub_01ARZ3NDEKTSV4RRFFQ69G5FAV")
+    #expect(child.kind == .subagent)
+    #expect(child.parentConversationId == "00000000-0000-4000-8000-000000000001")
+    #expect(child.parentTurnId == "turn-parent-01")
+    #expect(child.subagent?.status == "done")
+    #expect(child.subagent?.usage?.inputTokens == 120)
+
+    try expectRoundTrip(MobileV2WsClientFrame.self, "chat-subscribe-subagent.json")
+
+    #expect(throws: (any Error).self) {
+      _ = try MobileV2FixtureLoader.decode(
+        MobileV2ConversationSummary.self,
+        "invalid/conversation-summary-bad-subagent-id.json"
+      )
+    }
+    let subagentCommandID = Data(
+      #"{"type":"subscribe_conversation","id":"sub_01ARZ3NDEKTSV4RRFFQ69G5FAV","agentId":"agent-01","conversationId":"sub_01ARZ3NDEKTSV4RRFFQ69G5FAV","sinceV2Seq":0}"#.utf8
+    )
+    #expect(throws: (any Error).self) {
+      _ = try ContractCoding.decoder().decode(
+        MobileV2WsClientFrame.self,
+        from: subagentCommandID
+      )
+    }
+  }
+
+  @Test("v2 accepted exposes optional live origin kind and request correlation")
+  func acceptedLiveMetadataAndReplayOmission() throws {
+    let live = try MobileV2FixtureLoader.decode(
+      MobileV2WsServerFrame.self,
+      "chat-accepted.json"
+    )
+    guard case let .sequenced(
+      .accepted(
+        _, conversationId, _, _, _, _, _, _, origin, kind, requestId
+      )
+    ) = live else {
+      Issue.record("Expected accepted frame")
+      return
+    }
+    #expect(conversationId == "sub_01ARZ3NDEKTSV4RRFFQ69G5FAV")
+    #expect(origin == .parent)
+    #expect(kind == .subagent)
+    #expect(requestId == "resume-01")
+
+    let replay = try MobileV2FixtureLoader.decode(
+      MobileV2ReplayPage.self,
+      "conversation-replay-page.json"
+    )
+    guard case let .accepted(_, _, _, _, _, _, _, _, replayOrigin, replayKind, replayRequestId)
+      = replay.frames.first
+    else {
+      Issue.record("Expected replayed accepted frame")
+      return
+    }
+    #expect(replayOrigin == nil)
+    #expect(replayKind == nil)
+    #expect(replayRequestId == nil)
+
+    #expect(throws: (any Error).self) {
+      _ = try MobileV2FixtureLoader.decode(
+        MobileV2WsServerFrame.self,
+        "invalid/chat-accepted-bad-origin.json"
+      )
+    }
+  }
+
+  @Test("v2 conversation messages preserve only known optional origins")
+  func conversationMessageOriginRoundTrip() throws {
+    let source = conversationMessage(
+      content: #"{"type":"user","text":"Hello"}"#,
+      origin: #""parent""#
+    )
+
+    let decoded = try ContractCoding.decoder().decode(
+      MobileV2ConversationMessage.self,
+      from: source
+    )
+
+    #expect(decoded.origin == MessageOrigin.parent.rawValue)
+    #expect(decoded.v1Projection.origin == MessageOrigin.parent.rawValue)
+    #expect(try canonicalJSON(ContractCoding.encoder().encode(decoded)) == canonicalJSON(source))
+    #expect(throws: (any Error).self) {
+      _ = try ContractCoding.decoder().decode(
+        MobileV2ConversationMessage.self,
+        from: conversationMessage(
+          content: #"{"type":"user","text":"Hello"}"#,
+          origin: #""future""#
+        )
+      )
+    }
+  }
+
+  @Test("v2 conversation messages preserve known notices and reject unknown content")
+  func conversationMessageNoticeStrictness() throws {
+    let source = conversationMessage(
+      content: #"{"type":"notice","kind":"skill_learned","text":"Learned a skill"}"#
+    )
+    let decoded = try ContractCoding.decoder().decode(
+      MobileV2ConversationMessage.self,
+      from: source
+    )
+
+    #expect(decoded.content == .notice(kind: .skillLearned, text: "Learned a skill"))
+    #expect(try canonicalJSON(ContractCoding.encoder().encode(decoded)) == canonicalJSON(source))
+    #expect(throws: (any Error).self) {
+      _ = try ContractCoding.decoder().decode(
+        MobileV2ConversationMessage.self,
+        from: conversationMessage(content: #"{"type":"future"}"#)
+      )
+    }
+  }
+
   @Test("all v2 client fixtures round trip canonically")
   func websocketClientFramesRoundTrip() throws {
     for file in [
-      "chat-hello.json", "chat-subscribe.json", "chat-send.json",
+      "chat-hello.json", "chat-subscribe.json", "chat-subscribe-subagent.json", "chat-send.json",
       "chat-send-legacy-run.json", "chat-answer-legacy-run.json",
       "chat-cancel-legacy-run.json", "chat-send-legacy-run-max.json",
       "chat-enqueue-steer.json", "chat-enqueue-follow-up.json",
@@ -149,7 +276,7 @@ struct MobileV2ContractFixtureTests {
   @Test("invalid v2 frames fail decoding")
   func invalidFrames() throws {
     for file in [
-      "invalid/control-with-v2-seq.json",
+      "invalid/control-with-v2-seq.json", "invalid/chat-accepted-bad-origin.json",
       "invalid/transition-without-v2-seq.json",
     ] {
       let data = try MobileV2FixtureLoader.data(file)
@@ -174,6 +301,13 @@ struct MobileV2ContractFixtureTests {
     let unknown = Data(#"{"type":"future_frame"}"#.utf8)
     #expect(throws: (any Error).self) {
       _ = try ContractCoding.decoder().decode(MobileV2WsServerFrame.self, from: unknown)
+    }
+
+    #expect(throws: (any Error).self) {
+      _ = try MobileV2FixtureLoader.decode(
+        MobileV2ConversationMessage.self,
+        "invalid/conversation-message-bad-notice-kind.json"
+      )
     }
   }
 
@@ -452,6 +586,15 @@ struct MobileV2ContractFixtureTests {
     }
     #expect(throws: MobileV2ContractValidationError.self) {
       _ = try ContractCoding.decoder().decode(
+        MobileV2ConversationMessage.self,
+        from: conversationMessage(
+          content: #"{"type":"user","text":"Hello"}"#,
+          origin: "null"
+        )
+      )
+    }
+    #expect(throws: MobileV2ContractValidationError.self) {
+      _ = try ContractCoding.decoder().decode(
         MobileV2PendingInput.self,
         from: pendingInput(images: "null")
       )
@@ -524,10 +667,11 @@ struct MobileV2ContractFixtureTests {
     String(decoding: try JSONEncoder().encode(value), as: UTF8.self)
   }
 
-  private func conversationMessage(content: String) -> Data {
-    Data(
+  private func conversationMessage(content: String, origin: String? = nil) -> Data {
+    let originField = origin.map { #","origin":"# + $0 } ?? ""
+    return Data(
       """
-      {"id":"00000000-0000-4000-8000-000000000111","conversationId":"00000000-0000-4000-8000-000000000101","turnId":"turn-01","ordinal":1,"role":"user","status":"completed","content":\(content),"createdAt":"2026-09-06T09:01:00.000Z","updatedAt":"2026-09-06T09:01:00.000Z","runId":"turn-01","segmentIndex":0,"deliveryKind":"normal"}
+      {"id":"00000000-0000-4000-8000-000000000111","conversationId":"00000000-0000-4000-8000-000000000101","turnId":"turn-01","ordinal":1,"role":"user","status":"completed","content":\(content),"createdAt":"2026-09-06T09:01:00.000Z","updatedAt":"2026-09-06T09:01:00.000Z","runId":"turn-01","segmentIndex":0,"deliveryKind":"normal"\(originField)}
       """.utf8
     )
   }

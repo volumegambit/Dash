@@ -14,6 +14,11 @@
       "format": "uuid",
       "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
     },
+    "ConversationIdentifier": {
+      "$comment": "A user conversation UUID or a sub-agent conversation id (sub_<ulid>).",
+      "type": "string",
+      "pattern": "^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|sub_[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26})$"
+    },
     "MobileImage": {
       "type": "object",
       "additionalProperties": false,
@@ -229,7 +234,7 @@
           "minLength": 1
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "sinceV2Seq": {
           "type": "integer",
@@ -258,7 +263,7 @@
           "minLength": 1
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "text": {
           "type": "string"
@@ -310,7 +315,7 @@
           "minLength": 1
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "text": {
           "type": "string"
@@ -357,7 +362,7 @@
           "$ref": "#/$defs/CanonicalUuid"
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "inputId": {
           "$ref": "#/$defs/CanonicalUuid"
@@ -391,7 +396,7 @@
           "$ref": "#/$defs/CanonicalUuid"
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "inputId": {
           "$ref": "#/$defs/CanonicalUuid"
@@ -415,7 +420,7 @@
           "$ref": "#/$defs/CanonicalUuid"
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "expectedQueueRevision": {
           "type": "integer",
@@ -490,7 +495,7 @@
           "$ref": "#/$defs/CanonicalUuid"
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "v2ThroughSeq": {
           "type": "integer",
@@ -511,7 +516,7 @@
           "$ref": "#/$defs/LegacyRunId"
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "code": {
           "$ref": "#/$defs/MobileApiErrorCode"
@@ -530,6 +535,7 @@
       }
     },
     "ChatAccepted": {
+      "$comment": "origin, kind, and requestId are optional live metadata. Replay omits all three; requestId is never persisted.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -552,7 +558,7 @@
           "description": "Run identity. On sequenced model frames, id is identical to runId."
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "runId": {
           "$ref": "#/$defs/LegacyRunId"
@@ -575,6 +581,17 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
+        },
+        "origin": {
+          "enum": ["user", "notification", "parent"]
+        },
+        "kind": {
+          "enum": ["user", "subagent"]
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
         }
       }
     },
@@ -591,7 +608,7 @@
           "description": "Run identity. On sequenced model frames, id is identical to runId."
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "runId": {
           "$ref": "#/$defs/LegacyRunId"
@@ -622,7 +639,7 @@
           "description": "Run identity. On sequenced model frames, id is identical to runId."
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "runId": {
           "$ref": "#/$defs/LegacyRunId"
@@ -653,7 +670,7 @@
           "description": "Run identity. On sequenced model frames, id is identical to runId."
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "runId": {
           "$ref": "#/$defs/LegacyRunId"
@@ -691,7 +708,7 @@
           "description": "Originating command identity, or a server-generated transition identity for recovery and automatic terminalization."
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "v2Seq": {
           "type": "integer",
@@ -721,7 +738,7 @@
           "description": "Originating command identity, or a server-generated transition identity for recovery and automatic terminalization."
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "v2Seq": {
           "type": "integer",
@@ -751,7 +768,7 @@
           "description": "Originating command identity, or a server-generated transition identity for recovery and automatic terminalization."
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "v2Seq": {
           "type": "integer",
@@ -792,7 +809,7 @@
           "description": "Originating command identity, or a server-generated transition identity for recovery and automatic terminalization."
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "v2Seq": {
           "type": "integer",
@@ -834,7 +851,7 @@
           "description": "Originating command identity, or a server-generated transition identity for recovery and automatic terminalization."
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "v2Seq": {
           "type": "integer",
@@ -871,7 +888,7 @@
           "description": "Originating command identity when present, otherwise a server-generated transition identity."
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "v2Seq": {
           "type": "integer",
@@ -913,7 +930,7 @@
           "description": "Originating command identity when present, otherwise a server-generated transition identity."
         },
         "conversationId": {
-          "$ref": "#/$defs/CanonicalUuid"
+          "$ref": "#/$defs/ConversationIdentifier"
         },
         "v2Seq": {
           "type": "integer",

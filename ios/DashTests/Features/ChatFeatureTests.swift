@@ -264,7 +264,7 @@ struct ChatFeatureTests {
 
     #expect(feature.canSend == false)
     await feature.send()
-    #expect(await chat.calls.isEmpty)
+    #expect(await chat.turnCalls.isEmpty)
 
     let opening = Task { await feature.appear() }
     await gate.waitUntilWaiting()
@@ -299,6 +299,9 @@ struct ChatFeatureTests {
     #expect(
       calls == [
         .connect,
+        // `appear()` on an online conversation now connects and watches it,
+        // so server-initiated turns reach this client (task C7).
+        .subscribe(agentID: "agent-1", conversationID: "conv-1"),
         .send(
           turnID: turnID.uuidString.lowercased(),
           agentID: "agent-1",
@@ -315,7 +318,11 @@ struct ChatFeatureTests {
     let stagedSend = try #require(operations.lastIndex(of: "persist.pending.stage"))
     let connect = try #require(operations.lastIndex(of: "chat.connect"))
     let send = try #require(operations.lastIndex(of: "chat.send"))
-    #expect(stagedSend < connect)
+    // The socket is already connected by `appear()` (task C7), so `connect`
+    // no longer trails the staging step. What must still hold — and is the
+    // point of the assertion — is that the pending send is DURABLE before the
+    // socket write it recovers.
+    #expect(stagedSend < send)
     #expect(connect < send)
   }
 
@@ -375,6 +382,7 @@ struct ChatFeatureTests {
     #expect(
       calls == [
         .connect,
+        .subscribe(agentID: "agent-1", conversationID: "conv-1"),
         .send(
           turnID: turnID.uuidString.lowercased(),
           agentID: "agent-1",
@@ -449,7 +457,7 @@ struct ChatFeatureTests {
     #expect(sent == false)
 
     #expect(featureMessageIDs(feature) == ["u1"])
-    let calls = await chat.calls
+    let calls = await chat.turnCalls
     #expect(calls.isEmpty)
   }
 
@@ -651,6 +659,9 @@ struct ChatFeatureTests {
   @Test("live tombstone refresh preserves a file-backed pending payload across restart")
   func liveTombstonePreservesPendingPayloadAcrossRestart() async throws {
     URLProtocolStub.reset()
+    // `appear()` now reads the conversation's children (§8.4). Standing rather
+    // than queued, so this test's POSITIONAL stubs stay in their own order.
+    URLProtocolStub.stubEmptySubagentList()
     let directory = FileManager.default.temporaryDirectory.appending(
       path: UUID().uuidString,
       directoryHint: .isDirectory
@@ -945,6 +956,9 @@ struct ChatFeatureTests {
   @Test("a live 404 removes the stale cache and exposes the pending send for recovery")
   func liveNotFoundPreservesPendingPayloadForRecovery() async throws {
     URLProtocolStub.reset()
+    // `appear()` now reads the conversation's children (§8.4). Standing rather
+    // than queued, so this test's POSITIONAL stubs stay in their own order.
+    URLProtocolStub.stubEmptySubagentList()
     let directory = FileManager.default.temporaryDirectory.appending(
       path: UUID().uuidString,
       directoryHint: .isDirectory
@@ -1203,6 +1217,9 @@ struct ChatFeatureTests {
   @Test("a stale tombstone cannot invent recovery or block a newer accepted frame")
   func staleTombstoneRemainsConsistentWithStoreDuringDeferredAdmission() async throws {
     URLProtocolStub.reset()
+    // `appear()` now reads the conversation's children (§8.4). Standing rather
+    // than queued, so this test's POSITIONAL stubs stay in their own order.
+    URLProtocolStub.stubEmptySubagentList()
     let store = try PersistenceStore.inMemory()
     let featureProjection = summary(revision: 4, lastSeq: 4)
     let current = summary(revision: 6, lastSeq: 8)
@@ -1262,7 +1279,10 @@ struct ChatFeatureTests {
           userMessageId: "user-stale",
           assistantMessageId: "assistant-stale",
           revision: 6,
-          seq: 9
+          seq: 9,
+          origin: nil,
+          kind: nil,
+          requestId: nil
         )
       )
     )
@@ -1287,6 +1307,9 @@ struct ChatFeatureTests {
   @Test("an equal-revision tombstone rejected by the store cannot invent recovery")
   func equalRevisionTombstoneRemainsConsistentWithStore() async throws {
     URLProtocolStub.reset()
+    // `appear()` now reads the conversation's children (§8.4). Standing rather
+    // than queued, so this test's POSITIONAL stubs stay in their own order.
+    URLProtocolStub.stubEmptySubagentList()
     let store = try PersistenceStore.inMemory()
     let current = summary(revision: 5, lastSeq: 8)
     let rejectedTombstone = deletedSummary(revision: 5)
@@ -1373,6 +1396,9 @@ struct ChatFeatureTests {
   @Test("a not-found rejection keeps pending bytes through canonical removal")
   func notFoundRejectionPreservesPendingRecovery() async throws {
     URLProtocolStub.reset()
+    // `appear()` now reads the conversation's children (§8.4). Standing rather
+    // than queued, so this test's POSITIONAL stubs stay in their own order.
+    URLProtocolStub.stubEmptySubagentList()
     let store = try PersistenceStore.inMemory()
     let current = summary(revision: 5, lastSeq: 8)
     try await store.upsertConversations([current], gatewayID: "gateway-1")
@@ -2642,7 +2668,7 @@ struct ChatFeatureTests {
 
     await feature.send()
 
-    #expect(await chat.calls.isEmpty)
+    #expect(await chat.turnCalls.isEmpty)
     #expect(feature.state.draft == "Keep this message")
     #expect(feature.state.activeTurnID == nil)
     #expect(feature.draftStatus == .failed)
@@ -2664,7 +2690,7 @@ struct ChatFeatureTests {
     await clearGate.release()
     await sending.value
 
-    #expect(await chat.calls.isEmpty)
+    #expect(await chat.turnCalls.isEmpty)
     #expect(feature.state.draft == "Keep this message")
     #expect(await persistence.persistedDraft?.text == "Keep this message")
     #expect(feature.state.activeTurnID == nil)
@@ -2899,7 +2925,7 @@ struct ChatFeatureTests {
 
     await feature.send()
 
-    #expect(await chat.calls.isEmpty)
+    #expect(await chat.turnCalls.isEmpty)
     #expect(feature.state.attachments == attachments)
     #expect(feature.state.errorBanner == "Choose up to 4 images.")
   }
@@ -2935,7 +2961,10 @@ struct ChatFeatureTests {
           userMessageId: "user-1",
           assistantMessageId: "assistant-1",
           revision: 2,
-          seq: 1
+          seq: 1,
+          origin: nil,
+          kind: nil,
+          requestId: nil
         )
       )
     )
@@ -3121,7 +3150,10 @@ struct ChatFeatureTests {
 
     #expect(await chat.calls.filter { $0 == .resetAfterTerminalFailure }.count == 1)
     #expect(await chat.eventStreamRequestCount == 2)
-    #expect(await chat.calls.filter { $0 == .connect }.count == 1)
+    // Two connects now: `appear()`'s (task C7 subscribes the open
+    // conversation) and the one the recovery attaches with after the terminal
+    // failure tore the first socket down.
+    #expect(await chat.calls.filter { $0 == .connect }.count == 2)
     #expect(
       await chat.calls.contains(
         .resume(
@@ -3480,7 +3512,7 @@ struct ChatFeatureTests {
     #expect(feature.state.draft == "Can edit")
     #expect(feature.draftEditingAllowed)
     #expect(feature.canSend == false)
-    #expect(await chat.calls.isEmpty)
+    #expect(await chat.turnCalls.isEmpty)
     #expect(await persistence.savedDrafts.last?.text == "Can edit")
   }
 
@@ -3526,7 +3558,7 @@ struct ChatFeatureTests {
     #expect(feature.composerDisabledReason == "This conversation is read-only")
     #expect(feature.state.draft == "Do not send")
     #expect(feature.state.attachments.isEmpty)
-    #expect(await chat.calls.isEmpty)
+    #expect(await chat.turnCalls.isEmpty)
   }
 
   @Test("canonical terminal transcripts do not expose stale questions")
@@ -3618,6 +3650,70 @@ struct ChatFeatureTests {
     await eventually {
       await chat.calls.filter { $0 == .suspendForDetachment }.count == 1
     }
+  }
+
+  // MARK: - Host reference counting (whole-branch final review, blocking 1)
+  //
+  // Task 10 made ONE `ChatFeature` serve TWO hosts at once — the main
+  // window's detail column and the chat-only scene `ConversationWindowView`
+  // opens (see `ChatFeatureHostView`'s doc comment). The lifecycle
+  // bookkeeping did not follow: visibility was a single `Bool`, so the FIRST
+  // host to leave suspended the transport out from under a host that was
+  // still on screen. This is over the counter itself — plain model logic, no
+  // scene needed.
+
+  @Test("one host leaving does not detach a transcript another host is still showing")
+  func twoHostsShareOneAttachment() async {
+    let running = summary(status: .running, activeTurnID: "turn-1", lastSeq: 2)
+    let persistence = FakeChatPersistence(cursor: 2)
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(.success(snapshot(summary: running, throughSeq: 2)))
+    await sync.enqueueRefresh(.success(snapshot(summary: running, throughSeq: 2)))
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setConnection(.online)
+
+    // Two hosts on the SAME feature: the main window's detail column, then
+    // the conversation window opened from "Open in New Window".
+    await feature.appear()
+    await feature.appear()
+    #expect(feature.hasVisibleHosts)
+    #expect(
+      await chat.calls.filter { $0 == .connect }.count == 1,
+      "the shared feature must really be connected, or the suspend assertions below are vacuous"
+    )
+
+    // The turn finishes while BOTH hosts are on screen, which leaves the
+    // feature connected AND idle — precisely the state in which `disappear()`
+    // suspends.
+    await chat.yield(
+      .frame(.done(id: "turn-1", conversationId: "conv-1", seq: 3, outcome: .completed))
+    )
+    await eventually { await feature.state.activeTurnID == nil }
+    #expect(await chat.calls.filter { $0 == .suspendForDetachment }.isEmpty)
+
+    await feature.disappear()
+
+    #expect(
+      await chat.calls.filter { $0 == .suspendForDetachment }.isEmpty,
+      "the other host is still on screen, so its transcript must stay attached"
+    )
+    #expect(feature.state.transport != .detached)
+    #expect(
+      feature.hasVisibleHosts,
+      "ChatView's onDisappear cleanup reads this to know the transcript is still shown somewhere"
+    )
+
+    await feature.disappear()
+
+    #expect(await chat.calls.filter { $0 == .suspendForDetachment }.count == 1)
+    #expect(feature.hasVisibleHosts == false)
+
+    // An unbalanced extra teardown must not drive the count negative — that
+    // would leave the NEXT genuine departure unable to suspend at all.
+    await feature.disappear()
+    #expect(await chat.calls.filter { $0 == .suspendForDetachment }.count == 1)
+    #expect(feature.hasVisibleHosts == false)
   }
 
   @Test("cursor persistence cannot roll back a newer composer edit")
@@ -4685,6 +4781,1254 @@ struct ChatFeatureTests {
     #expect(second.isShutdown)
   }
 
+  @Test("resendFromMessage refuses a notification row: its text is a system notification, not user input")
+  func resendRefusesANotificationRow() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(
+              id: "notif-user",
+              turnID: "turn-notification",
+              text: "[SYSTEM NOTIFICATION - NOT USER INPUT]",
+              ordinal: 1,
+              origin: "notification"
+            )
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    let sent = await feature.resendFromMessage(id: "notif-user")
+
+    #expect(sent == false)
+    #expect(await chat.turnCalls.isEmpty)
+    #expect(featureMessageIDs(feature) == ["notif-user"])
+  }
+
+  // MARK: - Conversation subscriptions (task C7, sub-agents design 7.6)
+
+  @Test("appearing on an online conversation connects and subscribes to it")
+  func appearSubscribesToTheOpenConversation() async {
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(chat: chat)
+    feature.setConnection(.online)
+
+    await feature.appear()
+
+    let calls = await chat.calls
+    #expect(calls.contains(.connect))
+    #expect(calls.contains(.subscribe(agentID: "agent-1", conversationID: "conv-1")))
+  }
+
+  @Test("a transient reconnect does not re-subscribe: the connection replays its own subscriptions")
+  func transientReconnectKeepsTheSubscription() async {
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await eventually { await chat.subscribeCount == 1 }
+
+    // `ChatConnection.replayTurnSubscriptions` re-sends the subscribe frame
+    // over the fresh socket, so the gateway is still watching — the feature
+    // must not believe otherwise and send a second one.
+    await chat.yield(.state(.reconnecting(attempt: 1)))
+    await eventually { await featureTransport(feature) == .reconnecting(attempt: 1) }
+    await chat.yield(.state(.connected))
+    await eventually { await featureTransport(feature) == .connected }
+    await feature.connectionDidBecomeOnline()
+
+    #expect(await chat.subscribeCount == 1)
+  }
+
+  @Test("a fresh connect re-subscribes, because connecting clears the connection's subscriptions")
+  func reconnectAfterDetachmentResubscribes() async {
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await eventually { await chat.subscribeCount == 1 }
+
+    await feature.disappear()
+    await feature.appear()
+
+    await eventually { await chat.subscribeCount == 2 }
+    #expect(await chat.calls.filter { $0 == .connect }.count == 2)
+  }
+
+  @Test("leaving the conversation unsubscribes it, so a long session cannot accumulate subscriptions")
+  func disappearUnsubscribes() async {
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.disappear()
+
+    let calls = await chat.calls
+    #expect(calls.contains(.unsubscribe(agentID: "agent-1", conversationID: "conv-1")))
+    #expect(calls.contains(.suspendForDetachment))
+  }
+
+  @Test("an offline conversation neither connects nor subscribes")
+  func offlineConversationDoesNotSubscribe() async {
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(chat: chat)
+    feature.setConnection(.offline)
+
+    await feature.appear()
+
+    let calls = await chat.calls
+    #expect(calls.contains(.connect) == false)
+    #expect(calls.contains { if case .subscribe = $0 { return true } else { return false } } == false)
+  }
+
+  // MARK: - Sub-agent rows (task D5, sub-agents design 8.1-8.3)
+
+  @Test("expanding a row reads the child's transcript and its oneShot fact, and subscribes to it")
+  func expandingASubagentRowLoadsAndSubscribes() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentTranscript(
+      .success(
+        SubagentTranscriptSnapshot(
+          messages: [childMessage(id: "c-1", text: "Check the logs")],
+          oneShot: true
+        )
+      )
+    )
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.setSubagentExpanded("child-1", true).value
+
+    #expect(feature.state.subagentUI["child-1"]?.isExpanded == true)
+    #expect(feature.state.subagentUI["child-1"]?.childMessages?.map(\.id) == ["c-1"])
+    #expect(feature.state.subagentUI["child-1"]?.oneShot == true)
+    #expect(await sync.subagentTranscriptCalls == ["child-1"])
+    #expect(
+      await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "child-1"))
+    )
+
+    await feature.setSubagentExpanded("child-1", false).value
+
+    #expect(feature.state.subagentUI["child-1"]?.isExpanded == false)
+    #expect(
+      await chat.calls.contains(.unsubscribe(agentID: "agent-1", conversationID: "child-1"))
+    )
+    // Collapsing does not re-read.
+    #expect(await sync.subagentTranscriptCalls == ["child-1"])
+  }
+
+  @Test(
+    """
+    a child that cannot be opened reports on its own row and does NOT drive the     conversation into a failure state
+    """
+  )
+  func anUnopenableChildDoesNotTakeTheTranscriptDown() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentTranscript(.failure(GatewayError.notFound))
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.setSubagentExpanded("child-1", true).value
+
+    #expect(feature.state.subagentUI["child-1"]?.lastError == "This agent is no longer available.")
+    #expect(feature.state.subagentUI["child-1"]?.childMessages == nil)
+    // The conversation itself is untouched — a 404 on a pruned child must not
+    // look like the OPEN conversation being deleted.
+    #expect(feature.state.errorBanner == nil)
+    #expect(feature.connection == .online)
+  }
+
+  @Test(
+    """
+    a row collapsed while its transcript is still loading does not end up with     a live subscription nothing releases
+    """
+  )
+  func collapsingDuringTheLoadLeaksNoSubscription() async {
+    let sync = FakeChatSynchronizer()
+    let gate = TestGate()
+    await sync.enqueueSubagentTranscript(
+      .success(SubagentTranscriptSnapshot(messages: [], oneShot: nil)),
+      waitingOn: gate
+    )
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    // The expansion parks inside the REST read; the user collapses the row;
+    // only then does the read return and the late `subscribeToSubagent` run.
+    let expanding = feature.setSubagentExpanded("child-1", true)
+    await gate.waitUntilWaiting()
+    await feature.setSubagentExpanded("child-1", false).value
+    await gate.release()
+    await expanding.value
+
+    #expect(feature.state.subagentUI["child-1"]?.isExpanded == false)
+    #expect(
+      await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "child-1")) == false
+    )
+  }
+
+  @Test("a row at the depth cap toggles open without fetching or subscribing")
+  func aCappedRowNeitherFetchesNorSubscribes() async {
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.setSubagentExpanded("grandchild-1", true, loadsTranscript: false).value
+
+    #expect(feature.state.subagentUI["grandchild-1"]?.isExpanded == true)
+    #expect(await sync.subagentTranscriptCalls.isEmpty)
+    #expect(
+      await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "grandchild-1"))
+        == false
+    )
+  }
+
+  @Test("typing into a child goes through the REST resume, never a message frame")
+  func sendingToASubagentUsesTheRestResume() async {
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat, ids: ["req-1", "unused"])
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.setSubagentExpanded("child-1", true).value
+
+    let sent = await feature.sendToSubagent("child-1", text: "  keep going  ")
+
+    #expect(sent)
+    #expect(
+      await sync.resumeCalls
+        == [SubagentResumeCall(id: "child-1", message: "keep going", requestID: "req-1")]
+    )
+    // A `message` frame would reach `hub.start` and never
+    // `ChildHandle.answerQuestion`. Nothing about a resume touches the socket.
+    #expect(await chat.calls.compactMap(\.sentPayload).isEmpty)
+    #expect(feature.state.subagentUI["child-1"]?.isSending == false)
+    #expect(feature.state.subagentUI["child-1"]?.lastError == nil)
+  }
+
+  @Test("a coordinator refusal surfaces verbatim and the optimistic row is withdrawn")
+  func aRefusedResumeSurfacesItsReason() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueResume(.failure(GatewayError.validation("One-shot agents cannot be resumed")))
+    let feature = makeFeature(sync: sync, ids: ["req-1", "unused"])
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.setSubagentExpanded("child-1", true).value
+
+    let sent = await feature.sendToSubagent("child-1", text: "again")
+
+    #expect(sent == false)
+    #expect(
+      feature.state.subagentUI["child-1"]?.lastError == "One-shot agents cannot be resumed"
+    )
+    #expect(feature.state.subagentUI["child-1"]?.childMessages?.isEmpty == true)
+  }
+
+  // MARK: - Optimism is derived from the subscription set (D5 fix round 1)
+  //
+  // These four are FEATURE-level on purpose. `SubagentUITests` pins that
+  // `.subagentReplyStarted` respects the flag it is handed; nothing there can
+  // see what value the send path produces, and that is the exact hole the
+  // first review round fell through — a composer hardcoding `false` shipped
+  // under a fully green reducer suite.
+
+  @Test(
+    """
+    a send from a row whose subscription is HELD writes an optimistic row,     because only then can the echoed accepted reconcile it
+    """
+  )
+  func aSubscribedSendIsOptimistic() async {
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat, ids: ["req-1", "unused"])
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.setSubagentExpanded("child-1", true).value
+    #expect(
+      await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "child-1"))
+    )
+
+    #expect(await feature.sendToSubagent("child-1", text: "keep going"))
+
+    #expect(feature.state.subagentUI["child-1"]?.pendingRequestIDs == ["req-1"])
+    let row = feature.state.subagentUI["child-1"]?.childMessages?.first { $0.id == "req-1" }
+    #expect(row?.user?.text == "keep going")
+    #expect(row?.origin == .parent)
+  }
+
+  @Test(
+    """
+    a send with NO subscription held writes no optimistic row, so the accepted     it can never receive cannot leave a permanent duplicate
+    """
+  )
+  func anUnsubscribedSendIsNotOptimistic() async {
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat, ids: ["req-1", "unused"])
+    feature.setConnection(.online)
+    await feature.appear()
+    // Never expanded: the `waiting_input` reply composer renders on a
+    // COLLAPSED row, so this is the reply composer's live path.
+    #expect(feature.state.subagentUI["child-1"] == nil)
+
+    #expect(await feature.sendToSubagent("child-1", text: "the answer is yes"))
+
+    #expect(feature.state.subagentUI["child-1"]?.pendingRequestIDs.isEmpty == true)
+    #expect(feature.state.subagentUI["child-1"]?.childMessages == nil)
+    #expect(
+      await sync.resumeCalls
+        == [SubagentResumeCall(id: "child-1", message: "the answer is yes", requestID: "req-1")]
+    )
+  }
+
+  @Test(
+    """
+    backgrounding and returning re-reads and re-subscribes an expanded row, so     a send from the still-open body is not optimistic against a dropped     subscription
+    """
+  )
+  func returningFromTheBackgroundRestoresChildSubscriptions() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentTranscript(
+      .success(SubagentTranscriptSnapshot(messages: [], oneShot: false))
+    )
+    await sync.enqueueSubagentTranscript(
+      .success(SubagentTranscriptSnapshot(messages: [], oneShot: false))
+    )
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat, ids: ["req-1", "unused"])
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.setSubagentExpanded("child-1", true).value
+
+    // `suspendForDetachment` drops the socket and `ChatConnection.clearAllTurns`
+    // empties the gateway-side map with it, and the transport's `.idle` clears
+    // `subscribedSubagentIDs` when `consume(.state)` drains it. The body stays
+    // open and still looks live.
+    await feature.sceneDidEnterBackground()
+    await feature.sceneWillEnterForeground()
+
+    #expect(await sync.subagentTranscriptCalls == ["child-1", "child-1"])
+    #expect(
+      await chat.calls.filter { $0 == .subscribe(agentID: "agent-1", conversationID: "child-1") }
+        .count == 2
+    )
+
+    // And the send from that body is optimistic again, because the
+    // subscription that makes an `accepted` reachable is genuinely back.
+    #expect(await feature.sendToSubagent("child-1", text: "keep going"))
+    #expect(feature.state.subagentUI["child-1"]?.pendingRequestIDs == ["req-1"])
+  }
+
+  @Test(
+    """
+    a row at the depth cap is NOT re-read or re-subscribed on return, because     its expansion never opened a transcript to stream into
+    """
+  )
+  func returningFromTheBackgroundLeavesCappedRowsAlone() async {
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.setSubagentExpanded("grandchild-1", true, loadsTranscript: false).value
+
+    await feature.sceneDidEnterBackground()
+    await feature.sceneWillEnterForeground()
+
+    #expect(feature.state.subagentUI["grandchild-1"]?.isExpanded == true)
+    #expect(await sync.subagentTranscriptCalls.isEmpty)
+    #expect(
+      await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "grandchild-1"))
+        == false
+    )
+  }
+
+  @Test(
+    """
+    a row whose subscribe never landed self-heals on the next appear(), because     the resubscribe filter reads the UI slice and not a record of what was     subscribed
+    """
+  )
+  func aRowThatNeverSubscribedSelfHealsOnTheNextAppear() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentTranscript(
+      .success(SubagentTranscriptSnapshot(messages: [], oneShot: false))
+    )
+    await sync.enqueueSubagentTranscript(
+      .success(SubagentTranscriptSnapshot(messages: [], oneShot: false))
+    )
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat, ids: ["req-1", "unused"])
+
+    // Expanding while `.offline` reproduces the STATE a swallowed subscribe
+    // failure leaves behind, without needing a failure hook on the double:
+    // `subscribeToSubagent` returns at its `connection == .online` guard,
+    // before the insert, so the row is `isExpanded && opensTranscript` and
+    // absent from `subscribedSubagentIDs` — the whole of what
+    // `resubscribeExpandedSubagents`'s filter reads. What this does NOT
+    // reproduce is a throw inside the `do` block; the swallow itself is still
+    // only reasoned about.
+    feature.setConnection(.offline)
+    await feature.appear()
+    await feature.setSubagentExpanded("child-1", true).value
+
+    #expect(feature.state.subagentUI["child-1"]?.isExpanded == true)
+    #expect(await sync.subagentTranscriptCalls == ["child-1"])
+    #expect(
+      await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "child-1")) == false
+    )
+
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(await sync.subagentTranscriptCalls == ["child-1", "child-1"])
+    #expect(
+      await chat.calls.filter { $0 == .subscribe(agentID: "agent-1", conversationID: "child-1") }
+        .count == 1
+    )
+
+    // And the row is genuinely subscribed again, so a send from it is
+    // optimistic — the property the self-heal exists to restore. A filter keyed
+    // on a REMEMBERED subscription set rather than on the UI slice would leave
+    // this row out and redden all three assertions above and this one.
+    #expect(await feature.sendToSubagent("child-1", text: "keep going"))
+    #expect(feature.state.subagentUI["child-1"]?.pendingRequestIDs == ["req-1"])
+  }
+
+  @Test(
+    """
+    a transcript READ failing while a send is in flight leaves the send armed —     asserted where the ACTION is chosen, not where it is reduced
+    """
+  )
+  func aFailedReadDoesNotDisarmAnInFlightSendAtTheFeatureLevel() async {
+    let sync = FakeChatSynchronizer()
+    let gate = TestGate()
+    await sync.enqueueSubagentTranscript(
+      .success(SubagentTranscriptSnapshot(messages: [], oneShot: false))
+    )
+    // The send parks inside the resume; the concurrent re-read fails.
+    await sync.enqueueResume(.success(()), waitingOn: gate)
+    await sync.enqueueSubagentTranscript(.failure(GatewayError.notFound))
+    let feature = makeFeature(sync: sync, ids: ["req-1", "unused"])
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.setSubagentExpanded("child-1", true).value
+
+    let sending = Task { await feature.sendToSubagent("child-1", text: "keep going") }
+    await gate.waitUntilWaiting()
+    #expect(feature.state.subagentUI["child-1"]?.isSending == true)
+
+    await feature.loadSubagentTranscript(childID: "child-1")
+
+    // The read reports on the row and disarms nothing.
+    #expect(feature.state.subagentUI["child-1"]?.lastError == "This agent is no longer available.")
+    #expect(feature.state.subagentUI["child-1"]?.isSending == true)
+    #expect(feature.state.subagentUI["child-1"]?.pendingRequestIDs == ["req-1"])
+
+    await gate.release()
+    #expect(await sending.value)
+    #expect(feature.state.subagentUI["child-1"]?.isSending == false)
+  }
+
+  @Test(
+    """
+    an unsent sub-agent draft survives a collapse and is keyed per composer,     which is web's behaviour and what `@State` in the composer could not do
+    """
+  )
+  func subagentComposerDraftsSurviveCollapseAndDoNotShareABuffer() async {
+    let feature = makeFeature()
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.setSubagentExpanded("child-1", true).value
+
+    feature.setSubagentComposerDraft("body:child-1", "half a sentence")
+    feature.setSubagentComposerDraft("reply:child-1", "the answer is yes")
+
+    // One child renders BOTH composers when it is `waiting_input` and open.
+    #expect(feature.subagentComposerDraft("body:child-1") == "half a sentence")
+    #expect(feature.subagentComposerDraft("reply:child-1") == "the answer is yes")
+
+    await feature.setSubagentExpanded("child-1", false).value
+    await feature.setSubagentExpanded("child-1", true).value
+
+    #expect(feature.subagentComposerDraft("body:child-1") == "half a sentence")
+    #expect(feature.subagentComposerDraft("reply:child-1") == "the answer is yes")
+
+    // Clearing REMOVES the key, so a long session does not accumulate one
+    // entry per composer it has ever rendered.
+    feature.setSubagentComposerDraft("body:child-1", "")
+    #expect(feature.subagentComposerDraft("body:child-1").isEmpty)
+    #expect(feature.subagentComposerDrafts.keys.contains("body:child-1") == false)
+    #expect(feature.subagentComposerDrafts == ["reply:child-1": "the answer is yes"])
+  }
+
+  @Test("resendFromMessage refuses an orchestrator-authored row, not just a notification row")
+  func resendRefusesOrchestratorAuthoredRows() async {
+    // Seeded through the cache, which is the only writer of `state.messages`
+    // a test can drive — and it is also the realistic path: a child transcript
+    // reaches this client as ordinary `ConversationMessage` rows carrying
+    // `origin: "parent"`.
+    let parentAuthored = ConversationMessageDTO(
+      id: "p1",
+      conversationId: "conv-1",
+      turnId: "child-turn",
+      ordinal: 1,
+      role: .user,
+      status: .completed,
+      content: .user(text: "Check the logs", images: nil),
+      createdAt: Date(timeIntervalSince1970: 1),
+      updatedAt: Date(timeIntervalSince1970: 1),
+      origin: MessageOrigin.parent.rawValue
+    )
+    let persistence = FakeChatPersistence(messages: [parentAuthored])
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(.success(snapshot(messages: [parentAuthored], throughSeq: 1)))
+    let feature = makeFeature(persistence: persistence, sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+    #expect(feature.state.messages.map(\.origin) == [.parent])
+
+    let resent = await feature.resendFromMessage(id: "p1")
+
+    #expect(resent == false)
+    #expect(feature.state.messages.map(\.id) == ["p1"])
+  }
+
+  private func childMessage(id: String, text: String) -> ConversationMessageDTO {
+    ConversationMessageDTO(
+      id: id,
+      conversationId: "child-1",
+      turnId: "child-turn",
+      ordinal: 1,
+      role: .user,
+      status: .completed,
+      content: .user(text: text, images: nil),
+      createdAt: Date(timeIntervalSince1970: 1),
+      updatedAt: Date(timeIntervalSince1970: 1),
+      origin: MessageOrigin.parent.rawValue
+    )
+  }
+
+  // MARK: - Tasks list (§8.4)
+
+  @Test(
+    """
+    the tasks list is read from REST on open, and its live count includes a     depth-capped child and an unknown status
+    """
+  )
+  func theTasksListIsReadFromRESTOnOpen() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(
+      .success([
+        listEntry(id: "child-1", status: "running"),
+        // Past `maxSubagentDepth`, so no ROW would open a transcript for it —
+        // but §8.4's badge counts children, not openable rows.
+        listEntry(id: "grandchild-1", status: "waiting_input", depth: 2),
+        // A status this build has never heard of. Web reads an unknown status
+        // as live (`isTerminalSubagentStatus` answers false), and hiding a
+        // running child from the badge and from Stop is the worse of the two
+        // failures.
+        listEntry(id: "child-2", status: "hibernating"),
+        listEntry(id: "child-3", status: "max_turns"),
+      ])
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+
+    await feature.appear()
+
+    #expect(await sync.subagentListCalls == ["conv-1"])
+    #expect(feature.subagents.map(\.id) == ["child-1", "grandchild-1", "child-2", "child-3"])
+    #expect(feature.liveSubagentCount == 3)
+  }
+
+  @Test("only the newest list read ever writes, however the two answer")
+  func onlyTheNewestListReadEverWrites() async {
+    let stale = TestGate()
+    let sync = FakeChatSynchronizer()
+    // First read: the child is still running. Gated, so it answers LAST.
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]), waitingOn: stale)
+    // Second read, issued after it: the child has finished.
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "done")]))
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+
+    let first = Task { await feature.refreshSubagents() }
+    // The gate is entered inside the fake, so waiting on it proves the first
+    // read has taken its queued answer before the second is issued — without
+    // it this test would be racing its own fixture rather than the guard.
+    await stale.waitUntilWaiting()
+    await feature.refreshSubagents()
+    #expect(feature.subagents.first?.status == "done")
+
+    await stale.release()
+    await first.value
+
+    // The stale answer lands second and must change nothing.
+    #expect(feature.subagents.first?.status == "done")
+    #expect(feature.liveSubagentCount == 0)
+  }
+
+  @Test("a list read that says nothing new invalidates nothing, and one that does, does")
+  func anIdenticalListReadInvalidatesNothing() async {
+    let sync = FakeChatSynchronizer()
+    let entries = [listEntry(id: "child-1", status: "running")]
+    await sync.enqueueSubagentList(.success(entries))
+    await sync.enqueueSubagentList(.success(entries))
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "done")]))
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    // The badge re-reads on EVERY parent turn's `done`, so an ordinary chat
+    // with one finished child pays for this once per assistant turn. It must
+    // cost nothing when the answer has not moved.
+    let identical = InvalidationFlag()
+    withObservationTracking { _ = feature.subagents } onChange: { identical.fire() }
+    await feature.refreshSubagents()
+    #expect(await sync.subagentListCalls.count == 2)
+    #expect(identical.didFire == false)
+
+    // The positive control, in the SAME test, because a negative assertion
+    // against an observation tracker is worthless without one — a dead tracker
+    // and a silent write look identical.
+    let changed = InvalidationFlag()
+    withObservationTracking { _ = feature.subagents } onChange: { changed.fire() }
+    await feature.refreshSubagents()
+    #expect(changed.didFire)
+    #expect(feature.subagents.first?.status == "done")
+  }
+
+  @Test("a list write never invalidates the transcript, because it is not in ChatState")
+  func aListWriteDoesNotInvalidateTheTranscript() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]))
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+
+    // `ChatView` reads `feature.state`, which is ONE stored property, so a list
+    // kept there would re-render the whole transcript once per assistant turn —
+    // web measured exactly that fan-out as its D3 I3a. The control below proves
+    // the tracker is live rather than dead.
+    let stateInvalidated = InvalidationFlag()
+    let listInvalidated = InvalidationFlag()
+    withObservationTracking { _ = feature.state } onChange: { stateInvalidated.fire() }
+    withObservationTracking { _ = feature.subagents } onChange: { listInvalidated.fire() }
+    await feature.refreshSubagents()
+
+    #expect(listInvalidated.didFire)
+    #expect(stateInvalidated.didFire == false)
+  }
+
+  @Test("a list read that lands after the feature was retired writes nothing")
+  func aListReadThatLandsAfterShutdownWritesNothing() async {
+    let gate = TestGate()
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(
+      .success([listEntry(id: "child-1", status: "running")]),
+      waitingOn: gate
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+
+    let read = Task { await feature.refreshSubagents() }
+    await gate.waitUntilWaiting()
+    feature.prepareForShutdown()
+    await gate.release()
+    await read.value
+
+    // The iOS counterpart of web's conversation-switch guard: `AppModel` keys a
+    // `ChatFeature` by (gateway, conversation), so a read can only ever land on
+    // the conversation that issued it — but the feature can be retired under it.
+    #expect(feature.subagents.isEmpty)
+  }
+
+  @Test(
+    """
+    a background child's finish is read from the notification turn's accepted     and again from the turn's done, and no other frame pays for a read
+    """
+  )
+  func theListIsReadOnTheTriggersThatCanChangeIt() async {
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    #expect(await sync.subagentListCalls.count == 1)
+
+    // An ordinary user turn's `accepted` says nothing about any child.
+    await chat.yield(.frame(acceptedFrame(origin: nil)))
+    await settle()
+    #expect(await sync.subagentListCalls.count == 1)
+
+    // The notification turn the gateway starts to hand the orchestrator a
+    // BACKGROUND child's result — the only thing about that finish that ever
+    // reaches the parent.
+    await chat.yield(.frame(acceptedFrame(origin: .notification)))
+    await eventually { await sync.subagentListCalls.count == 2 }
+
+    // `subagent_progress` is transient and never persisted; reading on it would
+    // be a round trip per tool call.
+    await chat.yield(.frame(subagentProgressFrame()))
+    await settle()
+    #expect(await sync.subagentListCalls.count == 2)
+
+    await chat.yield(.frame(subagentStartedFrame()))
+    await eventually { await sync.subagentListCalls.count == 3 }
+
+    // A CHILD's own frames reach this socket because the client subscribed to
+    // the child; none of them says anything about the parent's children.
+    await chat.yield(
+      .frame(.done(id: "child-turn", conversationId: "child-1", seq: 1, outcome: .completed))
+    )
+    await settle()
+    #expect(await sync.subagentListCalls.count == 3)
+
+    await chat.yield(
+      .frame(.done(id: "turn-1", conversationId: "conv-1", seq: 9, outcome: .completed))
+    )
+    await eventually { await sync.subagentListCalls.count == 4 }
+  }
+
+  @Test("stopping a child applies the route's own status before the re-read")
+  func stoppingAChildAppliesTheRoutesOwnStatus() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]))
+    // The cascade reached a child this gateway no longer holds a handle for, so
+    // the route terminalized the row itself — a status the client could not
+    // have guessed from the child's own events.
+    await sync.enqueueStop(.success("interrupted"))
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "interrupted")]))
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(await feature.stopSubagent("child-1"))
+
+    #expect(await sync.stopCalls == ["child-1"])
+    #expect(feature.subagents.first?.status == "interrupted")
+    #expect(feature.liveSubagentCount == 0)
+    #expect(feature.subagentStopErrors["child-1"] == nil)
+  }
+
+  @Test("a stop that only raced the child's own finish reports nothing")
+  func aStopThatRacedTheChildsFinishReportsNothing() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]))
+    await sync.enqueueStop(.failure(.validation("Sub-agent child-1 is already done")))
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "done")]))
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    // iOS cannot read the 409 web keys on — `HTTPTransport` maps every
+    // `validation_failed` to `GatewayError.validation(String)` and drops the
+    // status — so what the server says is true AFTER the re-read decides.
+    #expect(await feature.stopSubagent("child-1"))
+    #expect(feature.subagentStopErrors["child-1"] == nil)
+    #expect(feature.subagents.first?.status == "done")
+  }
+
+  @Test("a stop that failed with the child still running surfaces the gateway's own text")
+  func aFailedStopSurfacesTheGatewaysText() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]))
+    await sync.enqueueStop(.failure(.validation("This agent cannot be stopped from here")))
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]))
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(await feature.stopSubagent("child-1") == false)
+    #expect(feature.subagentStopErrors["child-1"] == "This agent cannot be stopped from here")
+    #expect(feature.liveSubagentCount == 1)
+    #expect(feature.stoppingSubagentIDs.isEmpty)
+  }
+
+  @Test(
+    """
+    a resume the gateway refuses reaches the tasks row, which is the only     surface a background child has
+    """
+  )
+  func aRefusedResumeIsTheTasksRowsError() async throws {
+    URLProtocolStub.reset()
+    // A REAL 409 on the wire, not a synthesised `GatewayError`: the point of
+    // the test is the whole path — the route's status is dropped by
+    // `HTTPTransport`, the prose survives, `subagentFailureText` keeps it
+    // verbatim, and it has to arrive somewhere a view reads. The text is
+    // `coordinator.resumeChild`'s own refusal (`coordinator.ts:717`), which is
+    // what a finished child whose grant cannot be rebuilt answers.
+    let refusal = #"Agent "scout" cannot be resumed: its grant cannot be rebuilt."#
+    let body = try JSONSerialization.data(
+      withJSONObject: ["code": "validation_failed", "error": refusal, "retryable": false]
+    )
+    URLProtocolStub.enqueue(status: 409, data: body)
+    let store = try PersistenceStore.inMemory()
+    let api = makeChatGatewayAPI()
+    let feature = ChatFeature(
+      gatewayID: "gateway-1",
+      mobileProtocol: .v1,
+      conversation: summary(),
+      persistence: LiveChatPersistence(store: store),
+      synchronizer: LiveChatSynchronizer(gatewayID: "gateway-1", store: store, makeAPI: { api }),
+      transport: FakeChatFeatureTransport(),
+      clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
+      announcer: FakeChatAccessibilityAnnouncer(),
+      validator: ImageAttachmentValidator(),
+      makeID: { "req-1" }
+    )
+    feature.setConnection(.online)
+
+    #expect(await feature.sendToSubagent("child-1", text: "one more pass") == false)
+
+    // Where it lands today — rendered by `SubagentCardView`, i.e. by the
+    // transcript row, which a background child that finished after its
+    // spawning turn does not have.
+    #expect(feature.state.subagentUI["child-1"]?.lastError == refusal)
+    // Where the sheet reads. Before this, `TasksRowView` rendered
+    // `subagentStopErrors` alone and a refused resume was silent.
+    #expect(feature.subagentRowError("child-1") == refusal)
+  }
+
+  @Test("the tasks row's error line belongs to the last action taken, not to the older one")
+  func theRowErrorLineBelongsToTheLastActionTaken() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]))
+    await sync.enqueueStop(.failure(.validation("This agent cannot be stopped from here")))
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]))
+    await sync.enqueueResume(.failure(GatewayError.validation(#"steer cap reached for "scout""#)))
+    // Three ids, not two: the resume takes one for its `requestId`.
+    let feature = makeFeature(sync: sync, ids: ["turn-1", "local-1", "req-1"])
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(await feature.stopSubagent("child-1") == false)
+    #expect(feature.subagentRowError("child-1") == "This agent cannot be stopped from here")
+
+    // A resume attempted after it OWNS the line: leaving the stop's older
+    // refusal up would read as though the sentence had been refused for a
+    // reason that has nothing to do with it.
+    #expect(await feature.sendToSubagent("child-1", text: "one more pass") == false)
+    #expect(feature.subagentRowError("child-1") == #"steer cap reached for "scout""#)
+
+    // And back the other way. `stopSubagent` clears its own slot on the
+    // attempt, so without clearing the resume's the row would show the
+    // resume refusal for the whole of the next stop and, if that stop
+    // succeeded, forever after.
+    await sync.enqueueStop(.success("cancelled"))
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "cancelled")]))
+    #expect(await feature.stopSubagent("child-1"))
+    #expect(feature.subagentRowError("child-1") == nil)
+  }
+
+  @Test("a stop's local write moves the read cursor, so an older read cannot undo it")
+  func aStopsLocalWriteCannotBeUndoneByAnOlderRead() async {
+    let stale = TestGate()
+    let afterStop = TestGate()
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]))
+    // Issued BEFORE the stop and still in flight when it lands: a read this old
+    // carries the pre-stop row.
+    await sync.enqueueSubagentList(
+      .success([listEntry(id: "child-1", status: "running")]),
+      waitingOn: stale
+    )
+    await sync.enqueueStop(.success("cancelled"))
+    await sync.enqueueSubagentList(
+      .success([listEntry(id: "child-1", status: "cancelled")]),
+      waitingOn: afterStop
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    let staleRead = Task { await feature.refreshSubagents() }
+    await stale.waitUntilWaiting()
+
+    let stop = Task { await feature.stopSubagent("child-1") }
+    // The stop's own re-read has been ISSUED, which is how we know
+    // `applyStopped` has already run.
+    await afterStop.waitUntilWaiting()
+    #expect(feature.subagents.first?.status == "cancelled")
+
+    await stale.release()
+    await staleRead.value
+
+    // The whole point: `applyStopped` writes the list without any read having
+    // written it, so it must move the cursor too, or a read issued before it
+    // still satisfies `readSeq > appliedSubagentReadSeq` and restores the
+    // pre-stop row — Stop offered again for one frame on a child that is gone.
+    #expect(feature.subagents.first?.status == "cancelled")
+    #expect(feature.liveSubagentCount == 0)
+
+    await afterStop.release()
+    #expect(await stop.value)
+  }
+
+  @Test("the server's status for a row is nil for a child the list does not carry")
+  func theServersRowStatusIsNilForAChildTheListDoesNotCarry() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "done")]))
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.restSubagentStatus("child-1") == .done)
+    // Not a direct child of the OPEN conversation, so the route never returned
+    // it and the row keeps reading its own fold. Answering `.running` here
+    // instead would be the merge D3 rejected, wearing a different hat.
+    #expect(feature.restSubagentStatus("grandchild-1") == nil)
+  }
+
+  @Test(
+    """
+    a resume re-reads the list, so a row that reads the server stops showing     the status the child had before it was resumed
+    """
+  )
+  func aResumeReReadsTheList() async {
+    let sync = FakeChatSynchronizer()
+    // §8.4's Resume on its headline target: a BACKGROUND child that finished
+    // after its spawning turn, whose `done` the notification turn's read
+    // already brought here — and which `SubagentTaskRow.canResume` offers
+    // Resume on precisely because `coordinator.resumeChild` is built to
+    // rebuild a finished child's grant.
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "done")]))
+    await sync.enqueueResume(.success(()))
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]))
+    let feature = makeFeature(sync: sync, ids: ["turn-1", "local-1", "req-1"])
+    feature.setConnection(.online)
+    await feature.appear()
+    #expect(await sync.subagentListCalls.count == 1)
+    #expect(feature.restSubagentStatus("child-1") == .done)
+
+    #expect(await feature.sendToSubagent("child-1", text: "one more pass"))
+
+    // Nothing else can close this window. A resume outside a live parent turn
+    // reaches `Coordinator.emitToParent` with no live turn to emit into
+    // (`packages/swarm/src/coordinator.ts:1549-1554`), so not one of the
+    // child's frames — started, progress or finished — arrives on this socket,
+    // and no other trigger fires until the SECOND run's notification turn.
+    #expect(await sync.subagentListCalls.count == 2)
+    // The row, the sheet, the strip and the badge all read this.
+    #expect(feature.restSubagentStatus("child-1") == .running)
+    #expect(feature.liveSubagentCount == 1)
+  }
+
+  @Test(
+    """
+    a send is not reported done until its re-read lands, so the composer cannot     re-arm on a sentence the gateway has already accepted
+    """
+  )
+  func aSendIsNotDoneUntilItsReReadLands() async {
+    let gate = TestGate()
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "done")]))
+    await sync.enqueueResume(.success(()))
+    await sync.enqueueSubagentList(
+      .success([listEntry(id: "child-1", status: "running")]),
+      waitingOn: gate
+    )
+    let feature = makeFeature(sync: sync, ids: ["turn-1", "local-1", "req-1"])
+    feature.setConnection(.online)
+    await feature.appear()
+
+    let sending = Task { await feature.sendToSubagent("child-1", text: "one more pass") }
+    await gate.waitUntilWaiting()
+
+    // `SubagentComposer.canSend` is `isEnabled && isSending == false && text
+    // non-empty`, and the field is emptied only when `onSend` returns `true`
+    // (`SubagentViews.swift:667-687`). So clearing `isSending` before the
+    // re-read would light the Send button back up with the user's sentence
+    // still sitting in it, for the length of a GET, on a resume the gateway has
+    // already accepted — one tap from a duplicate steer. `stopSubagent` holds
+    // its own gate across its re-read for the same reason: its
+    // `defer { stoppingSubagentIDs.remove(...) }` fires after the read.
+    #expect(feature.state.subagentUI["child-1"]?.isSending == true)
+
+    await gate.release()
+    #expect(await sending.value)
+    #expect(feature.state.subagentUI["child-1"]?.isSending == false)
+    #expect(feature.restSubagentStatus("child-1") == .running)
+  }
+
+  @Test("revealing a child the transcript has no row for expands nothing and fetches nothing")
+  func revealingAChildWithNoCardExpandsNothing() async {
+    let sync = FakeChatSynchronizer()
+    // In the list and nowhere else — the sheet's headline case, a background
+    // child whose start event sits in no message this client has loaded.
+    await sync.enqueueSubagentList(.success([listEntry(id: "ghost-1", status: "running")]))
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+    #expect(feature.subagents.map(\.id) == ["ghost-1"])
+
+    feature.revealSubagent("ghost-1")
+    await settle()
+
+    // Expanding it anyway would fetch a transcript and hold a subscription
+    // that no view renders — the leak class D2, D3 and D5 each paid for.
+    #expect(feature.state.subagentUI["ghost-1"] == nil)
+    #expect(await sync.subagentTranscriptCalls.isEmpty)
+  }
+
+  private func acceptedFrame(origin: MessageOrigin?) -> MobileWSServerFrame {
+    .accepted(
+      id: "turn-notify",
+      conversationId: "conv-1",
+      userMessageId: "user-notify",
+      assistantMessageId: "assistant-notify",
+      revision: 2,
+      seq: 40,
+      origin: origin,
+      kind: nil,
+      requestId: nil
+    )
+  }
+
+  private func subagentStartedFrame() -> MobileWSServerFrame {
+    .event(
+      id: "turn-1",
+      conversationId: "conv-1",
+      seq: 41,
+      event: .subagentStarted(
+        subagentId: "child-9",
+        name: nil,
+        subagentType: "researcher",
+        description: "Look around",
+        prompt: "Look around",
+        model: "openai/gpt-5",
+        background: true,
+        depth: 1,
+        startedAt: Date(timeIntervalSince1970: 2_000),
+        isolation: nil,
+        parentTurnId: "turn-1"
+      )
+    )
+  }
+
+  private func subagentProgressFrame() -> MobileWSServerFrame {
+    .event(
+      id: "turn-1",
+      conversationId: "conv-1",
+      seq: 42,
+      event: .subagentProgress(
+        subagentId: "child-9",
+        status: .running,
+        toolCallCount: 2,
+        elapsedMs: 100,
+        detail: nil,
+        question: nil
+      )
+    )
+  }
+
+  private func listEntry(
+    id: String,
+    status: String,
+    depth: Int = 1,
+    oneShot: Bool = false,
+    endedAt: Date? = nil
+  ) -> SubagentListEntryDTO {
+    SubagentListEntryDTO(
+      id: id,
+      name: nil,
+      type: "researcher",
+      description: "Look around",
+      status: status,
+      background: true,
+      depth: depth,
+      startedAt: Date(timeIntervalSince1970: 1_000),
+      endedAt: endedAt,
+      usage: nil,
+      toolCallCount: 2,
+      report: nil,
+      oneShot: oneShot
+    )
+  }
+
+  @Test("scroll anchor is remembered across re-hosting and cleared on leave")
+  func scrollAnchorLifecycle() async {
+    let feature = makeFeature()
+    feature.scrollAnchorMessageID = "msg-7"
+    #expect(feature.scrollAnchorMessageID == "msg-7")
+    await feature.disappear()
+    #expect(feature.scrollAnchorMessageID == "msg-7", "re-hosting keeps the anchor")
+    feature.clearScrollAnchor()
+    #expect(feature.scrollAnchorMessageID == nil)
+  }
+
+  @Test(
+    "the pinned-to-bottom intent lives on the feature, so it survives a re-host too (Task 4 review fix, Important 2)"
+  )
+  func scrollPinnedIntentLifecycle() async {
+    let feature = makeFeature()
+    #expect(feature.scrollWasPinnedToBottom, "a transcript nobody scrolled is pinned")
+
+    feature.recordScrollPinnedToBottom(false)
+    feature.scrollAnchorMessageID = "msg-7"
+    await feature.disappear()
+    #expect(
+      feature.scrollWasPinnedToBottom == false,
+      "re-hosting must not resurrect the pinned default — that is what ChatView's own @State does"
+    )
+
+    feature.clearScrollAnchor()
+    #expect(feature.scrollWasPinnedToBottom, "genuinely leaving resets to the pinned default")
+    #expect(feature.scrollAnchorMessageID == nil)
+  }
+
+  // MARK: - lastAssistantText / canCopyLastAssistantText (Task 5 review fix, Important 1 & 3)
+  //
+  // `⌘⇧C` writes `lastAssistantText` straight to `UIPasteboard.general.string`
+  // with no guard, so if `canCopyLastAssistantText` (the predicate that
+  // enables the menu item) and `lastAssistantText` (what the action writes)
+  // ever disagree about what counts as "empty", the command is enabled and
+  // silently wipes the user's system clipboard — and, via Handoff, their
+  // Universal Clipboard. Before this fix that disagreement was reachable
+  // with no race at all: the predicate tested the RAW markdown for
+  // non-emptiness while the action flattened it through
+  // `markdownPlainTextAccessibilityLabel`, which drops thematic breaks
+  // entirely (`MarkdownBlocksTests.plainTextAccessibilityLabelDropsHorizontalRules`).
+  // A reply that is only `"---"` is non-empty raw markdown but flattens to
+  // `""`.
+
+  @Test(
+    "⌘⇧C's predicate agrees with what it would actually copy: a reply that is only a thematic break must not read as copyable (Task 5 review fix, Important 1)"
+  )
+  func copyLastResponsePredicateAgreesWithFlattenedEmptiness() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(
+              id: "assistant-1", role: .assistant, status: .completed,
+              events: [.textDelta(text: "---")], ordinal: 1
+            )
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.state.messages.last?.assistant?.text == "---")
+    #expect(
+      feature.canCopyLastAssistantText == (feature.lastAssistantText?.isEmpty == false),
+      """
+      the predicate and the action disagreed about emptiness here before the \
+      Important 1 fix (canCopy == true, lastAssistantText == ""), which is \
+      exactly the shape of the clipboard-wiping bug
+      """
+    )
+    #expect(feature.canCopyLastAssistantText == false)
+    #expect(feature.lastAssistantText == "")
+  }
+
+  @Test("⌘⇧C stays enabled and copies the flattened text for a reply with real content")
+  func copyLastResponsePredicateEnabledForRealText() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(
+              id: "assistant-1", role: .assistant, status: .completed,
+              events: [.textDelta(text: "**Ship it**")], ordinal: 1
+            )
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.canCopyLastAssistantText)
+    #expect(feature.lastAssistantText == "Ship it")
+  }
+
+  @Test("⌘⇧C stays disabled for a whitespace-only reply")
+  func copyLastResponsePredicateDisabledForWhitespaceOnlyReply() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(
+              id: "assistant-1", role: .assistant, status: .completed,
+              events: [.textDelta(text: "   \n  ")], ordinal: 1
+            )
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.canCopyLastAssistantText == false)
+    #expect(feature.lastAssistantText == nil)
+  }
+
+  @Test("⌘⇧C stays disabled before any assistant message has produced text")
+  func copyLastResponsePredicateDisabledWithNoAssistantMessage() async {
+    let feature = makeFeature()
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.canCopyLastAssistantText == false)
+    #expect(feature.lastAssistantText == nil)
+  }
+
+  // MARK: - ChatCommandActions identity Equatable (Task 5 review fix, Important 3)
+  //
+  // `ChatCommandActions` is `Equatable` on `feature`'s IDENTITY (`===`), not
+  // its stored closures, and deliberately so: `focusedSceneValue` re-applies
+  // — and thereby invalidates the scene's focus entry — every time the value
+  // it publishes changes, and a struct that also compared closures would be
+  // a fresh, uncomparable value on every `ChatView` body pass (closures
+  // don't conform to `Equatable`, so that variant wouldn't even compile —
+  // the realistic regression is someone reintroducing a comparable STORED
+  // snapshot field, like `let canSend: Bool`, which DOES compile and quietly
+  // reopens the composer-loses-focus bug). This test pins that two values
+  // built over the same feature compare equal regardless of which closures
+  // they carry.
+
+  @Test("two ChatCommandActions over the same feature compare equal regardless of closures")
+  func chatCommandActionsEqualOnFeatureIdentity() {
+    let feature = makeFeature()
+    let first = ChatCommandActions(feature: feature, focusComposer: {}, close: {})
+    let second = ChatCommandActions(
+      feature: feature,
+      focusComposer: { Issue.record("should never run") },
+      close: { Issue.record("should never run") }
+    )
+    #expect(first == second)
+
+    let otherFeature = makeFeature()
+    let third = ChatCommandActions(feature: otherFeature, focusComposer: {}, close: {})
+    #expect(first != third, "a different feature identity must compare unequal")
+  }
+
   private func makeFeature(
     conversation: ConversationSummaryDTO = summary(),
     persistence: FakeChatPersistence = FakeChatPersistence(),
@@ -5296,6 +6640,12 @@ private struct ChatReplayCall: Equatable, Sendable {
   let sinceSeq: Int
 }
 
+struct SubagentResumeCall: Equatable, Sendable {
+  let id: String
+  let message: String
+  let requestID: String
+}
+
 private actor FakeChatSynchronizer: ChatFeatureSynchronizing {
   private struct QueuedRefresh: Sendable {
     let result: FakeChatResult<ChatCanonicalSnapshot>
@@ -5308,6 +6658,17 @@ private actor FakeChatSynchronizer: ChatFeatureSynchronizing {
   private(set) var refreshCalls: [ChatRefreshCall] = []
   private(set) var replayCalls: [ChatReplayCall] = []
   private(set) var shutdownCount = 0
+  private var subagentTranscriptResults: [FakeChatResult<SubagentTranscriptSnapshot>] = []
+  private var subagentTranscriptGates: [TestGate?] = []
+  private var resumeResults: [FakeChatResult<Void>] = []
+  private var resumeGates: [TestGate?] = []
+  private(set) var subagentTranscriptCalls: [String] = []
+  private(set) var resumeCalls: [SubagentResumeCall] = []
+  private var subagentListResults: [FakeChatResult<[SubagentListEntryDTO]>] = []
+  private var subagentListGates: [TestGate?] = []
+  private var stopResults: [FakeChatResult<String>] = []
+  private(set) var subagentListCalls: [String] = []
+  private(set) var stopCalls: [String] = []
 
   init(recorder: ChatOperationRecorder? = nil) {
     self.recorder = recorder
@@ -5347,6 +6708,66 @@ private actor FakeChatSynchronizer: ChatFeatureSynchronizing {
     return try resolve(replayResults.removeFirst())
   }
 
+  func enqueueSubagentTranscript(
+    _ result: FakeChatResult<SubagentTranscriptSnapshot>,
+    waitingOn gate: TestGate? = nil
+  ) {
+    subagentTranscriptResults.append(result)
+    subagentTranscriptGates.append(gate)
+  }
+
+  func enqueueResume(_ result: FakeChatResult<Void>, waitingOn gate: TestGate? = nil) {
+    resumeResults.append(result)
+    resumeGates.append(gate)
+  }
+
+  func subagentTranscript(childID: String) async throws -> SubagentTranscriptSnapshot {
+    subagentTranscriptCalls.append(childID)
+    guard subagentTranscriptResults.isEmpty == false else {
+      return SubagentTranscriptSnapshot(messages: [], oneShot: nil)
+    }
+    if let gate = subagentTranscriptGates.removeFirst() { await gate.wait() }
+    return try resolve(subagentTranscriptResults.removeFirst())
+  }
+
+  func enqueueSubagentList(
+    _ result: FakeChatResult<[SubagentListEntryDTO]>,
+    waitingOn gate: TestGate? = nil
+  ) {
+    subagentListResults.append(result)
+    subagentListGates.append(gate)
+  }
+
+  func enqueueStop(_ result: FakeChatResult<String>) {
+    stopResults.append(result)
+  }
+
+  func subagents(conversationID: String) async throws -> [SubagentListEntryDTO] {
+    subagentListCalls.append(conversationID)
+    guard subagentListResults.isEmpty == false else { return [] }
+    // BOTH popped before the first `await`, so two concurrent reads take the
+    // first and second queued answers in call order however their gates are
+    // released. Popping the result after the gate would make an out-of-order
+    // test's own fixture out of order.
+    let result = subagentListResults.removeFirst()
+    let gate = subagentListGates.removeFirst()
+    if let gate { await gate.wait() }
+    return try resolve(result)
+  }
+
+  func stopSubagent(id: String) async throws -> String {
+    stopCalls.append(id)
+    guard stopResults.isEmpty == false else { return "cancelled" }
+    return try resolve(stopResults.removeFirst())
+  }
+
+  func resumeSubagent(id: String, message: String, requestID: String) async throws {
+    resumeCalls.append(SubagentResumeCall(id: id, message: message, requestID: requestID))
+    guard resumeResults.isEmpty == false else { return }
+    if let gate = resumeGates.removeFirst() { await gate.wait() }
+    _ = try resolve(resumeResults.removeFirst())
+  }
+
   func shutdown() async {
     shutdownCount += 1
   }
@@ -5374,6 +6795,23 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
   private var answerResults: [FakeChatResult<Void>] = []
   private(set) var calls: [FakeChatTransportCall] = []
   private(set) var eventStreamRequestCount = 0
+
+  /// Turn traffic only. `connect`/`subscribe`/`unsubscribe` are lifecycle
+  /// bookkeeping that `appear()` now performs unconditionally on an online
+  /// conversation (task C7, sub-agents design 7.6) — a test asserting "this
+  /// guard sent nothing" means no TURN was sent.
+  var subscribeCount: Int {
+    calls.filter { if case .subscribe = $0 { true } else { false } }.count
+  }
+
+  var turnCalls: [FakeChatTransportCall] {
+    calls.filter {
+      switch $0 {
+      case .connect, .subscribe, .unsubscribe: false
+      default: true
+      }
+    }
+  }
 
   init(
     recorder: ChatOperationRecorder? = nil,
@@ -5483,8 +6921,25 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
     }
   }
 
+  func subscribe(agentID: String, conversationID: String) async throws {
+    calls.append(.subscribe(agentID: agentID, conversationID: conversationID))
+  }
+
+  func unsubscribe(agentID: String, conversationID: String) async throws {
+    calls.append(.unsubscribe(agentID: agentID, conversationID: conversationID))
+  }
+
   func suspendForDetachment() async {
     calls.append(.suspendForDetachment)
+    // What `ChatConnection.suspend()` really does (`ChatConnection.swift:249-257`):
+    // cancel the socket, `clearAllTurns()`, then `transition(to: .idle)`. Yielding
+    // that `.idle` matters because the feature-side clear of
+    // `subscribedSubagentIDs` lives in `consume(.state)`, not in
+    // `suspendForDetachment` — without this the lifecycle tests only ever
+    // reached `ensureConnected`'s clear and the production path was unexercised.
+    // `.idle` and not `.detached`: `.detached` is what the FEATURE reduces into
+    // `state.transport`, and what the UI-test fake yields.
+    continuation.yield(.state(.idle))
   }
 
   func shutdown() async {
@@ -5523,6 +6978,8 @@ private enum FakeChatTransportCall: Equatable, Sendable {
   case resume(turnID: String, agentID: String, conversationID: String, sinceSeq: Int)
   case answer(turnID: String, questionID: String, answer: String)
   case cancel(turnID: String)
+  case subscribe(agentID: String, conversationID: String)
+  case unsubscribe(agentID: String, conversationID: String)
   case suspendForDetachment
   case resetAfterTerminalFailure
   case shutdown
@@ -5701,7 +7158,8 @@ private func message(
   status: MessageStatus = .completed,
   text: String = "",
   events: [AgentEvent] = [],
-  ordinal: Int
+  ordinal: Int,
+  origin: String? = nil
 ) -> ConversationMessageDTO {
   ConversationMessageDTO(
     id: id,
@@ -5712,7 +7170,8 @@ private func message(
     status: status,
     content: role == .user ? .user(text: text, images: nil) : .assistant(events: events),
     createdAt: Date(timeIntervalSince1970: TimeInterval(ordinal)),
-    updatedAt: Date(timeIntervalSince1970: TimeInterval(ordinal))
+    updatedAt: Date(timeIntervalSince1970: TimeInterval(ordinal)),
+    origin: origin
   )
 }
 
@@ -5723,7 +7182,10 @@ private func accepted(seq: Int) -> MobileWSServerFrame {
     userMessageId: "user-1",
     assistantMessageId: "assistant-1",
     revision: 2,
-    seq: seq
+    seq: seq,
+    origin: nil,
+    kind: nil,
+    requestId: nil
   )
 }
 
@@ -5784,6 +7246,24 @@ private func featureIsShutdown(_ feature: ChatFeature) -> Bool {
 @MainActor
 private func featureDraftText(_ feature: ChatFeature) -> String {
   feature.state.draft
+}
+
+/// One-shot flag for a `withObservationTracking` probe. A class because
+/// `onChange` is `@Sendable` and runs wherever the write happens, so a captured
+/// `var` would not compile under strict concurrency.
+private final class InvalidationFlag: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = false
+
+  func fire() { lock.withLock { value = true } }
+  var didFire: Bool { lock.withLock { value } }
+}
+
+/// Give any work a frame WOULD have started time to run, for the negative half
+/// of a trigger test. The fake synchronizer resolves without IO, so a read that
+/// was going to happen has happened long before this returns.
+private func settle() async {
+  for _ in 0..<500 { await Task.yield() }
 }
 
 private func eventually(

@@ -6,7 +6,7 @@ import type {
   MobileV2ConversationMessage,
   MobileV2PendingInput,
 } from '@dash/mobile-contract-v2';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { mockApi } from '../../../../../../vitest.setup.js';
 import { projectionFromBootstrap } from '../../../stores/chat-v2-sync.js';
@@ -31,6 +31,7 @@ const conversation: McConversationView = {
   lastMessagePreview: null,
   createdAt: '2026-07-12T00:00:00Z',
   updatedAt: '2026-07-12T00:00:00Z',
+  kind: 'user',
   origin: 'gateway',
   offline: false,
   readOnly: false,
@@ -154,6 +155,176 @@ function userMessage(text: string): ConversationMessage {
     createdAt: '2026-07-12T00:00:01Z',
     updatedAt: '2026-07-12T00:00:01Z',
   };
+}
+
+function assistantMessageWithChild(): ConversationMessage {
+  return {
+    id: 'message-2',
+    conversationId: ref.id,
+    turnId: 'turn-1',
+    ordinal: 2,
+    role: 'assistant',
+    status: 'completed',
+    content: {
+      type: 'assistant',
+      events: [
+        {
+          type: 'subagent_started',
+          subagentId: 'sub_a',
+          name: 'reviewer',
+          subagentType: 'code-reviewer',
+          description: 'Review the diff',
+          prompt: 'Review it',
+          background: true,
+          depth: 1,
+          startedAt: '2026-09-04T00:00:00.000Z',
+        },
+      ],
+    },
+    createdAt: '2026-07-12T00:00:02Z',
+    updatedAt: '2026-07-12T00:00:02Z',
+  } as ConversationMessage;
+}
+
+function repeatedChildV2Messages(): MobileV2ConversationMessage[] {
+  const started = assistantMessageWithChild();
+  return [
+    {
+      ...started,
+      id: 'v2-child-start',
+      turnId: 'run-start:segment',
+      runId: 'run-start',
+      segmentIndex: 0,
+      deliveryKind: 'normal',
+    },
+    {
+      id: 'v2-notification-prompt',
+      conversationId: ref.id,
+      turnId: 'run-notification:prompt',
+      runId: 'run-notification',
+      segmentIndex: 0,
+      ordinal: 3,
+      role: 'user',
+      status: 'completed',
+      deliveryKind: 'normal',
+      origin: 'notification',
+      content: {
+        type: 'user',
+        text: '<task-notification><task-id>sub_a</task-id></task-notification>',
+      },
+      createdAt: '2026-09-04T00:00:04.000Z',
+      updatedAt: '2026-09-04T00:00:04.000Z',
+    },
+    {
+      id: 'v2-child-finish',
+      conversationId: ref.id,
+      turnId: 'run-notification:segment',
+      runId: 'run-notification',
+      segmentIndex: 1,
+      ordinal: 4,
+      role: 'assistant',
+      status: 'completed',
+      deliveryKind: 'normal',
+      content: {
+        type: 'assistant',
+        events: [
+          {
+            type: 'subagent_finished',
+            subagentId: 'sub_a',
+            name: 'reviewer',
+            subagentType: 'code-reviewer',
+            description: 'Review the diff',
+            status: 'done',
+            report: 'No blockers.',
+            toolCallCount: 2,
+            startedAt: '2026-09-04T00:00:00.000Z',
+            endedAt: '2026-09-04T00:00:03.000Z',
+          },
+        ],
+      },
+      createdAt: '2026-09-04T00:00:05.000Z',
+      updatedAt: '2026-09-04T00:00:05.000Z',
+    },
+  ] as MobileV2ConversationMessage[];
+}
+
+/**
+ * A placeholder, replaced with a FRESH timestamp by `liveTurn`.
+ *
+ * It used to be `new Date(Date.now() - 65_000).toISOString()` evaluated at
+ * module scope, which made the `1m` assertion below hold only while under 55 s
+ * of wall clock separated the module being imported from that render — a
+ * window the whole file shared. Measured margin was ~93x, so this is hygiene
+ * rather than a fix for a flake anyone has seen. Fake timers are the wrong
+ * tool: `useSubagentElapsed` runs a `setInterval` and this file waits with
+ * `findBy*`/`waitFor`, so a fake clock buys a hang.
+ */
+const LIVE_STARTED_AT = 'live-started-at';
+
+/** 65 s ago, as of NOW — so the window is one test's own duration. */
+function freshStartedAt(): string {
+  return new Date(Date.now() - 65_000).toISOString();
+}
+
+function subagentFrame(seq: number, event: Record<string, unknown>): MobileWsServerFrame {
+  return {
+    type: 'event',
+    id: 'panel-turn',
+    conversationId: ref.id,
+    seq,
+    event,
+  } as unknown as MobileWsServerFrame;
+}
+
+const startedEvent = {
+  type: 'subagent_started',
+  subagentId: 'sub_a',
+  name: 'reviewer',
+  subagentType: 'code-reviewer',
+  description: 'Review the diff',
+  prompt: 'Review it',
+  background: false,
+  depth: 1,
+  startedAt: LIVE_STARTED_AT,
+};
+
+const parkedEvent = {
+  type: 'subagent_progress',
+  subagentId: 'sub_a',
+  status: 'waiting_input',
+  question: 'Which branch?',
+  toolCallCount: 3,
+};
+
+/** The panel's own turn, streaming: frames land in `streamingFrames[key]`. */
+function liveTurn(events: Record<string, unknown>[]): void {
+  const startedAt = freshStartedAt();
+  const dated = events.map((event) =>
+    event.startedAt === LIVE_STARTED_AT ? { ...event, startedAt } : event,
+  );
+  useChatStore.setState({
+    messages: { [key]: [] },
+    selectedConversationRef: { id: 'another-conversation', origin: 'gateway' },
+    subagents: [],
+    subagentUi: {},
+    lastSeq: { [key]: events.length },
+    streamingFrames: { [key]: dated.map((event, index) => subagentFrame(index + 1, event)) },
+  });
+}
+
+/** The same fold, persisted: what the panel draws once the turn has ended. */
+function persistedMessage(events: Record<string, unknown>[]): ConversationMessage {
+  return {
+    id: 'message-3',
+    conversationId: ref.id,
+    turnId: 'panel-turn',
+    ordinal: 3,
+    role: 'assistant',
+    status: 'completed',
+    content: { type: 'assistant', events },
+    createdAt: '2026-07-12T00:00:03Z',
+    updatedAt: '2026-07-12T00:00:03Z',
+  } as ConversationMessage;
 }
 
 function reset(patch: Partial<McConversationView> = {}): void {
@@ -315,6 +486,164 @@ describe('SessionPanel', () => {
       'Yes',
       expect.any(String),
     );
+  });
+
+  // The chat store's `subagents` / `subagentUi` describe the conversation the
+  // CHAT route has selected. This panel draws a different one, so its cards
+  // read the fold and offer nothing: a stop or a resume from here addresses
+  // the child correctly and then refreshes the other conversation's list, so
+  // the row the user is looking at never moves.
+  it('draws a sub-agent card in a session transcript from the fold, with no actions', async () => {
+    const message = assistantMessageWithChild();
+    mockApi.chatGetInitialState.mockResolvedValue({
+      protocol: 'v1',
+      page: { items: [message], nextCursor: null, throughSeq: 0 },
+    });
+    useChatStore.setState({
+      messages: { [key]: [message] },
+      selectedConversationRef: { id: 'another-conversation', origin: 'gateway' },
+      subagents: [
+        {
+          id: 'sub_a',
+          type: 'code-reviewer',
+          description: 'Review the diff',
+          status: 'done',
+          background: false,
+          depth: 1,
+          startedAt: '2026-09-04T00:00:00.000Z',
+          toolCallCount: 12,
+          oneShot: true,
+        },
+      ],
+      subagentUi: {},
+    });
+
+    render(<SessionPanel conversationRef={ref} />);
+
+    const card = await screen.findByTestId('subagent-card-sub_a');
+    expect(card).toHaveAttribute('data-status', 'running');
+    expect(screen.queryByTestId('subagent-card-toggle-sub_a')).not.toBeInTheDocument();
+    // …and it says so: nothing here is live, so the card is a snapshot.
+    expect(screen.getByTestId('subagent-card-snapshot-sub_a')).toBeInTheDocument();
+  });
+
+  it('reconciles repeated child events in a v2 session and keeps its card interactive', async () => {
+    const messages = repeatedChildV2Messages();
+    installV2(v2Bootstrap(conversation, { activeTurnId: null, messages }));
+    useChatStore.setState({
+      selectedConversationRef: ref,
+      subagents: [
+        {
+          id: 'sub_a',
+          type: 'code-reviewer',
+          description: 'Review the diff',
+          status: 'done',
+          background: true,
+          depth: 1,
+          startedAt: '2026-09-04T00:00:00.000Z',
+          endedAt: '2026-09-04T00:00:03.000Z',
+          toolCallCount: 2,
+          oneShot: false,
+        },
+      ],
+      subagentUi: {},
+    });
+
+    render(<SessionPanel conversationRef={ref} />);
+
+    expect(await screen.findAllByTestId('subagent-card-toggle-sub_a')).toHaveLength(1);
+    expect(screen.getByTestId('notification-row')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+    await waitFor(() => expect(mockApi.conversationMessages).toHaveBeenCalledWith('sub_a'));
+  });
+
+  // …but a card on a STREAMING message has a live source even off the
+  // selection, and the round-2 snapshot must not reach it. `ensureMessages`
+  // makes main subscribe this conversation when it is running
+  // (`ChatService.getMessages`, `chat-service.ts:452-459`) and `applyFrame`
+  // writes `streamingFrames[key]` for ANY conversation id, ungated by the
+  // selection (its two `set` calls, `stores/chat.ts:938` and `:956`). The fold under this bubble moves in real time, so the clock, the
+  // spinner and §8.1's collapsed-row question all belong here — and the card
+  // has no expand toggle, so hiding the question hides it from this screen
+  // entirely.
+  it('keeps a streaming sub-agent card live off the selected conversation', async () => {
+    liveTurn([startedEvent, parkedEvent]);
+
+    render(<SessionPanel conversationRef={ref} />);
+
+    const card = await screen.findByTestId('subagent-card-sub_a');
+    expect(card).toHaveAttribute('data-status', 'waiting');
+    expect(screen.getByTestId('subagent-question-sub_a')).toHaveTextContent('Which branch?');
+    // Scoped to the CARD: the bubble draws its own streaming spinner too.
+    expect(card.querySelector('.animate-spin')).not.toBeNull();
+    expect(within(card).getByTestId('subagent-card-meta')).toHaveTextContent(/3 tool uses · 1m/);
+    expect(screen.queryByTestId('subagent-card-snapshot-sub_a')).not.toBeInTheDocument();
+    // Live, but still not this conversation's list: no actions, no reply box.
+    expect(screen.queryByTestId('subagent-card-toggle-sub_a')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('subagent-reply-input-sub_a')).not.toBeInTheDocument();
+  });
+
+  // D1's rule, on the path this round widens: a child that parks on a question
+  // and then finishes during the same live turn must not keep the question on
+  // a terminal row. Three separate paths have broken this before.
+  it("drops a streaming card's question the moment the child finishes", async () => {
+    liveTurn([
+      startedEvent,
+      parkedEvent,
+      {
+        type: 'subagent_finished',
+        subagentId: 'sub_a',
+        status: 'completed',
+        toolCallCount: 4,
+        startedAt: LIVE_STARTED_AT,
+        endedAt: new Date(Date.now() - 5_000).toISOString(),
+      },
+    ]);
+
+    render(<SessionPanel conversationRef={ref} />);
+
+    const card = await screen.findByTestId('subagent-card-sub_a');
+    expect(card).toHaveAttribute('data-status', 'done');
+    expect(screen.queryByTestId('subagent-question-sub_a')).not.toBeInTheDocument();
+    expect(card.querySelector('.animate-spin')).toBeNull();
+    expect(screen.queryByTestId('subagent-card-snapshot-sub_a')).not.toBeInTheDocument();
+  });
+
+  // The boundary the liveness gate creates, driven rather than staged: the
+  // panel's turn ends, `refreshTerminal` empties `streamingFrames[key]` and
+  // merges the persisted message, and the very same card must become the
+  // snapshot round 2 made it — with no question surviving onto the terminal
+  // row the end of the stream produces.
+  it('turns the card into a snapshot when the panel turn ends', async () => {
+    liveTurn([startedEvent, parkedEvent]);
+    mockApi.chatGetConversation.mockResolvedValue(conversation);
+
+    render(<SessionPanel conversationRef={ref} />);
+    expect(await screen.findByTestId('subagent-question-sub_a')).toBeInTheDocument();
+
+    mockApi.chatGetMessages.mockResolvedValue({
+      items: [persistedMessage([startedEvent, parkedEvent])],
+      nextCursor: null,
+      throughSeq: 3,
+    });
+    await act(async () => {
+      await useChatStore.getState().applyFrame({
+        type: 'done',
+        id: 'panel-turn',
+        conversationId: ref.id,
+        seq: 3,
+      } as MobileWsServerFrame);
+    });
+
+    const card = await screen.findByTestId('subagent-card-sub_a');
+    // End-of-stream terminalization: a non-background child with no terminal
+    // event is `cancelled`, and a dead child carries no question.
+    expect(card).toHaveAttribute('data-status', 'cancelled');
+    expect(screen.queryByTestId('subagent-question-sub_a')).not.toBeInTheDocument();
+    expect(card.querySelector('.animate-spin')).toBeNull();
+    expect(screen.getByTestId('subagent-card-snapshot-sub_a')).toBeInTheDocument();
+    expect(within(card).getByTestId('subagent-card-meta')).toHaveTextContent('3 tool uses');
+    expect(within(card).getByTestId('subagent-card-meta')).not.toHaveTextContent('·');
   });
 
   it('keeps read-only local history visible without enabling mutations', () => {

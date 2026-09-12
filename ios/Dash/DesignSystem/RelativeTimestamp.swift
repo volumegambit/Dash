@@ -34,7 +34,16 @@ enum RelativeTimestamp {
     guard elapsed >= 60 else { return "now" }
     if elapsed < 3600 { return "\(Int(elapsed / 60))m" }
     if elapsed < 86_400 { return "\(Int(elapsed / 3600))h" }
-    if calendar.isDateInYesterday(date) { return "Yesterday" }
+
+    // `Calendar.isDateInYesterday` compares with the process's real current
+    // date, ignoring this helper's injected `now`. Derive calendar distance
+    // from both injected values so tests and previews remain deterministic.
+    let days = calendar.dateComponents(
+      [.day],
+      from: calendar.startOfDay(for: date),
+      to: calendar.startOfDay(for: now)
+    ).day ?? 0
+    if days == 1 { return "Yesterday" }
 
     let style = Date.FormatStyle(
       locale: locale,
@@ -42,7 +51,6 @@ enum RelativeTimestamp {
       timeZone: calendar.timeZone
     )
 
-    let days = calendar.dateComponents([.day], from: date, to: now).day ?? 0
     if days < 7 {
       return date.formatted(style.weekday(.abbreviated))
     }

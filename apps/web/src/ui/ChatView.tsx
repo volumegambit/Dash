@@ -1,6 +1,6 @@
 import type { ConversationMessage, MobileImage } from '@dash/mobile-contract';
 import type { MobileV2ConversationMessage, MobileV2PendingInput } from '@dash/mobile-contract-v2';
-import { type ReactNode, memo, useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MobileApiError } from '../api/rest.js';
 import type { Transcript, V2LiveSegment, V2Transcript } from '../state/assemble.js';
 import { DeliveryChooser } from './DeliveryChooser.js';
@@ -15,6 +15,13 @@ import {
   validateImageFiles,
 } from './attachments.js';
 import { ContentBlocks, getMessageCopyText } from './blocks/ContentBlocks.js';
+import {
+  NotificationRow,
+  OrchestratorRow,
+  isNotificationRow,
+  isOrchestratorRow,
+} from './blocks/OriginRows.js';
+import { mergeSubagentEventLists } from './blocks/subagents.js';
 import { insertNewlineAtSelection } from './composer.js';
 import { usePinnedScroll } from './hooks/usePinnedScroll.js';
 
@@ -28,6 +35,23 @@ export interface ChatViewProps {
 
 /** Exact banner text shown while the store is retrying a dropped socket. */
 export const RECONNECTING_COPY = 'Reconnecting…';
+
+type ReconciliableMessage = ConversationMessage | MobileV2ConversationMessage;
+
+/** Apply the conversation-level repeated-child rule before either timeline renders. */
+function reconcileSubagentMessages<T extends ReconciliableMessage>(messages: readonly T[]): T[] {
+  const merged = mergeSubagentEventLists(
+    messages.map((message) =>
+      message.content.type === 'assistant' ? message.content.events : null,
+    ),
+  );
+  return messages.map((message, index) => {
+    const events = merged[index];
+    if (!events || message.content.type !== 'assistant') return message;
+    if (events === message.content.events) return message;
+    return { ...message, content: { ...message.content, events } } as T;
+  });
+}
 
 /** Fix I5: exact copy shown inline under an open `MessageEditor` when a
  * resend attempt comes back guarded — `resendFromMessage` returned `false`
@@ -407,6 +431,17 @@ const MessageRow = memo(function MessageRow({
   // editing — kept OUTSIDE `isEditing`'s toggle so re-submitting after a
   // blocked attempt clears the stale note rather than stacking a second one.
   const [blockedNote, setBlockedNote] = useState<string | null>(null);
+
+  // Checked after the hooks above so hook order stays unconditional. Both
+  // rows are `role: 'user'` turns the user did not write (sub-agents design
+  // 8.5) — never a bubble, never editable, never resendable
+  // (`resendFromMessage` refuses them independently).
+  if (isNotificationRow(message)) {
+    return <NotificationRow message={message} />;
+  }
+  if (isOrchestratorRow(message)) {
+    return <OrchestratorRow message={message} />;
+  }
 
   if (isEditing) {
     return (
@@ -1187,6 +1222,37 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
     if (chooserOpen && (!activeAndQueueCapable || !canSubmit)) dismissChooser();
   }, [activeAndQueueCapable, canSubmit, chooserOpen, dismissChooser]);
 
+  // D2: a background child's completion wakes the conversation with a
+  // server-initiated turn that REPLAYS its `subagent_finished`, and the rule
+  // that an orphan terminal anchors its own card (§31.4, §32.8.4) then draws a
+  // SECOND card for a child that already has one. The fold in
+  // `blocks/subagents.ts` is per message and must stay that way; the
+  // conversation is what knows better, so the reconciliation happens here,
+  // once, before any row renders. The MC port of `01eae2ed`.
+  //
+  // Memoized on the store's own messages array — `MessageRow` is `memo`'d on
+  // its `message` reference (see its doc comment), so rebuilding these objects
+  // on every streaming token would defeat that memo for every assistant row.
+  const rawMessages = transcript?.messages;
+  const mergedMessages = useMemo(() => reconcileSubagentMessages(rawMessages ?? []), [rawMessages]);
+  const reconciledV2Messages = useMemo(() => {
+    if (!v2Transcript) return new Map<string, MobileV2ConversationMessage>();
+    const orderedMessages = v2Transcript.timeline.flatMap((entry) => {
+      if (entry.kind === 'message') {
+        const message = v2Transcript.messages[entry.messageId];
+        return message ? [message] : [];
+      }
+      if (entry.kind === 'assistant_segment') {
+        const message = v2Transcript.messages[entry.assistantMessageId];
+        return message ? [message] : [];
+      }
+      return [];
+    });
+    return new Map(
+      reconcileSubagentMessages(orderedMessages).map((message) => [message.id, message]),
+    );
+  }, [v2Transcript]);
+
   // 'unauthorized' is Shell's cue to clear the dead credential and route
   // back to 'pick-gateway' (see Shell's store-subscription effect) — by the
   // time that happens this component unmounts anyway, but guard explicitly
@@ -1219,7 +1285,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
     );
   }
 
-  const messages = transcript?.messages ?? [];
+  const messages = mergedMessages;
   const streaming = transcript?.streaming ?? null;
   const queueItems = v2Transcript
     ? v2Transcript.queueOrder.flatMap((inputId) => {
@@ -1361,7 +1427,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
             {showingV2Transcript ? (
               v2Transcript.timeline.map((entry) => {
                 if (entry.kind === 'message') {
-                  const message = v2Transcript.messages[entry.messageId];
+                  const message = reconciledV2Messages.get(entry.messageId);
                   if (!message) return null;
                   return (
                     <MessageRow
@@ -1387,7 +1453,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
                     />
                   );
                 }
-                const message = v2Transcript.messages[entry.assistantMessageId];
+                const message = reconciledV2Messages.get(entry.assistantMessageId);
                 const segment = v2Transcript.liveSegments[entry.assistantMessageId];
                 const segmentIsStreaming =
                   segment?.status === 'streaming' || message?.status === 'streaming';
@@ -1435,7 +1501,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
                     className="chat-message-streaming"
                   >
                     {!streamingHasVisibleContent && <ThinkingIndicator />}
-                    <ContentBlocks content={streaming} />
+                    <ContentBlocks content={streaming} streaming />
                     {/* Streaming caret (audit #13): only once there's actual
                      * content to trail — while `ThinkingIndicator` above is
                      * showing (no visible event yet) there's nothing for a

@@ -12,13 +12,15 @@
   },
   "scripts": {
     "build": "tsup",
-    "dev": "tsup --watch"
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "hono": "^4",
     "@hono/node-server": "^1",
     "@hono/node-ws": "^1",
-    "@dash/projects": "*"
+    "@dash/projects": "*",
+    "@dash/mobile-contract": "*"
   },
   "devDependencies": {
     "ws": "^8",

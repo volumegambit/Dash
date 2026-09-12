@@ -148,7 +148,6 @@ function Gallery(): JSX.Element {
           <h2 className="mb-2 text-[11px] uppercase tracking-wide text-muted">{batch.title}</h2>
           {batch.cases.map((c, index) => (
             <ToolBlock
-              // biome-ignore lint/suspicious/noArrayIndexKey: a fixed, immutable fixture list
               key={`${c.name}-${index}`}
               name={c.name}
               input={JSON.stringify(c.input)}

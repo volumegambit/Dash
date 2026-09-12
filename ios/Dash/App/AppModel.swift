@@ -38,6 +38,10 @@ final class AppModel {
     return .paired(tab: selectedTab)
   }
 
+  /// Multi-window (design §3.2): whether any scene is currently active, from
+  /// the set `sceneChanged(id:isActive:)` tracks.
+  var isSceneForegrounded: Bool { activeSceneIDs.isEmpty == false }
+
   @ObservationIgnored private let dependencies: AppDependencies
   @ObservationIgnored private var syncEngine: (any AppSyncing)?
   @ObservationIgnored private var snapshotTask: Task<Void, Never>?
@@ -54,6 +58,8 @@ final class AppModel {
   @ObservationIgnored private var activeEngineSceneRevision: UInt64 = 0
   @ObservationIgnored private var isBackgrounded = false
   @ObservationIgnored private var isDisconnecting = false
+  @ObservationIgnored private var activeSceneIDs: Set<UUID> = []
+  @ObservationIgnored private var hasBackgroundedAllScenes = false
   /// The most recently minted, not-yet-installed account pairing grant (from
   /// `GatewayPickerView`'s connect attempts this session), tracked so
   /// `signOutOfAccount()` can best-effort revoke an abandoned mint. Cleared
@@ -404,6 +410,28 @@ final class AppModel {
     }
   }
 
+  /// iPad goal Phase A (design §1.3): the compact `NavigationStack` paths
+  /// and the regular split selections are two projections of one intent.
+  /// Called by `RootView` whenever `AdaptiveNavigationPolicy` flips
+  /// (rotation, Split View resize, Stage Manager) so neither projection is
+  /// stale when its column tree is mounted.
+  func reconcileNavigation(for presentation: NavigationPresentation) {
+    switch presentation {
+    case .compact:
+      conversationPath = splitConversationSelection.map { [$0] } ?? []
+      agentPath = splitAgentSelection.map { [$0] } ?? []
+    case .regular:
+      if let top = conversationPath.last {
+        splitConversationSelection = top
+        conversationPath = [top]
+      }
+      if let top = agentPath.last {
+        splitAgentSelection = top
+        agentPath = [top]
+      }
+    }
+  }
+
   func makePairingFeature() -> PairingFeature {
     dependencies.pairingFeatureFactory.make { [weak self] profile in
       guard
@@ -552,6 +580,18 @@ final class AppModel {
     }
   }
 
+  /// The canonical summary for one conversation id, preferring the live
+  /// conversation list over the raw sync snapshot (the list carries the
+  /// locally-projected title/status a rename or delete has already applied).
+  /// Lifted out of `RootView` in Task 10 so the chat-only window scene
+  /// (`ConversationWindowView`) resolves a conversation exactly the way the
+  /// main window's `.navigationDestination` does, rather than growing a
+  /// second, subtly different lookup.
+  func conversationSummary(id: String) -> ConversationSummaryDTO? {
+    conversationListFeature?.conversations.first { $0.id == id }?.summary
+      ?? snapshot?.conversations.first { $0.id == id }?.summary
+  }
+
   func makeChatFeature(_ conversation: ConversationSummaryDTO) async -> ChatFeature? {
     guard
       let profile = selectedProfile,
@@ -630,6 +670,28 @@ final class AppModel {
     }
     chatFeatures[scope] = feature
     return feature
+  }
+
+  /// Multi-window (design §3.2): the sync engine is process-wide, so it
+  /// follows the SET of scenes, not any one of them. `sceneDidEnterBackground`/
+  /// `sceneWillEnterForeground` remain the single-scene primitives this
+  /// drives on the edges: background only when the LAST active scene leaves,
+  /// foreground only when the FIRST scene returns after a full background. A
+  /// `Set` makes a scene reporting the same state twice (e.g. `isActive:
+  /// true` while already active) or reporting inactive without ever having
+  /// been active harmless no-ops — the before/after emptiness comparison is
+  /// unaffected either way.
+  func sceneChanged(id: UUID, isActive: Bool) async {
+    let wasForegrounded = activeSceneIDs.isEmpty == false
+    if isActive { activeSceneIDs.insert(id) } else { activeSceneIDs.remove(id) }
+    let isForegrounded = activeSceneIDs.isEmpty == false
+    if wasForegrounded, isForegrounded == false {
+      hasBackgroundedAllScenes = true
+      await sceneDidEnterBackground()
+    } else if wasForegrounded == false, isForegrounded, hasBackgroundedAllScenes {
+      hasBackgroundedAllScenes = false
+      await sceneWillEnterForeground()
+    }
   }
 
   func sceneDidEnterBackground() async {

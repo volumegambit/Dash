@@ -2,281 +2,64 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
-import type { RunSnapshot } from '@dash/swarm';
+import type { SubagentInfo } from '@dash/mobile-contract';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
-import { SqliteEventLogStore } from './event-log-store-sqlite.js';
+import { MAX_QUEUED_NOTIFICATIONS } from './conversation-service.js';
 import type { EventLogPayload } from './event-log-store.js';
-import { recoverInterruptedSwarmTurns } from './swarm-log-recovery.js';
+import {
+  INTERRUPTED_CHILD_REPORT,
+  queueInterruptedSubagentNotifications,
+  recoverInterruptedSubagentTails,
+} from './swarm-log-recovery.js';
 
-function canonicalSpawned(workerId: string, runId = 'run-1'): AgentEvent {
-  return {
-    type: 'worker_spawned',
-    workerId,
-    runId,
-    role: `role-${workerId}`,
-    brief: `brief for ${workerId}`,
-    model: 'test-model',
-  };
+const AGENT = 'agent-a';
+
+function eventPayload(event: AgentEvent): EventLogPayload {
+  return { type: 'event', event };
 }
 
-function canonicalDone(
-  workerId: string,
-  status: 'done' | 'failed' | 'cancelled' = 'done',
-  runId = 'run-1',
-): AgentEvent {
+function started(subagentId: string, overrides: Partial<AgentEvent> = {}): AgentEvent {
   return {
-    type: 'worker_done',
-    workerId,
-    runId,
-    role: `role-${workerId}`,
+    type: 'subagent_started',
+    subagentId,
+    name: `name-${subagentId}`,
+    subagentType: 'general-purpose',
+    description: `describe ${subagentId}`,
+    prompt: `do ${subagentId}`,
+    model: 'test/model',
+    background: true,
+    depth: 1,
+    startedAt: '2026-09-06T00:00:00.000Z',
+    ...overrides,
+  } as AgentEvent;
+}
+
+function finished(subagentId: string, status = 'done'): AgentEvent {
+  return {
+    type: 'subagent_finished',
+    subagentId,
+    subagentType: 'general-purpose',
+    description: `describe ${subagentId}`,
     status,
-    report: `report from ${workerId}`,
-    usage: { inputTokens: 10, outputTokens: 20 },
-  };
+    report: 'all done',
+    toolCallCount: 2,
+    startedAt: '2026-09-06T00:00:00.000Z',
+    endedAt: '2026-09-06T00:01:00.000Z',
+  } as AgentEvent;
 }
 
-/**
- * Boot-time recovery for swarm turns a previous gateway process died in
- * the middle of: the event log ends mid-turn with worker_spawned events
- * that never got a worker_done and no done/error stream marker. Recovery
- * appends synthesized terminal events so MC's replay terminalizes the
- * turn, and rebuilds a finalized RunSnapshot for the panel.
- */
-describe('recoverInterruptedSwarmTurns', () => {
-  let tmpDir: string;
-  let store: SqliteEventLogStore;
-
-  beforeEach(async () => {
-    tmpDir = await mkdtemp(join(tmpdir(), 'swarm-log-recovery-'));
-    store = new SqliteEventLogStore({ dataDir: tmpDir });
-  });
-
-  afterEach(async () => {
-    store.close();
-    await rm(tmpDir, { recursive: true, force: true });
-  });
-
-  function evt(event: AgentEvent): EventLogPayload {
-    return { type: 'event', event };
-  }
-
-  function spawned(workerId: string, runId = 'run-1'): AgentEvent {
-    return canonicalSpawned(workerId, runId);
-  }
-
-  function done(
-    workerId: string,
-    status: 'done' | 'failed' | 'cancelled' = 'done',
-    runId = 'run-1',
-  ): AgentEvent {
-    return canonicalDone(workerId, status, runId);
-  }
-
-  it('synthesizes worker_done(cancelled) for each dangling worker plus one error marker', () => {
-    store.append('agent-a', 'conv-1', 'msg-1', evt({ type: 'text_delta', text: 'spawning…' }));
-    store.append('agent-a', 'conv-1', 'msg-1', evt(spawned('w-1')));
-    store.append('agent-a', 'conv-1', 'msg-1', evt(spawned('w-2')));
-    // gateway dies here — no worker_done, no done/error marker
-
-    const result = recoverInterruptedSwarmTurns({ eventLog: store });
-
-    expect(result).toEqual({
-      conversationsRepaired: 1,
-      workersCancelled: 2,
-      canonicalConversationsRepaired: [],
-      failedCanonicalConversationIds: [],
-    });
-
-    const entries = store.readSince('agent-a', 'conv-1', 3);
-    expect(entries).toHaveLength(3);
-    // Synthesized terminal worker events, keyed to the interrupted message.
-    for (const entry of entries.slice(0, 2)) {
-      expect(entry.msgId).toBe('msg-1');
-    }
-    expect(entries[0].payload).toEqual(
-      evt({
-        type: 'worker_done',
-        workerId: 'w-1',
-        runId: 'run-1',
-        role: 'role-w-1',
-        status: 'cancelled',
-        report: 'Gateway restarted while this worker was running.',
-        usage: { inputTokens: 0, outputTokens: 0 },
-      }),
-    );
-    expect(entries[1].payload).toMatchObject({
-      type: 'event',
-      event: { type: 'worker_done', workerId: 'w-2', status: 'cancelled' },
-    });
-    // One terminal stream marker so replay consumers terminalize the turn.
-    expect(entries[2].payload).toEqual({
-      type: 'error',
-      error:
-        'Gateway restarted while this swarm run was in progress — remaining workers were cancelled.',
-    });
-  });
-
-  it('leaves interrupted non-swarm turns alone', () => {
-    store.append('agent-a', 'conv-1', 'msg-1', evt({ type: 'text_delta', text: 'cut off' }));
-
-    const result = recoverInterruptedSwarmTurns({ eventLog: store });
-
-    expect(result).toEqual({
-      conversationsRepaired: 0,
-      workersCancelled: 0,
-      canonicalConversationsRepaired: [],
-      failedCanonicalConversationIds: [],
-    });
-    expect(store.readSince('agent-a', 'conv-1', 0)).toHaveLength(1);
-  });
-
-  it('leaves a swarm turn alone when every spawned worker already has a terminal event', () => {
-    // A user-cancelled turn: cancelTurn appended worker_done out-of-band,
-    // but no done/error marker was ever logged. Must NOT be stamped with a
-    // spurious error on the next boot.
-    store.append('agent-a', 'conv-1', 'msg-1', evt(spawned('w-1')));
-    store.append('agent-a', 'conv-1', 'msg-1', evt(done('w-1', 'cancelled')));
-
-    const result = recoverInterruptedSwarmTurns({ eventLog: store });
-
-    expect(result).toEqual({
-      conversationsRepaired: 0,
-      workersCancelled: 0,
-      canonicalConversationsRepaired: [],
-      failedCanonicalConversationIds: [],
-    });
-    expect(store.readSince('agent-a', 'conv-1', 0)).toHaveLength(2);
-  });
-
-  it('only considers the tail after the last terminal marker', () => {
-    // Turn 1: a completed swarm turn.
-    store.append('agent-a', 'conv-1', 'msg-1', evt(spawned('w-1')));
-    store.append('agent-a', 'conv-1', 'msg-1', evt(done('w-1')));
-    store.append('agent-a', 'conv-1', 'msg-1', { type: 'done' });
-    // Turn 2: interrupted, but no swarm events in it.
-    store.append('agent-a', 'conv-1', 'msg-2', evt({ type: 'text_delta', text: 'plain' }));
-
-    const result = recoverInterruptedSwarmTurns({ eventLog: store });
-
-    expect(result).toEqual({
-      conversationsRepaired: 0,
-      workersCancelled: 0,
-      canonicalConversationsRepaired: [],
-      failedCanonicalConversationIds: [],
-    });
-    expect(store.readSince('agent-a', 'conv-1', 0)).toHaveLength(4);
-  });
-
-  it('synthesizes only for dangling workers when some workers already finished', () => {
-    store.append('agent-a', 'conv-1', 'msg-1', evt(spawned('w-1')));
-    store.append('agent-a', 'conv-1', 'msg-1', evt(spawned('w-2')));
-    store.append('agent-a', 'conv-1', 'msg-1', evt(done('w-1', 'done')));
-
-    const result = recoverInterruptedSwarmTurns({ eventLog: store });
-
-    expect(result).toEqual({
-      conversationsRepaired: 1,
-      workersCancelled: 1,
-      canonicalConversationsRepaired: [],
-      failedCanonicalConversationIds: [],
-    });
-    const tail = store.readSince('agent-a', 'conv-1', 3);
-    expect(tail).toHaveLength(2);
-    expect(tail[0].payload).toMatchObject({
-      type: 'event',
-      event: { type: 'worker_done', workerId: 'w-2', status: 'cancelled' },
-    });
-    expect(tail[1].payload).toMatchObject({ type: 'error' });
-  });
-
-  it('is idempotent — a second boot scan appends nothing further', () => {
-    store.append('agent-a', 'conv-1', 'msg-1', evt(spawned('w-1')));
-
-    recoverInterruptedSwarmTurns({ eventLog: store });
-    const afterFirst = store.readSince('agent-a', 'conv-1', 0);
-
-    const second = recoverInterruptedSwarmTurns({ eventLog: store });
-
-    expect(second).toEqual({
-      conversationsRepaired: 0,
-      workersCancelled: 0,
-      canonicalConversationsRepaired: [],
-      failedCanonicalConversationIds: [],
-    });
-    expect(store.readSince('agent-a', 'conv-1', 0)).toHaveLength(afterFirst.length);
-  });
-
-  it('rebuilds a finalized RunSnapshot for the panel from the logged tail', () => {
-    store.append('agent-a', 'conv-1', 'msg-1', evt(spawned('w-1')));
-    store.append('agent-a', 'conv-1', 'msg-1', evt(spawned('w-2')));
-    store.append('agent-a', 'conv-1', 'msg-1', evt(done('w-1', 'done')));
-
-    const restored: RunSnapshot[] = [];
-    recoverInterruptedSwarmTurns({ eventLog: store, restoreRun: (s) => restored.push(s) });
-
-    expect(restored).toHaveLength(1);
-    const snap = restored[0];
-    expect(snap).toMatchObject({
-      runId: 'run-1',
-      agentId: 'agent-a',
-      conversationId: 'conv-1',
-      finalized: true,
-      workerCount: 2,
-      activeCount: 0,
-    });
-    expect(snap.startedAt).toBeLessThanOrEqual(snap.endedAt as number);
-    expect(snap.workers).toHaveLength(2);
-    expect(snap.workers[0]).toMatchObject({
-      workerId: 'w-1',
-      role: 'role-w-1',
-      status: 'done',
-      report: 'report from w-1',
-      usage: { inputTokens: 10, outputTokens: 20 },
-    });
-    expect(snap.workers[1]).toMatchObject({
-      workerId: 'w-2',
-      role: 'role-w-2',
-      status: 'cancelled',
-      brief: 'brief for w-2',
-      model: 'test-model',
-      usage: { inputTokens: 0, outputTokens: 0 },
-    });
-  });
-
-  it('a per-conversation failure is contained and other conversations still recover', () => {
-    store.append('agent-a', 'conv-bad', 'msg-1', evt(spawned('w-1')));
-    store.append('agent-a', 'conv-ok', 'msg-2', evt(spawned('w-2')));
-
-    const failures: string[] = [];
-    const result = recoverInterruptedSwarmTurns({
-      eventLog: store,
-      restoreRun: (snap) => {
-        if (snap.conversationId === 'conv-bad') throw new Error('restore exploded');
-      },
-      log: (msg) => failures.push(msg),
-    });
-
-    // conv-ok repaired; conv-bad's failure logged, not thrown.
-    expect(result.conversationsRepaired).toBeGreaterThanOrEqual(1);
-    expect(store.readSince('agent-a', 'conv-ok', 1).at(-1)?.payload).toMatchObject({
-      type: 'error',
-    });
-    expect(failures.some((m) => m.includes('restore exploded'))).toBe(true);
-  });
-});
-
-describe('swarm and canonical conversation recovery ordering', () => {
+describe('recoverInterruptedSubagentTails', () => {
   let tmpDir: string;
   let service: SqliteConversationService;
+  let uuidCounter: number;
 
   beforeEach(async () => {
-    tmpDir = await mkdtemp(join(tmpdir(), 'swarm-conversation-recovery-'));
-    let id = 0;
+    tmpDir = await mkdtemp(join(tmpdir(), 'subagent-recovery-'));
+    uuidCounter = 0;
     service = new SqliteConversationService({
       dataDir: tmpDir,
-      now: () => '2026-07-12T00:00:00.000Z',
-      uuid: () => `00000000-0000-4000-8000-${String(++id).padStart(12, '0')}`,
+      uuid: () => `00000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`,
     });
   });
 
@@ -285,378 +68,413 @@ describe('swarm and canonical conversation recovery ordering', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('lets swarm repair append worker terminals before generic recovery reuses its error', () => {
+  function parentWithOpenTurn(): { id: string; turnId: string } {
     const conversation = service.create({
-      agentId: 'agent-a',
-      agentName: 'Swarm Helper',
-      requestId: 'create-01',
+      agentId: AGENT,
+      agentName: 'Helper',
+      requestId: `req-${++uuidCounter}`,
     });
+    const turnId = `turn-${uuidCounter}`;
     service.acceptTurn({
-      agentId: 'agent-a',
+      agentId: AGENT,
       conversationId: conversation.id,
-      turnId: 'turn-01',
-      text: 'Delegate this',
+      turnId,
+      text: 'delegate this',
     });
-    service.appendTurnEvent(conversation.id, 'turn-01', {
-      type: 'worker_spawned',
-      workerId: 'worker-01',
-      runId: 'run-01',
-      role: 'researcher',
-      brief: 'Research the answer',
-      model: 'test-model',
+    return { id: conversation.id, turnId };
+  }
+
+  it('terminalizes a dangling child and queues one parent notification without an error marker', () => {
+    const parent = parentWithOpenTurn();
+    service.appendTurnEvent(parent.id, parent.turnId, started('sub_a'));
+
+    const result = recoverInterruptedSubagentTails({
+      eventLog: service.eventLog,
+      conversations: service,
     });
 
-    expect(recoverInterruptedSwarmTurns({ eventLog: service.eventLog })).toEqual({
+    expect(result).toMatchObject({
       conversationsRepaired: 1,
-      workersCancelled: 1,
+      childrenTerminalized: 1,
+      notificationsQueued: 1,
+      pendingDelivery: [{ agentId: AGENT, conversationId: parent.id }],
       canonicalConversationsRepaired: [],
       failedCanonicalConversationIds: [],
     });
-    expect(service.recoverInterruptedTurns()).toEqual({
-      conversationsInterrupted: 1,
-      terminalsAppended: 0,
-    });
-
-    const entries = service.eventLog.readSince('agent-a', conversation.id, 0);
-    expect(entries.filter((entry) => entry.payload.type === 'error')).toHaveLength(1);
-    expect(entries.at(-2)?.payload).toMatchObject({
-      type: 'event',
-      event: { type: 'worker_done', workerId: 'worker-01', status: 'cancelled' },
-    });
-    expect(entries.at(-1)?.payload).toMatchObject({ type: 'error' });
-    expect(service.get(conversation.id)).toMatchObject({
-      status: 'interrupted',
-      activeTurnId: null,
-      revision: 3,
-      lastSeq: entries.at(-1)?.seq,
-    });
+    const tail = service.eventLog.readSince(AGENT, parent.id, 0);
+    expect(tail.at(-1)?.payload).toEqual(
+      eventPayload({
+        type: 'subagent_finished',
+        subagentId: 'sub_a',
+        name: 'name-sub_a',
+        subagentType: 'general-purpose',
+        description: 'describe sub_a',
+        status: 'interrupted',
+        report: INTERRUPTED_CHILD_REPORT,
+        toolCallCount: 0,
+        startedAt: '2026-09-06T00:00:00.000Z',
+        endedAt: expect.any(String),
+      } as AgentEvent),
+    );
+    expect(tail.filter((entry) => entry.payload.type === 'error')).toHaveLength(0);
+    expect(service.peekNotifications(parent.id)).toEqual([
+      expect.objectContaining({
+        kind: 'subagent_finished',
+        payload: expect.objectContaining({ subagentId: 'sub_a', status: 'interrupted' }),
+      }),
+    ]);
   });
 
-  it('repairs a canonical worker through the current segment journal and leaves the sole terminal to v2 recovery', () => {
+  it('tolerates a pre-child-conversation worker mirror and only appends the canonical terminal', () => {
+    const parent = parentWithOpenTurn();
+    service.appendTurnEvent(parent.id, parent.turnId, {
+      type: 'worker_spawned',
+      workerId: 'sub_a',
+      runId: 'legacy-run',
+      role: 'scout',
+      brief: 'survey',
+      model: 'test/model',
+    });
+    service.appendTurnEvent(parent.id, parent.turnId, started('sub_a'));
+
+    expect(
+      recoverInterruptedSubagentTails({ eventLog: service.eventLog, conversations: service }),
+    ).toMatchObject({ childrenTerminalized: 1, notificationsQueued: 1 });
+    const types = service.eventLog
+      .readSince(AGENT, parent.id, 0)
+      .map((entry) =>
+        entry.payload.type === 'event' ? entry.payload.event.type : entry.payload.type,
+      );
+    expect(types.filter((type) => type === 'worker_done')).toEqual([]);
+    expect(types.at(-1)).toBe('subagent_finished');
+  });
+
+  it('leaves already-finished children alone and is idempotent after a repair', () => {
+    const finishedParent = parentWithOpenTurn();
+    service.appendTurnEvent(finishedParent.id, finishedParent.turnId, started('sub_done'));
+    service.appendTurnEvent(finishedParent.id, finishedParent.turnId, finished('sub_done'));
+    const danglingParent = parentWithOpenTurn();
+    service.appendTurnEvent(danglingParent.id, danglingParent.turnId, started('sub_dangling'));
+
+    const first = recoverInterruptedSubagentTails({
+      eventLog: service.eventLog,
+      conversations: service,
+    });
+    const afterFirst = service.eventLog.readSince(AGENT, danglingParent.id, 0).length;
+    const second = recoverInterruptedSubagentTails({
+      eventLog: service.eventLog,
+      conversations: service,
+    });
+
+    expect(first).toMatchObject({ conversationsRepaired: 1, childrenTerminalized: 1 });
+    expect(second).toMatchObject({ conversationsRepaired: 0, childrenTerminalized: 0 });
+    expect(service.eventLog.readSince(AGENT, danglingParent.id, 0)).toHaveLength(afterFirst);
+    expect(service.peekNotifications(finishedParent.id)).toEqual([]);
+    expect(service.peekNotifications(danglingParent.id)).toHaveLength(1);
+  });
+
+  it('uses the canonical current-segment journal for v2 recovery', () => {
     const conversation = service.create({
-      agentId: 'agent-a',
+      agentId: AGENT,
       agentName: 'Canonical Helper',
       requestId: 'create-canonical',
     });
-    service.acceptTurn({
-      agentId: 'agent-a',
-      conversationId: conversation.id,
-      turnId: 'outer-run-1',
-      text: 'Delegate this canonically',
-    });
-    service.appendTurnEvent(conversation.id, 'outer-run-1', canonicalSpawned('worker-canonical'));
-    const before = service.eventLog.readSince('agent-a', conversation.id, 0).length;
-
-    const recovered = recoverInterruptedSwarmTurns({
-      eventLog: service.eventLog,
-      canonicalRuns: [
-        { agentId: 'agent-a', conversationId: conversation.id, outerRunId: 'outer-run-1' },
-      ],
-      appendCurrentRunEvent: (agentId, conversationId, outerRunId, event) =>
-        service.appendCurrentRunEvent(agentId, conversationId, outerRunId, event),
-    });
-
-    expect(recovered).toMatchObject({
-      conversationsRepaired: 1,
-      workersCancelled: 1,
-      canonicalConversationsRepaired: [conversation.id],
-      failedCanonicalConversationIds: [],
-    });
-    const afterSwarm = service.eventLog.readSince('agent-a', conversation.id, before);
-    expect(afterSwarm).toHaveLength(1);
-    expect(afterSwarm[0]?.payload).toMatchObject({
-      type: 'event',
-      event: { type: 'worker_done', workerId: 'worker-canonical' },
-    });
-    expect(afterSwarm.some((entry) => entry.payload.type === 'error')).toBe(false);
-
-    expect(service.recoverV2State()).toMatchObject({
-      conversationsInterrupted: 1,
-      terminalsAppended: 1,
-    });
-    expect(
-      service.eventLog
-        .readSince('agent-a', conversation.id, 0)
-        .filter((entry) => entry.payload.type === 'error'),
-    ).toHaveLength(1);
-  });
-
-  it('never falls back to the legacy journal when a canonical dual append returns null', () => {
-    const conversation = service.create({
-      agentId: 'agent-a',
-      agentName: 'Canonical Helper',
-      requestId: 'create-canonical-failure',
-    });
-    service.acceptTurn({
-      agentId: 'agent-a',
-      conversationId: conversation.id,
-      turnId: 'outer-run-failure',
-      text: 'Delegate this canonically',
-    });
-    service.appendTurnEvent(
-      conversation.id,
-      'outer-run-failure',
-      canonicalSpawned('worker-failure'),
-    );
-    const legacyAppend = vi.spyOn(service.eventLog, 'append');
-
-    const recovered = recoverInterruptedSwarmTurns({
-      eventLog: service.eventLog,
-      canonicalRuns: [
-        {
-          agentId: 'agent-a',
-          conversationId: conversation.id,
-          outerRunId: 'outer-run-failure',
-        },
-      ],
-      appendCurrentRunEvent: () => null,
-    });
-
-    expect(recovered.failedCanonicalConversationIds).toEqual([conversation.id]);
-    expect(legacyAppend).not.toHaveBeenCalled();
-    expect(service.get(conversation.id)).toMatchObject({
-      status: 'running',
-      activeTurnId: 'outer-run-failure',
-    });
-  });
-
-  it('repairs only the active post-compaction, post-Steer segment through both journals', () => {
-    const conversation = service.create({
-      agentId: 'agent-a',
-      agentName: 'Canonical Helper',
-      requestId: 'create-compacted',
-    });
-    const old = service.acceptRun({
-      protocol: 'v2',
-      agentId: 'agent-a',
-      channelId: 'direct',
-      conversationId: conversation.id,
-      runId: 'outer-old',
-      text: 'Old completed run',
-    });
-    service.appendRunEvent({
-      conversationId: conversation.id,
-      runId: old.runId,
-      segmentTurnId: old.segmentTurnId,
-      event: canonicalSpawned('worker-old', 'swarm-old'),
-    });
-    service.appendRunEvent({
-      conversationId: conversation.id,
-      runId: old.runId,
-      segmentTurnId: old.segmentTurnId,
-      event: canonicalDone('worker-old', 'done', 'swarm-old'),
-    });
-    service.finishRunAndClaimNext({
-      conversationId: conversation.id,
-      runId: old.runId,
-      segmentTurnId: old.segmentTurnId,
-      outcome: 'completed',
-      suppressPromotion: true,
-    });
-
     const active = service.acceptRun({
       protocol: 'v2',
-      agentId: 'agent-a',
+      agentId: AGENT,
       channelId: 'direct',
       conversationId: conversation.id,
-      runId: 'outer-active',
-      text: 'Active canonical run',
+      runId: 'outer-canonical',
+      text: 'Delegate this canonically',
     });
     service.enqueueInput({
-      commandId: 'command-steer-recovery',
-      inputId: 'input-steer-recovery',
-      agentId: 'agent-a',
+      commandId: 'command-steer',
+      inputId: 'input-steer',
+      agentId: AGENT,
       channelId: 'direct',
       conversationId: conversation.id,
-      text: 'Continue on a later segment',
+      text: 'continue in the latest segment',
       behavior: 'steer',
       expectedActiveTurnId: active.runId,
     });
     const steer = service.deliverSteer({
       conversationId: conversation.id,
       runId: active.runId,
-      inputId: 'input-steer-recovery',
+      inputId: 'input-steer',
     });
     service.appendRunEvent({
       conversationId: conversation.id,
       runId: active.runId,
       segmentTurnId: steer.segmentTurnId,
-      event: canonicalSpawned('worker-active', 'swarm-active'),
+      event: started('sub_current'),
     });
+    const beforeV1 = service.eventLog.readSince(AGENT, conversation.id, 0).length;
+    const beforeV2 = service.bootstrapV2({
+      conversationId: conversation.id,
+      limit: 100,
+    }).v2ThroughSeq;
 
-    const recovered = recoverInterruptedSwarmTurns({
+    const result = recoverInterruptedSubagentTails({
       eventLog: service.eventLog,
+      conversations: service,
       canonicalRuns: [
-        { agentId: 'agent-a', conversationId: conversation.id, outerRunId: active.runId },
+        { agentId: AGENT, conversationId: conversation.id, outerRunId: active.runId },
       ],
-      appendCurrentRunEvent: (agentId, conversationId, outerRunId, event) =>
-        service.appendCurrentRunEvent(agentId, conversationId, outerRunId, event),
+      appendCurrentRunEvent: (agentId, conversationId, runId, event) =>
+        service.appendCurrentRunEvent(agentId, conversationId, runId, event),
     });
 
-    expect(recovered).toMatchObject({
-      workersCancelled: 1,
+    expect(result).toMatchObject({
+      conversationsRepaired: 1,
+      childrenTerminalized: 1,
       canonicalConversationsRepaired: [conversation.id],
       failedCanonicalConversationIds: [],
     });
-    const repaired = service.eventLog.readSince('agent-a', conversation.id, 0).at(-1);
-    expect(repaired).toMatchObject({
-      msgId: active.runId,
-      segmentTurnId: steer.segmentTurnId,
-      payload: {
+    expect(service.eventLog.readSince(AGENT, conversation.id, 0).slice(beforeV1)).toEqual([
+      expect.objectContaining({
+        msgId: active.runId,
+        segmentTurnId: steer.segmentTurnId,
+        payload: expect.objectContaining({
+          type: 'event',
+          event: expect.objectContaining({
+            type: 'subagent_finished',
+            subagentId: 'sub_current',
+            status: 'interrupted',
+          }),
+        }),
+      }),
+    ]);
+    expect(service.readV2Since(AGENT, conversation.id, beforeV2).frames).toEqual([
+      expect.objectContaining({
         type: 'event',
-        event: { type: 'worker_done', workerId: 'worker-active', runId: 'swarm-active' },
-      },
-    });
-    expect(
-      service.eventLog
-        .readSince('agent-a', conversation.id, 0)
-        .filter(
-          (entry) =>
-            entry.payload.type === 'event' &&
-            entry.payload.event.type === 'worker_done' &&
-            entry.payload.event.workerId === 'worker-old',
-        ),
-    ).toHaveLength(1);
+        runId: active.runId,
+        segmentTurnId: steer.segmentTurnId,
+        event: expect.objectContaining({
+          type: 'subagent_finished',
+          subagentId: 'sub_current',
+        }),
+      }),
+    ]);
   });
 
-  it('retries only missing canonical worker repairs after a partial dual-journal append', () => {
+  it('never falls back to the legacy journal when a canonical dual append is rejected', () => {
     const conversation = service.create({
-      agentId: 'agent-a',
+      agentId: AGENT,
+      agentName: 'Canonical Helper',
+      requestId: 'create-canonical-failure',
+    });
+    const active = service.acceptRun({
+      protocol: 'v2',
+      agentId: AGENT,
+      channelId: 'direct',
+      conversationId: conversation.id,
+      runId: 'outer-failure',
+      text: 'Delegate this canonically',
+    });
+    service.appendRunEvent({
+      conversationId: conversation.id,
+      runId: active.runId,
+      segmentTurnId: active.segmentTurnId,
+      event: started('sub_failure'),
+    });
+    const legacyAppend = vi.spyOn(service.eventLog, 'append');
+
+    const result = recoverInterruptedSubagentTails({
+      eventLog: service.eventLog,
+      conversations: service,
+      canonicalRuns: [
+        { agentId: AGENT, conversationId: conversation.id, outerRunId: active.runId },
+      ],
+      appendCurrentRunEvent: () => null,
+    });
+
+    expect(result).toMatchObject({
+      conversationsRepaired: 0,
+      childrenTerminalized: 0,
+      canonicalConversationsRepaired: [],
+      failedCanonicalConversationIds: [conversation.id],
+    });
+    expect(legacyAppend).not.toHaveBeenCalled();
+    expect(service.peekNotifications(conversation.id)).toEqual([]);
+  });
+
+  it('retries only a missing canonical child after a partial dual-journal repair', () => {
+    const conversation = service.create({
+      agentId: AGENT,
       agentName: 'Canonical Helper',
       requestId: 'create-partial',
     });
     const active = service.acceptRun({
       protocol: 'v2',
-      agentId: 'agent-a',
+      agentId: AGENT,
       channelId: 'direct',
       conversationId: conversation.id,
       runId: 'outer-partial',
-      text: 'Repair two workers',
+      text: 'Repair two children',
     });
-    for (const workerId of ['worker-one', 'worker-two']) {
+    for (const subagentId of ['sub_one', 'sub_two']) {
       service.appendRunEvent({
         conversationId: conversation.id,
         runId: active.runId,
         segmentTurnId: active.segmentTurnId,
-        event: canonicalSpawned(workerId, 'swarm-partial'),
+        event: started(subagentId),
       });
     }
-    let failSecond = true;
+    let rejectSecond = true;
     const appendCurrentRunEvent = vi.fn(
-      (agentId: string, conversationId: string, outerRunId: string, event: AgentEvent) => {
-        if (failSecond && event.type === 'worker_done' && event.workerId === 'worker-two') {
+      (agentId: string, conversationId: string, runId: string, event: AgentEvent) => {
+        if (rejectSecond && event.type === 'subagent_finished' && event.subagentId === 'sub_two') {
           return null;
         }
-        return service.appendCurrentRunEvent(agentId, conversationId, outerRunId, event);
+        return service.appendCurrentRunEvent(agentId, conversationId, runId, event);
       },
     );
     const options = {
       eventLog: service.eventLog,
+      conversations: service,
       canonicalRuns: [
-        { agentId: 'agent-a', conversationId: conversation.id, outerRunId: active.runId },
+        { agentId: AGENT, conversationId: conversation.id, outerRunId: active.runId },
       ],
       appendCurrentRunEvent,
     };
 
-    const first = recoverInterruptedSwarmTurns(options);
-    expect(first.failedCanonicalConversationIds).toEqual([conversation.id]);
-    expect(service.get(conversation.id)).toMatchObject({
-      status: 'running',
-      activeTurnId: active.runId,
+    expect(recoverInterruptedSubagentTails(options)).toMatchObject({
+      childrenTerminalized: 1,
+      failedCanonicalConversationIds: [conversation.id],
     });
-    expect(
-      service.eventLog
-        .readSince('agent-a', conversation.id, 0)
-        .filter(
-          (entry) => entry.payload.type === 'event' && entry.payload.event.type === 'worker_done',
-        )
-        .map((entry) =>
-          entry.payload.type === 'event' && entry.payload.event.type === 'worker_done'
-            ? entry.payload.event.workerId
-            : '',
-        ),
-    ).toEqual(['worker-one']);
-
-    failSecond = false;
-    const second = recoverInterruptedSwarmTurns(options);
-    expect(second).toMatchObject({
-      workersCancelled: 1,
+    rejectSecond = false;
+    expect(recoverInterruptedSubagentTails(options)).toMatchObject({
+      childrenTerminalized: 1,
       canonicalConversationsRepaired: [conversation.id],
       failedCanonicalConversationIds: [],
     });
     expect(
       appendCurrentRunEvent.mock.calls.filter(
-        (call) => call[3].type === 'worker_done' && call[3].workerId === 'worker-one',
+        (call) => call[3].type === 'subagent_finished' && call[3].subagentId === 'sub_one',
       ),
     ).toHaveLength(1);
+    expect(service.peekNotifications(conversation.id)).toHaveLength(2);
+  });
+});
 
-    expect(service.recoverV2State()).toMatchObject({
-      conversationsInterrupted: 1,
-      terminalsAppended: 1,
+describe('queueInterruptedSubagentNotifications', () => {
+  let tmpDir: string;
+  let service: SqliteConversationService;
+  let uuidCounter: number;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'subagent-child-recovery-'));
+    uuidCounter = 0;
+    service = new SqliteConversationService({
+      dataDir: tmpDir,
+      uuid: () => `10000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`,
     });
-    const afterTerminal = service.eventLog.readSince('agent-a', conversation.id, 0);
-    expect(afterTerminal.filter((entry) => entry.payload.type === 'error')).toHaveLength(1);
-    expect(recoverInterruptedSwarmTurns(options)).toMatchObject({
-      workersCancelled: 0,
-      failedCanonicalConversationIds: [],
-    });
-    expect(service.eventLog.readSince('agent-a', conversation.id, 0)).toHaveLength(
-      afterTerminal.length,
-    );
   });
 
-  it('restores a canonical active run whose workers are already terminal before the sole terminal', () => {
-    const conversation = service.create({
-      agentId: 'agent-a',
-      agentName: 'Canonical Helper',
-      requestId: 'create-terminal-workers',
-    });
-    const active = service.acceptRun({
-      protocol: 'v2',
-      agentId: 'agent-a',
-      channelId: 'direct',
-      conversationId: conversation.id,
-      runId: 'outer-terminal-workers',
-      text: 'Workers already settled',
-    });
-    service.appendRunEvent({
-      conversationId: conversation.id,
-      runId: active.runId,
-      segmentTurnId: active.segmentTurnId,
-      event: canonicalSpawned('worker-done', 'swarm-terminal-workers'),
-    });
-    service.appendRunEvent({
-      conversationId: conversation.id,
-      runId: active.runId,
-      segmentTurnId: active.segmentTurnId,
-      event: canonicalDone('worker-done', 'done', 'swarm-terminal-workers'),
-    });
-    const restoreRun = vi.fn();
+  afterEach(async () => {
+    service.close();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
 
-    const repaired = recoverInterruptedSwarmTurns({
-      eventLog: service.eventLog,
-      canonicalRuns: [
-        { agentId: 'agent-a', conversationId: conversation.id, outerRunId: active.runId },
-      ],
-      appendCurrentRunEvent: (agentId, conversationId, outerRunId, event) =>
-        service.appendCurrentRunEvent(agentId, conversationId, outerRunId, event),
-      restoreRun,
+  function subagentInfo(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
+    return {
+      type: 'general-purpose',
+      status: 'running',
+      description: 'survey the repo',
+      prompt: 'survey',
+      model: 'test/model',
+      background: true,
+      depth: 1,
+      startedAt: '2026-09-06T00:00:00.000Z',
+      toolCallCount: 3,
+      oneShot: false,
+      ...overrides,
+    };
+  }
+
+  function parentWithChild(childId: string, info: Partial<SubagentInfo> = {}) {
+    const parent = service.create({
+      agentId: AGENT,
+      agentName: 'Helper',
+      requestId: `req-${++uuidCounter}`,
+    });
+    service.createSubagent({
+      id: childId,
+      agentId: AGENT,
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-1',
+      title: 'child',
+      subagent: subagentInfo(info),
+    });
+    return parent;
+  }
+
+  it('queues one notification per freshly interrupted child and stamps endedAt', () => {
+    const parent = parentWithChild('sub_a');
+    service.updateSubagent('sub_a', { status: 'interrupted' });
+
+    const result = queueInterruptedSubagentNotifications({ conversations: service });
+
+    expect(result).toMatchObject({
+      childrenNotified: 1,
+      pendingDelivery: [{ agentId: AGENT, conversationId: parent.id }],
+    });
+    expect(service.peekNotifications(parent.id)[0]).toMatchObject({
+      kind: 'subagent_finished',
+      payload: {
+        subagentId: 'sub_a',
+        status: 'interrupted',
+        subagentType: 'general-purpose',
+        description: 'survey the repo',
+        toolCallCount: 3,
+      },
+    });
+    expect(service.get('sub_a')?.subagent?.endedAt).toEqual(expect.any(String));
+  });
+
+  it('does not double-queue a child already notified or finalized on an earlier boot', () => {
+    const parent = parentWithChild('sub_a');
+    service.updateSubagent('sub_a', { status: 'interrupted' });
+    service.enqueueNotification({
+      conversationId: parent.id,
+      kind: 'subagent_finished',
+      payload: { subagentId: 'sub_a', status: 'interrupted' },
     });
 
-    expect(repaired).toMatchObject({
-      workersCancelled: 0,
-      canonicalConversationsRepaired: [conversation.id],
-      failedCanonicalConversationIds: [],
+    expect(queueInterruptedSubagentNotifications({ conversations: service })).toMatchObject({
+      childrenNotified: 0,
     });
-    expect(restoreRun).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: conversation.id, finalized: true }),
-    );
-    expect(service.get(conversation.id)).toMatchObject({ status: 'running' });
-    expect(service.recoverV2State()).toMatchObject({ terminalsAppended: 1 });
-    expect(
-      service.eventLog
-        .readSince('agent-a', conversation.id, 0)
-        .filter((entry) => entry.payload.type === 'error'),
-    ).toHaveLength(1);
+    expect(service.peekNotifications(parent.id)).toHaveLength(1);
+
+    service.updateSubagent('sub_a', { info: { endedAt: '2026-09-05T00:00:00.000Z' } });
+    expect(queueInterruptedSubagentNotifications({ conversations: service })).toMatchObject({
+      childrenNotified: 0,
+    });
+    expect(service.peekNotifications(parent.id)).toHaveLength(1);
+  });
+
+  it('contains a full parent queue and still notifies another child', () => {
+    const full = parentWithChild('sub_full');
+    for (let index = 0; index < MAX_QUEUED_NOTIFICATIONS; index++) {
+      service.enqueueNotification({
+        conversationId: full.id,
+        kind: 'subagent_message',
+        payload: { from: 'x', message: String(index) },
+      });
+    }
+    service.updateSubagent('sub_full', { status: 'interrupted' });
+    const parent = parentWithChild('sub_ok');
+    service.updateSubagent('sub_ok', { status: 'interrupted' });
+    const logged: string[] = [];
+
+    const result = queueInterruptedSubagentNotifications({
+      conversations: service,
+      log: (message) => logged.push(message),
+    });
+
+    expect(result.childrenNotified).toBe(1);
+    expect(logged.some((message) => message.includes('sub_full'))).toBe(true);
+    expect(service.peekNotifications(parent.id)).toHaveLength(1);
   });
 });

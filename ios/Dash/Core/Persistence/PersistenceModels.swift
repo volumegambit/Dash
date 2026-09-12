@@ -63,6 +63,13 @@ final class ConversationRecord {
   var createdAt: Date
   var updatedAt: Date
   var deletedAt: Date?
+  /// Raw for the same forward-compatible fallback as
+  /// `ConversationSummaryDTO.kind`. Optional columns keep stores created by an
+  /// older app eligible for SwiftData's lightweight migration.
+  var kindRaw: String?
+  var parentConversationID: String?
+  var parentTurnID: String?
+  var subagentData: Data?
   var queuePaused: Bool = false
   var queueRevision: Int = 0
   var pendingFollowUpCount: Int = 0
@@ -86,6 +93,10 @@ final class ConversationRecord {
     createdAt: Date,
     updatedAt: Date,
     deletedAt: Date?,
+    kindRaw: String? = nil,
+    parentConversationID: String? = nil,
+    parentTurnID: String? = nil,
+    subagentData: Data? = nil,
     queuePaused: Bool = false,
     queueRevision: Int = 0,
     pendingFollowUpCount: Int = 0,
@@ -108,6 +119,10 @@ final class ConversationRecord {
     self.createdAt = createdAt
     self.updatedAt = updatedAt
     self.deletedAt = deletedAt
+    self.kindRaw = kindRaw
+    self.parentConversationID = parentConversationID
+    self.parentTurnID = parentTurnID
+    self.subagentData = subagentData
     self.queuePaused = queuePaused
     self.queueRevision = queueRevision
     self.pendingFollowUpCount = pendingFollowUpCount
@@ -154,6 +169,12 @@ final class MessageRecord {
   var deliveryKindRaw: String?
   var deliveryStatusRaw: String?
   var isV2Anchor: Bool = false
+  /// Who caused this turn (sub-agents design 7.6), raw so an origin a newer
+  /// gateway invents survives a round-trip through the cache. Optional, and
+  /// therefore a SwiftData lightweight migration: rows written before this
+  /// column existed read back as `nil`, which the projection treats as
+  /// UNKNOWN (renders exactly like a user turn).
+  var originRaw: String?
 
   init(
     scopedID: String,
@@ -171,7 +192,8 @@ final class MessageRecord {
     segmentIndex: Int? = nil,
     deliveryKindRaw: String? = nil,
     deliveryStatusRaw: String? = nil,
-    isV2Anchor: Bool = false
+    isV2Anchor: Bool = false,
+    originRaw: String? = nil
   ) {
     self.scopedID = scopedID
     self.gatewayID = gatewayID
@@ -189,6 +211,7 @@ final class MessageRecord {
     self.deliveryKindRaw = deliveryKindRaw
     self.deliveryStatusRaw = deliveryStatusRaw
     self.isV2Anchor = isV2Anchor
+    self.originRaw = originRaw
   }
 }
 

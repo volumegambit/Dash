@@ -427,6 +427,7 @@ actor PersistenceStore {
         record.contentData = content
         record.createdAt = value.createdAt
         record.updatedAt = value.updatedAt
+        record.originRaw = value.origin
       } else {
         modelContext.insert(
           MessageRecord(
@@ -440,7 +441,8 @@ actor PersistenceStore {
             statusRaw: value.status.rawValue,
             contentData: content,
             createdAt: value.createdAt,
-            updatedAt: value.updatedAt
+            updatedAt: value.updatedAt,
+            originRaw: value.origin
           )
         )
       }
@@ -484,7 +486,8 @@ actor PersistenceStore {
           from: record.contentData
         ),
         createdAt: record.createdAt,
-        updatedAt: record.updatedAt
+        updatedAt: record.updatedAt,
+        origin: record.originRaw
       )
     }
   }
@@ -1623,7 +1626,7 @@ actor PersistenceStore {
     }
     if let record {
       guard value.revision > record.revision else { return false }
-      apply(value, to: record)
+      try apply(value, to: record)
     } else {
       modelContext.insert(
         ConversationRecord(
@@ -1642,7 +1645,13 @@ actor PersistenceStore {
           lastMessagePreview: value.lastMessagePreview,
           createdAt: value.createdAt,
           updatedAt: value.updatedAt,
-          deletedAt: value.deletedAt
+          deletedAt: value.deletedAt,
+          kindRaw: value.kind,
+          parentConversationID: value.parentConversationId,
+          parentTurnID: value.parentTurnId,
+          subagentData: try value.subagent.map {
+            try ContractCoding.encoder().encode($0)
+          }
         )
       )
     }
@@ -1691,7 +1700,7 @@ actor PersistenceStore {
     }
   }
 
-  private func apply(_ value: ConversationSummaryDTO, to record: ConversationRecord) {
+  private func apply(_ value: ConversationSummaryDTO, to record: ConversationRecord) throws {
     record.agentID = value.agentId
     record.agentName = value.agentName
     record.title = value.title
@@ -1705,6 +1714,12 @@ actor PersistenceStore {
     record.createdAt = value.createdAt
     record.updatedAt = value.updatedAt
     record.deletedAt = value.deletedAt
+    record.kindRaw = value.kind
+    record.parentConversationID = value.parentConversationId
+    record.parentTurnID = value.parentTurnId
+    record.subagentData = try value.subagent.map {
+      try ContractCoding.encoder().encode($0)
+    }
   }
 
   private func purgeConversationContent(gatewayID: String, conversationID: String) throws {
@@ -1778,6 +1793,9 @@ actor PersistenceStore {
         "conversation status \(record.statusRaw)"
       )
     }
+    let subagent = try record.subagentData.map {
+      try ContractCoding.decoder().decode(SubagentInfoDTO.self, from: $0)
+    }
     return CachedConversation(
       gatewayID: record.gatewayID,
       summary: ConversationSummaryDTO(
@@ -1794,7 +1812,11 @@ actor PersistenceStore {
         lastMessagePreview: record.lastMessagePreview,
         createdAt: record.createdAt,
         updatedAt: record.updatedAt,
-        deletedAt: record.deletedAt
+        deletedAt: record.deletedAt,
+        kind: record.kindRaw,
+        parentConversationId: record.parentConversationID,
+        parentTurnId: record.parentTurnID,
+        subagent: subagent
       )
     )
   }
@@ -2023,7 +2045,7 @@ actor PersistenceStore {
     ) {
       conversation = existing
       if prepared.summary.revision > existing.revision {
-        apply(prepared.summary, to: existing)
+        try apply(prepared.summary, to: existing)
       }
     } else {
       conversation = ConversationRecord(
@@ -2042,7 +2064,13 @@ actor PersistenceStore {
         lastMessagePreview: prepared.summary.lastMessagePreview,
         createdAt: prepared.summary.createdAt,
         updatedAt: prepared.summary.updatedAt,
-        deletedAt: prepared.summary.deletedAt
+        deletedAt: prepared.summary.deletedAt,
+        kindRaw: prepared.summary.kind,
+        parentConversationID: prepared.summary.parentConversationId,
+        parentTurnID: prepared.summary.parentTurnId,
+        subagentData: try prepared.summary.subagent.map {
+          try ContractCoding.encoder().encode($0)
+        }
       )
       modelContext.insert(conversation)
     }
@@ -2136,7 +2164,8 @@ actor PersistenceStore {
         record.runID == message.runId,
         record.segmentIndex == message.segmentIndex,
         record.deliveryKindRaw == message.deliveryKind.rawValue,
-        record.deliveryStatusRaw == message.deliveryStatus?.rawValue
+        record.deliveryStatusRaw == message.deliveryStatus?.rawValue,
+        message.origin == nil || record.originRaw == message.origin
       else { return false }
     }
 
@@ -2187,6 +2216,7 @@ actor PersistenceStore {
         record.segmentIndex = value.segmentIndex
         record.deliveryKindRaw = value.deliveryKind.rawValue
         record.deliveryStatusRaw = value.deliveryStatus?.rawValue
+        record.originRaw = value.origin ?? record.originRaw
       } else if canReplace == false {
         let requiredMetadata = [
           record.runID != nil,
@@ -2205,8 +2235,12 @@ actor PersistenceStore {
           record.deliveryKindRaw = value.deliveryKind.rawValue
           record.deliveryStatusRaw = value.deliveryStatus?.rawValue
         }
+        let originChanged = record.originRaw == nil && value.origin != nil
+        if originChanged {
+          record.originRaw = value.origin
+        }
         if isAnchor { record.isV2Anchor = true }
-        return hasNoMetadata || markerChanged
+        return hasNoMetadata || originChanged || markerChanged
       }
       if isAnchor { record.isV2Anchor = true }
       return (canReplace && payloadChanged) || markerChanged
@@ -2228,7 +2262,8 @@ actor PersistenceStore {
         segmentIndex: value.segmentIndex,
         deliveryKindRaw: value.deliveryKind.rawValue,
         deliveryStatusRaw: value.deliveryStatus?.rawValue,
-        isV2Anchor: isAnchor
+        isV2Anchor: isAnchor,
+        originRaw: value.origin
       )
     )
     return true
@@ -2269,7 +2304,8 @@ actor PersistenceStore {
       status: status,
       content: try ContractCoding.decoder().decode(MessageContent.self, from: record.contentData),
       createdAt: record.createdAt,
-      updatedAt: record.updatedAt
+      updatedAt: record.updatedAt,
+      origin: record.originRaw
     )
     let metadata = [record.runID != nil, record.segmentIndex != nil, record.deliveryKindRaw != nil]
     guard metadata.allSatisfy({ $0 }) || metadata.allSatisfy({ !$0 }) else {
@@ -2321,6 +2357,7 @@ actor PersistenceStore {
       && record.segmentIndex == value.segmentIndex
       && record.deliveryKindRaw == value.deliveryKind.rawValue
       && record.deliveryStatusRaw == value.deliveryStatus?.rawValue
+      && (value.origin == nil || record.originRaw == value.origin)
   }
 
   private func validateV2Overlay(
@@ -2390,7 +2427,11 @@ actor PersistenceStore {
       lastMessagePreview: value.lastMessagePreview,
       createdAt: value.createdAt,
       updatedAt: value.updatedAt,
-      deletedAt: value.deletedAt
+      deletedAt: value.deletedAt,
+      kind: value.kind.rawValue,
+      parentConversationId: value.parentConversationId,
+      parentTurnId: value.parentTurnId,
+      subagent: value.subagent
     )
   }
 

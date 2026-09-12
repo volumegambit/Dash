@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import type { MobileWsClientFrame } from '@dash/mobile-contract';
 import type { MobileV2WsClientFrame, MobileV2WsServerFrame } from '@dash/mobile-contract-v2';
 import addFormats from 'ajv-formats';
-import Ajv2020 from 'ajv/dist/2020.js';
+import { Ajv2020 } from 'ajv/dist/2020.js';
 import { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import { describe, expect, it, vi } from 'vitest';
@@ -84,7 +84,7 @@ const schemaPath = fileURLToPath(
 );
 const schema = JSON.parse(readFileSync(schemaPath, 'utf8')) as object;
 const ajv = new Ajv2020({ allErrors: true, strict: false });
-addFormats(ajv);
+(addFormats as unknown as (instance: Ajv2020) => void)(ajv);
 ajv.addSchema(schema, 'mobile-v2-chat-ws');
 const validateServerFrame = ajv.compile({
   $ref: 'mobile-v2-chat-ws#/$defs/MobileV2WsServerFrame',
@@ -150,6 +150,14 @@ function makeHubHarness() {
     .mockResolvedValue(undefined);
   const suspend = vi.fn<ResumableChatHub['suspend']>().mockResolvedValue(undefined);
   const detach = vi.fn<ResumableChatHub['detach']>();
+  const disableAgent = vi.fn<ResumableChatHub['disableAgent']>().mockResolvedValue(undefined);
+  const deleteAgent = vi.fn<ResumableChatHub['deleteAgent']>().mockResolvedValue(undefined);
+  const subscribe = vi.fn<ResumableChatHub['subscribe']>();
+  const unsubscribe = vi.fn<ResumableChatHub['unsubscribe']>();
+  const startSystemTurn = vi
+    .fn<ResumableChatHub['startSystemTurn']>()
+    .mockReturnValue({ turnId: 'turn-system' });
+  const addObserver = vi.fn<ResumableChatHub['addObserver']>().mockReturnValue(() => {});
   const cancelAgent = vi.fn<ResumableChatHub['cancelAgent']>().mockResolvedValue(undefined);
   const allowAgent = vi.fn<ResumableChatHub['allowAgent']>();
   const stop = vi.fn<ResumableChatHub['stop']>().mockResolvedValue(undefined);
@@ -169,6 +177,12 @@ function makeHubHarness() {
     resumeRecoveredQueues,
     suspend,
     detach,
+    disableAgent,
+    deleteAgent,
+    subscribe,
+    unsubscribe,
+    startSystemTurn,
+    addObserver,
     cancelAgent,
     allowAgent,
     stop,
@@ -1247,7 +1261,7 @@ describe('mountChatWs v2 socket lifecycle', () => {
       }
       connection.socket.send.mockClear();
 
-      const commands: MobileV2WsClientFrame[] = [
+      const commands: Array<Exclude<MobileV2WsClientFrame, { type: 'hello' }>> = [
         SUBSCRIBE,
         MESSAGE,
         ENQUEUE_STEER,

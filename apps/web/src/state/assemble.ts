@@ -1,6 +1,7 @@
 import type {
   ConversationContent,
   ConversationMessage,
+  ConversationMessageOrigin,
   ConversationMessageStatus,
   MobileAgentEvent,
   MobileApiErrorCode,
@@ -31,6 +32,25 @@ export interface PendingTurn {
   turnId: string;
   conversationId: string;
   assistantMessageId: string;
+  /**
+   * Who caused this turn (sub-agents design 7.6), carried from the `accepted`
+   * frame so `done` can stamp it on the finalized assistant row. Absent on a
+   * LIVE `accepted` means `'user'` — the gateway omits both `origin` and
+   * `kind` for an ordinary user turn so a pre-subscription client sees the
+   * bytes it always did — and it stays absent here rather than being
+   * defaulted, because on the REPLAY path absent means UNKNOWN, not `'user'`.
+   */
+  origin?: ConversationMessageOrigin;
+  /**
+   * Set only by `fallbackPending`: this turn was never announced to this
+   * client by an `accepted`, so `assistantMessageId` is a stand-in and the
+   * stream assembled under it may be a fragment of a turn the server has
+   * already finished. Carried on the pending turn rather than recomputed at
+   * `done`, because the first `event` frame is what materialises the
+   * fallback and by `done` there is a `pending` either way — see
+   * `keepExistingContent`.
+   */
+  fallback?: boolean;
 }
 
 /** The most recent `error` frame surfaced for this conversation, if any. */
@@ -61,6 +81,26 @@ function streamingEvents(t: Transcript): MobileAgentEvent[] {
   return t.streaming && t.streaming.type === 'assistant' ? t.streaming.events : [];
 }
 
+/**
+ * The events `ui/blocks/subagents.ts` folds into a card, and the `subagentId`
+ * read it uses (`:221-224`). Duplicated rather than imported: `subagentIdOf`
+ * is module-private over there, and `state/` importing from `ui/` is the
+ * dependency `store.ts:1497` already refuses to take for the very same
+ * predicate. Six lines, and they must stay in step with that file — a folded
+ * type missing here would let the transient frame through the gate below
+ * ungated, and one missing there is a card the fold never draws.
+ */
+const FOLDED_EVENT_TYPES = new Set(['subagent_started', 'subagent_progress', 'subagent_finished']);
+
+function subagentIdOf(event: MobileAgentEvent): string | undefined {
+  if (!FOLDED_EVENT_TYPES.has(event.type)) return undefined;
+  const named = event as { subagentId?: unknown; workerId?: unknown };
+  for (const value of [named.subagentId, named.workerId]) {
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return undefined;
+}
+
 /** Best-effort pending state for `event`/`done` frames that arrive without a
  * preceding `accepted` in this session (e.g. a resumed stream after a page
  * reload lost in-memory state). There's no real `assistantMessageId` to
@@ -71,7 +111,39 @@ function fallbackPending(frame: { id: string; conversationId?: string }): Pendin
     turnId: frame.id,
     conversationId: frame.conversationId ?? '',
     assistantMessageId: frame.id,
+    fallback: true,
   };
+}
+
+/**
+ * Whether `done` must leave a matched row's `content` alone (fix round 4,
+ * ruling 1 guard 2). Both cases are the same race from two angles: the
+ * server's FINALIZED row for this turn is already in `messages` (a REST read
+ * landed it) while this client's stream for that turn is missing or partial,
+ * so writing the stream over the row DESTROYS the reply the user can see.
+ *
+ * 1. **Nothing streamed.** The turn's whole output would be replaced by an
+ *    empty event list — a blank bubble. Never right, however `pending` was
+ *    obtained, so this arm is not gated on the fallback path.
+ * 2. **A straggler.** One late `event` beat the `done`, so the stream holds a
+ *    single fragment of a reply the server already completed. Gated on BOTH
+ *    the fallback path and the row not being `status: 'streaming'`: a row
+ *    still marked `streaming` is the mid-turn-open case, where the REST row
+ *    is deliberately a partial snapshot and the live stream is the better
+ *    copy — that one must still be replaced.
+ *
+ * `status`/`updatedAt` are written either way: the row is finalized, only its
+ * text is preserved.
+ */
+function keepExistingContent(
+  existing: ConversationMessage,
+  finalized: { content: ConversationContent; fallback: boolean },
+): boolean {
+  const incoming = finalized.content.type === 'assistant' ? finalized.content.events : [];
+  const held = existing.content.type === 'assistant' ? existing.content.events : [];
+  if (held.length === 0) return false;
+  if (incoming.length === 0) return true;
+  return finalized.fallback && existing.status !== 'streaming';
 }
 
 /**
@@ -96,6 +168,10 @@ function finalizeAssistantMessage(
     content: ConversationContent;
     status: ConversationMessageStatus;
     now: string;
+    /** True when `pending` came from `fallbackPending` — i.e. this client
+     * never saw the turn's `accepted`, so everything it knows about the turn
+     * came from a REST read. See `keepExistingContent`. */
+    fallback: boolean;
   },
 ): ConversationMessage[] {
   const matchIndex = messages.findIndex(
@@ -115,6 +191,9 @@ function finalizeAssistantMessage(
       content: finalized.content,
       createdAt: finalized.now,
       updatedAt: finalized.now,
+      // Spread, not `origin: pending.origin`: an ordinary turn's rows must
+      // stay byte-identical to what they were before origins existed.
+      ...(pending.origin ? { origin: pending.origin } : {}),
     };
     return [...messages, appended];
   }
@@ -126,11 +205,15 @@ function finalizeAssistantMessage(
   // server-assigned id, and clobbering it would break subsequent lookups by id.
   const existing = messages[matchIndex];
   const next = [...messages];
+  const content = keepExistingContent(existing, finalized) ? existing.content : finalized.content;
   next[matchIndex] = {
     ...existing,
     status: finalized.status,
-    content: finalized.content,
+    content,
     updatedAt: finalized.now,
+    // Never downgrade an origin the REST row already knows to `undefined`:
+    // on the replay path an absent origin means UNKNOWN, not `'user'`.
+    ...(pending.origin ? { origin: pending.origin } : {}),
   };
   return next;
 }
@@ -156,22 +239,90 @@ export function applyServerFrame(t: Transcript, frame: MobileWsServerFrame): Tra
           turnId: frame.id,
           conversationId: frame.conversationId,
           assistantMessageId: frame.assistantMessageId,
+          ...(frame.origin ? { origin: frame.origin } : {}),
         },
       };
     }
 
     case 'event': {
       const pending = t.pending ?? fallbackPending(frame);
-      const events = [...streamingEvents(t), frame.event];
+      const live = streamingEvents(t);
+      // A TRANSIENT frame, and the port of MC's `1d2e641c`. A seq-less
+      // `event` is exactly a transient one on the wire: the gateway omits
+      // `seq` only for an event it never logs (`chat-ws.ts:555` and
+      // `resumable-chat-hub.ts:382`, both `isTransientAgentEvent`), and that
+      // predicate is `subagent_progress` and only it
+      // (`packages/swarm/src/transient-events.ts:12-14`). Such a frame
+      // updates the stream it BELONGS to — the one its child is anchored in —
+      // or it is dropped.
+      //
+      // "Is a stream live" is not the same question. They diverge for a
+      // BACKGROUND child, the only kind that outlives its launching turn:
+      // `run.ts:268` (`if (h.background) continue;`) leaves it running
+      // through that turn's finalize, and `emitToParent`
+      // (`coordinator.ts:1560`) pushes its heartbeat into whatever turn is
+      // live NOW, because `this.live` is keyed `(agentId, conversationId)`.
+      // `case 'done'` below has already emptied the stream
+      // (`streaming: null`), so a turn-1 child heartbeats onto turn 2's
+      // stream, where it has no `subagent_started` — and `groupSubagentEvents`
+      // (`ui/blocks/subagents.ts:267-291`) drafts a group for any
+      // `subagentIdOf` hit and clears `orphan` only on a start. That draws a
+      // second, unlabelled card (header `{group.type || 'agent'}`, blank
+      // description, no `startedAt`) carrying the question and a live
+      // `subagent-reply` composer (`SubagentBlock.tsx:262-274`), for a child
+      // whose real card is already in turn 1's confirmed message. Out of
+      // reach of D2's reconciliation: `ChatView.tsx:980-990` renders the live
+      // stream through `ContentBlocks.tsx:271` raw and never passes it
+      // through `mergeSubagentEventLists`, which folds CONFIRMED messages
+      // only.
+      //
+      // §32.6 is kept verbatim by the same predicate: a child parked on
+      // `ask_orchestrator` INSIDE the live turn is anchored in that same
+      // stream, so its question and reply box still reach its row.
+      //
+      // Coalesced, not appended: `PROGRESS_THROTTLE_MS` is 1_000
+      // (`packages/swarm/src/child-handle.ts:75`), so a busy child emits one
+      // of these a second for the whole turn and the fold is last-write-wins
+      // per child. Replaced in PLACE, so the array holds at most one per
+      // child and no `anchorIndex` the fold reads ever moves. Web's coalesce
+      // predicate cannot be MC's (`candidate.seq === undefined`) because web
+      // stores bare events, not frames — but it does not need to be: a
+      // transient event is never persisted, so ANY `subagent_progress` in a
+      // live event list arrived seq-less.
+      if (frame.seq === undefined) {
+        // A future transient type that names no child needs its own rule
+        // here rather than a silent fall-through to delivery.
+        const childId = subagentIdOf(frame.event);
+        if (childId === undefined) return t;
+        const anchored = live.some(
+          (event) => event.type === 'subagent_started' && subagentIdOf(event) === childId,
+        );
+        if (!anchored) return t;
+        const previous = live.findIndex(
+          (event) => event.type === 'subagent_progress' && subagentIdOf(event) === childId,
+        );
+        return {
+          messages: t.messages,
+          streaming: {
+            type: 'assistant',
+            events:
+              previous === -1
+                ? [...live, frame.event]
+                : live.map((event, index) => (index === previous ? frame.event : event)),
+          },
+          pending,
+        };
+      }
       return {
         messages: t.messages,
-        streaming: { type: 'assistant', events },
+        streaming: { type: 'assistant', events: [...live, frame.event] },
         pending,
       };
     }
 
     case 'done': {
       const pending = t.pending ?? fallbackPending(frame);
+      const fallback = pending.fallback === true;
       const content: ConversationContent = {
         type: 'assistant',
         events: streamingEvents(t),
@@ -185,6 +336,7 @@ export function applyServerFrame(t: Transcript, frame: MobileWsServerFrame): Tra
           content,
           status,
           now,
+          fallback,
         }),
         streaming: null,
       };

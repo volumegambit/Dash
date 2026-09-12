@@ -47,6 +47,68 @@ class MobileV2FixtureTest {
     }
 
     @Test
+    fun subagentConversationIdentifiersAndSummaryMetadataRoundTripStrictly() {
+        val child = decodeFixture<MobileV2ConversationSummary>(
+            "conversation-summary-subagent.json",
+        )
+
+        assertEquals("sub_01ARZ3NDEKTSV4RRFFQ69G5FAV", child.id)
+        assertEquals(MobileV2ConversationKind.SUBAGENT, child.kind)
+        assertEquals("00000000-0000-4000-8000-000000000001", child.parentConversationId)
+        assertEquals("turn-parent-01", child.parentTurnId)
+        assertEquals(MobileV2SubagentStatus.DONE, child.subagent?.status)
+        assertEquals("worktree", child.subagent?.isolation)
+        assertEquals(120L, child.subagent?.usage?.inputTokens)
+
+        val subscription = decodeFixture<MobileV2WsClientFrame>(
+            "chat-subscribe-subagent.json",
+        ) as MobileV2WsClientFrame.SubscribeConversation
+        assertEquals(child.id, subscription.conversationId)
+
+        assertThrows(Exception::class.java) {
+            decodeFixture<MobileV2ConversationSummary>(
+                "invalid/conversation-summary-bad-subagent-id.json",
+            )
+        }
+        assertThrows(Exception::class.java) {
+            json.decodeFromString<MobileV2WsClientFrame>(
+                """{"type":"subscribe_conversation","id":"sub_01ARZ3NDEKTSV4RRFFQ69G5FAV","agentId":"agent","conversationId":"sub_01ARZ3NDEKTSV4RRFFQ69G5FAV","sinceV2Seq":0}""",
+            )
+        }
+    }
+
+    @Test
+    fun noticeOriginAndLiveAcceptedMetadataRoundTripWhileReplayOmitsMetadata() {
+        val notice = decodeFixture<MobileV2ConversationMessage>(
+            "conversation-message-notice.json",
+        )
+        val content = notice.content as ConversationContent.Notice
+        assertEquals(MobileV2NoticeKind.MEMORY_SAVED, content.kind)
+        assertEquals(MobileV2ConversationOrigin.NOTIFICATION, notice.origin)
+
+        val accepted = decodeFixture<MobileV2WsServerFrame>("chat-accepted.json")
+            as MobileV2SequencedFrame.Accepted
+        assertEquals(MobileV2ConversationOrigin.PARENT, accepted.origin)
+        assertEquals(MobileV2ConversationKind.SUBAGENT, accepted.kind)
+        assertEquals("resume-01", accepted.requestId)
+
+        val replay = decodeFixture<MobileV2ReplayPage>("conversation-replay-page.json")
+        val replayAccepted = replay.frames.first() as MobileV2SequencedFrame.Accepted
+        assertNull(replayAccepted.origin)
+        assertNull(replayAccepted.kind)
+        assertNull(replayAccepted.requestId)
+
+        assertThrows(Exception::class.java) {
+            decodeFixture<MobileV2ConversationMessage>(
+                "invalid/conversation-message-bad-notice-kind.json",
+            )
+        }
+        assertThrows(Exception::class.java) {
+            decodeFixture<MobileV2WsServerFrame>("invalid/chat-accepted-bad-origin.json")
+        }
+    }
+
+    @Test
     fun unknownCapabilityDoesNotBreakHealth() {
         val value = json.decodeFromString<MobileV2HealthResponse>(
             """{"status":"healthy","startedAt":"2026-09-06T00:00:00.000Z","pid":1,"agents":1,"channels":1,"apiVersion":2,"capabilities":["chat-input-queue-v1","future"]}""",
@@ -163,6 +225,31 @@ class MobileV2FixtureTest {
         assertTrue(event is MobileV2TypedAgentEvent)
         event as MobileV2TypedAgentEvent
         assertEquals("typed text", (event.value as AgentEvent.TextDelta).text)
+        assertEquals(json.parseToJsonElement(rawEvent), event.raw)
+        assertEquals(
+            json.parseToJsonElement(source),
+            json.parseToJsonElement(
+                json.encodeToString(MobileV2ConversationMessage.serializer(), message),
+            ),
+        )
+    }
+
+    @Test
+    fun recognizedWorkerEventsExposeMainlineTypesAndPreserveTheirRawExtensions() {
+        val rawEvent =
+            """{"type":"worker_spawned","workerId":"worker-1","runId":"run-1","role":"researcher","brief":"Find evidence","model":"model-1","future":{"nested":true}}"""
+        val source = conversationMessage(
+            content = """{"type":"assistant","events":[$rawEvent]}""",
+        )
+
+        val message = json.decodeFromString<MobileV2ConversationMessage>(source)
+        val event = (message.content as ConversationContent.Assistant).events.single()
+
+        assertTrue(event is MobileV2TypedAgentEvent)
+        event as MobileV2TypedAgentEvent
+        val worker = event.value as AgentEvent.WorkerSpawned
+        assertEquals("worker-1", worker.workerId)
+        assertEquals("run-1", worker.runId)
         assertEquals(json.parseToJsonElement(rawEvent), event.raw)
         assertEquals(
             json.parseToJsonElement(source),
@@ -338,6 +425,8 @@ class MobileV2FixtureTest {
         "MobileV2ConversationPage" -> roundTrip(MobileV2ConversationPage.serializer(), source)
         "MobileV2ConversationMessagePage" ->
             roundTrip(MobileV2ConversationMessagePage.serializer(), source)
+        "MobileV2ConversationMessage" ->
+            roundTrip(MobileV2ConversationMessage.serializer(), source)
         "MobileV2ReplayPage" -> roundTrip(MobileV2ReplayPage.serializer(), source)
         "MobileV2WsFrame" -> {
             val type = json.parseToJsonElement(source).jsonObject

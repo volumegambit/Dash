@@ -12,23 +12,20 @@ struct AgentDetailView: View {
   @State private var showDeleteConfirmation = false
   @State private var deleteName = ""
   @State private var isWorking = false
+  @State private var isPromptExpanded = false
 
   var body: some View {
     Group {
       if let agent {
         List {
-          Section("Agent") {
+          // No section title: the navigation bar already names the agent, and
+          // "Research Agent" over a card headed "Agent" said the noun twice
+          // (agent-detail refinement 2026-09-07, finding 5).
+          Section {
             LabeledContent("Status", value: agent.status.displayName)
             LabeledContent("Model", value: agent.config.model)
             if agent.config.systemPrompt.isEmpty == false {
-              VStack(alignment: .leading, spacing: 6) {
-                Text("System prompt")
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
-                Text(agent.config.systemPrompt)
-                  .textSelection(.enabled)
-              }
-              .padding(.vertical, 4)
+              systemPromptRow(agent.config.systemPrompt)
             }
           }
 
@@ -54,20 +51,37 @@ struct AgentDetailView: View {
             // other pre-connection screens already use.
             .frame(maxWidth: 520)
             .frame(maxWidth: .infinity)
-            .disabled(feature.mutationsAllowed == false || isWorking)
+            // Disabled for a disabled agent too, not just offline: the gateway
+            // refuses to run a disabled agent, so the tap could only produce
+            // an empty conversation that errors on first send. Mission Control
+            // hides Chat in this state; the phone keeps the control visible
+            // and greyed so the state has an explanation (finding 3).
+            .disabled(canStartChat(agent) == false || isWorking)
             .accessibilityHint(
-              feature.mutationsAllowed ? "" : "Connect to the gateway to start a conversation"
+              AgentDetailPresentation.startChatHint(
+                status: agent.status, online: feature.mutationsAllowed
+              )
             )
             .accessibilityIdentifier("agent.startChat")
+            // A prominent pill inside an inset-grouped row rendered as a
+            // button in a box: the row's card background wrapped the capsule
+            // with 16pt of padding on every side (finding 2). Clearing the
+            // row chrome lets the pill stand alone the way the parity apps'
+            // primary actions do.
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets())
           }
 
           configurationSection(agent)
           toolsSection(agent)
           integrationsSection(agent)
           memorySection(agent)
+          skillsSection(agent)
           swarmSection(agent)
         }
         .accessibilityIdentifier("agent.detail.\(agentID)")
+        .frame(maxWidth: DashTheme.Layout.readableWidth)
+        .frame(maxWidth: .infinity)
       } else {
         ContentUnavailableView(
           "Agent unavailable",
@@ -81,6 +95,9 @@ struct AgentDetailView: View {
     // to a `Section` restarts every time the section is rebuilt, and the load
     // itself writes `feature.memories`, so it re-triggers itself forever.
     .task(id: agentID) { await feature.loadMemories(agentID: agentID) }
+    // Same reasoning as the memory load: attached to the view root, not the
+    // section, so writing `feature.skills` cannot re-trigger it.
+    .task(id: agentID) { await feature.loadSkills(agentID: agentID) }
     .toolbar {
       if let agent {
         ToolbarItem(placement: .topBarTrailing) {
@@ -97,49 +114,9 @@ struct AgentDetailView: View {
           .accessibilityIdentifier("agent.edit")
         }
         ToolbarItem(placement: .topBarTrailing) {
-          Menu {
-            if agent.status == .disabled {
-              Button {
-                Task { await setEnabled(true) }
-              } label: {
-                Label("Enable", systemImage: "play.circle")
-              }
-            } else {
-              Button {
-                showDisableConfirmation = true
-              } label: {
-                Label("Disable", systemImage: "pause.circle")
-              }
-            }
-            Button(role: .destructive) {
-              deleteName = ""
-              showDeleteConfirmation = true
-            } label: {
-              Label("Delete", systemImage: "trash")
-            }
-          } label: {
-            Label("Agent actions", systemImage: "ellipsis.circle")
-              .frame(minWidth: 44, minHeight: 44)
-          }
-          .disabled(feature.mutationsAllowed == false || isWorking)
-          .accessibilityHint(
-            feature.mutationsAllowed ? "" : "Connect to the gateway to manage this agent"
-          )
-          .accessibilityIdentifier("agent.actions")
+          agentActionsMenu(agent)
         }
       }
-    }
-    .confirmationDialog(
-      "Disable \(agent?.name ?? "agent")?",
-      isPresented: $showDisableConfirmation,
-      titleVisibility: .visible
-    ) {
-      Button("Disable", role: .destructive) {
-        Task { await setEnabled(false) }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Disabling this agent stops its active work. Existing conversations remain available.")
     }
     .alert("Delete \(agent?.name ?? "agent")?", isPresented: $showDeleteConfirmation) {
       TextField("Type the agent name", text: $deleteName)
@@ -154,22 +131,136 @@ struct AgentDetailView: View {
     }
   }
 
+  /// The `agent.actions` toolbar menu, extracted from `body`'s `.toolbar`
+  /// because attaching its confirmation dialog inline pushed that expression
+  /// past the type-checker's budget.
+  private func agentActionsMenu(_ agent: RegisteredAgentDTO) -> some View {
+    Menu {
+      if agent.status == .disabled {
+        Button {
+          Task { await setEnabled(true) }
+        } label: {
+          Label("Enable", systemImage: "play.circle")
+        }
+      } else {
+        Button {
+          showDisableConfirmation = true
+        } label: {
+          Label("Disable", systemImage: "pause.circle")
+        }
+      }
+      Button(role: .destructive) {
+        deleteName = ""
+        showDeleteConfirmation = true
+      } label: {
+        Label("Delete", systemImage: "trash")
+      }
+    } label: {
+      Label("Agent actions", systemImage: "ellipsis.circle")
+        .frame(minWidth: 44, minHeight: 44)
+    }
+    .disabled(feature.mutationsAllowed == false || isWorking)
+    .accessibilityHint(
+      feature.mutationsAllowed ? "" : "Connect to the gateway to manage this agent"
+    )
+    .accessibilityIdentifier("agent.actions")
+    // Presentation audit (iPad goal Phase D, Task 11): a `confirmationDialog`
+    // is a POPOVER at iPad regular width, and UIKit takes its source rect from
+    // the view the modifier is attached to. Attached to `body`'s root — where
+    // this used to live — it anchored to the middle-left edge of the whole
+    // agent-detail pane, diagonally opposite this toolbar button. Attached
+    // here it anchors to the button. Compact width is unaffected: still a
+    // bottom action sheet.
+    //
+    // Deliberately OUTSIDE the `.disabled(…)` above: presented content
+    // inherits the presenter's environment, so wrapping it the other way round
+    // would let `isWorking` grey out the dialog's own buttons.
+    //
+    // Review follow-up: moving the anchor here also coupled the dialog's
+    // lifecycle to `agent` — this menu only exists inside `body`'s
+    // `if let agent { ToolbarItem { agentActionsMenu(agent) } }`, and `agent`
+    // is a lookup (`feature.agents.first { $0.id == agentID }`) over a live
+    // array that `AgentsFeature.refresh()` replaces wholesale, so it can
+    // transiently go nil. If that happens while this dialog is open, the
+    // whole `ToolbarItem` — dialog included — is torn out of the hierarchy.
+    // `showDisableConfirmation` is `@State` on `AgentDetailView`, not on this
+    // menu, so the flag would otherwise outlive that teardown: if SwiftUI
+    // does not reset the binding itself, a later refresh that repopulates
+    // the same id would bring this menu back with the flag still `true` and
+    // the dialog reappearing unprompted, unconfirmed. The `.onDisappear`
+    // below makes that impossible regardless of what SwiftUI does with the
+    // binding. It only fires when this menu's `ToolbarItem` actually leaves
+    // the hierarchy (i.e. `agent` really went nil), not on an ordinary
+    // refresh that keeps `agent` non-nil, so it cannot cancel a dialog the
+    // user is actively looking at during a routine refresh.
+    .onDisappear { showDisableConfirmation = false }
+    .confirmationDialog(
+      "Disable \(agent.name)?",
+      isPresented: $showDisableConfirmation,
+      titleVisibility: .visible
+    ) {
+      Button("Disable", role: .destructive) {
+        Task { await setEnabled(false) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Disabling this agent stops its active work. Existing conversations remain available.")
+    }
+  }
+
   private var agent: RegisteredAgentDTO? {
     feature.agents.first { $0.id == agentID }
   }
 
+  private func canStartChat(_ agent: RegisteredAgentDTO) -> Bool {
+    AgentDetailPresentation.canStartChat(status: agent.status, online: feature.mutationsAllowed)
+  }
+
+  /// The system prompt, clamped to `AgentDetailPresentation.promptLineLimit`
+  /// lines with a Show more / Show less toggle when it is long (finding 6).
+  /// Real prompts run to hundreds of lines and used to push Start Chat — the
+  /// screen's one action — below the fold. Short prompts get no toggle.
+  @ViewBuilder
+  private func systemPromptRow(_ prompt: String) -> some View {
+    let isLong = AgentDetailPresentation.isPromptLong(prompt)
+    VStack(alignment: .leading, spacing: 6) {
+      Text("System prompt")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      Text(prompt)
+        .textSelection(.enabled)
+        .lineLimit(isLong && isPromptExpanded == false ? AgentDetailPresentation.promptLineLimit : nil)
+      if isLong {
+        Button(isPromptExpanded ? "Show less" : "Show more") {
+          withAnimation { isPromptExpanded.toggle() }
+        }
+        .font(.subheadline)
+        .buttonStyle(.borderless)
+        .accessibilityIdentifier("agent.prompt.toggle")
+      }
+    }
+    .padding(.vertical, 4)
+  }
+
+  /// Only when at least one optional value is set. Every row inside is
+  /// conditional, and for most agents (and every fixture agent) all of them
+  /// are absent, which rendered a bare "Configuration" title over nothing,
+  /// directly above "Tools" (finding 1). Same guard `integrationsSection`
+  /// already applies.
   @ViewBuilder
   private func configurationSection(_ agent: RegisteredAgentDTO) -> some View {
-    Section("Configuration") {
-      optionalList("Fallback models", agent.config.fallbackModels)
-      if let workspace = agent.config.workspace, workspace.isEmpty == false {
-        LabeledContent("Workspace", value: workspace)
+    if AgentDetailPresentation.hasConfiguration(agent.config) {
+      Section("Configuration") {
+        optionalList("Fallback models", agent.config.fallbackModels)
+        if let workspace = agent.config.workspace, workspace.isEmpty == false {
+          LabeledContent("Workspace", value: workspace)
+        }
+        if let maxTokens = agent.config.maxTokens {
+          LabeledContent("Max tokens", value: maxTokens.formatted())
+        }
+        optionalList("Providers", agent.config.providers)
+        optionalList("Plugins", agent.config.plugins)
       }
-      if let maxTokens = agent.config.maxTokens {
-        LabeledContent("Max tokens", value: maxTokens.formatted())
-      }
-      optionalList("Providers", agent.config.providers)
-      optionalList("Plugins", agent.config.plugins)
     }
   }
 
@@ -189,6 +280,10 @@ struct AgentDetailView: View {
         }
       } header: {
         Text("Tools (\(enabled.count))")
+          // Leaf anchor for UI tests, like `agent.memory.list`: iOS 18
+          // upper-cases inset-grouped headers, so the rendered text differs
+          // per runtime and cannot be matched literally.
+          .accessibilityIdentifier("agent.tools.list")
       }
     }
   }
@@ -223,30 +318,106 @@ struct AgentDetailView: View {
   /// container) makes XCUITest collapse it into one element and erases the
   /// per-row identifiers underneath it.
   @ViewBuilder
-  private func memorySection(_ agent: RegisteredAgentDTO) -> some View {
+  /// Read-only. The mobile API exposes no skill mutation, so there is nothing
+  /// to edit here — the value is seeing what the agent taught itself.
+  private func skillsSection(_ agent: RegisteredAgentDTO) -> some View {
     Section {
-      let rows = feature.memories[agent.id] ?? []
-      if rows.isEmpty {
-        Text("No memories yet.")
-          .foregroundStyle(.secondary)
-          .accessibilityIdentifier("agent.memory.empty")
+      // `nil` means the load has not returned yet; `[]` means it returned
+      // nothing (`loadSkills` writes `[]` on failure too, so this cannot
+      // stick). Showing "No skills yet." for `nil` claimed an answer the
+      // screen did not have (finding 7).
+      if let rows = feature.skills[agent.id] {
+        if rows.isEmpty {
+          Text("No skills yet.")
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("agent.skills.empty")
+        } else {
+          skillRows(rows)
+        }
       } else {
-        ForEach(MemoryTypeDTO.allCases, id: \.self) { type in
-          let group = rows.filter { $0.type == type }
-          if group.isEmpty == false {
-            Text(memoryTypeTitle(type))
+        loadingRow("Loading skills", identifier: "agent.skills.loading")
+      }
+    } header: {
+      Text("Skills")
+        .accessibilityIdentifier("agent.skills.list")
+    }
+  }
+
+  @ViewBuilder
+  private func skillRows(_ rows: [SkillDTO]) -> some View {
+    ForEach(rows) { skill in
+      NavigationLink {
+        SkillDetailView(skill: skill)
+      } label: {
+        VStack(alignment: .leading, spacing: 2) {
+          HStack {
+            Text(skill.name)
+            Spacer(minLength: 8)
+            Text(skill.source.label)
               .font(.caption)
               .foregroundStyle(.secondary)
-            ForEach(group) { memory in
-              memoryRow(agentID: agent.id, memory: memory)
+          }
+          Text(skill.description)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+        }
+      }
+      .accessibilityIdentifier("agent.skill.\(skill.name)")
+    }
+  }
+
+  private func memorySection(_ agent: RegisteredAgentDTO) -> some View {
+    Section {
+      // Same nil-vs-empty distinction as `skillsSection`.
+      if let rows = feature.memories[agent.id] {
+        if rows.isEmpty {
+          Text("No memories yet.")
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("agent.memory.empty")
+        } else {
+          ForEach(MemoryTypeDTO.allCases, id: \.self) { type in
+            let group = rows.filter { $0.type == type }
+            if group.isEmpty == false {
+              memoryBucketHeader(memoryTypeTitle(type))
+              ForEach(group) { memory in
+                memoryRow(agentID: agent.id, memory: memory)
+              }
             }
           }
         }
+      } else {
+        loadingRow("Loading memories", identifier: "agent.memory.loading")
       }
     } header: {
       Text("Memory")
         .accessibilityIdentifier("agent.memory.list")
     }
+  }
+
+  /// A bucket title ("User", "Project") rendered as a sub-header rather than
+  /// as a row: a plain caption `Text` got full row height and a separator on
+  /// both sides, and read as an empty item between memories (finding 4).
+  /// The bottom separator is dropped so the title attaches to the rows it
+  /// introduces; the top one stays to close the bucket above.
+  private func memoryBucketHeader(_ title: String) -> some View {
+    Text(title)
+      .font(.caption.weight(.semibold))
+      .textCase(.uppercase)
+      .foregroundStyle(.secondary)
+      .listRowInsets(EdgeInsets(top: 12, leading: 20, bottom: 4, trailing: 20))
+      .listRowSeparator(.hidden, edges: .bottom)
+      .accessibilityAddTraits(.isHeader)
+  }
+
+  private func loadingRow(_ title: LocalizedStringKey, identifier: String) -> some View {
+    HStack(spacing: 10) {
+      ProgressView()
+      Text(title)
+        .foregroundStyle(.secondary)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier(identifier)
   }
 
   @ViewBuilder
@@ -475,5 +646,88 @@ private struct FlowLayout: Layout {
 
     let height = totalHeight > 0 ? totalHeight - lineSpacing : 0
     return Rows(lines: lines, size: CGSize(width: maxRowWidth, height: height))
+  }
+}
+
+/// Read-only view of one skill's instructions.
+///
+/// For a skill the agent wrote for itself (`source == .agent`) the body is the
+/// list of lessons it has accumulated. Showing it matters: without it "Learned"
+/// is a claim the user has no way to check.
+struct SkillDetailView: View {
+  let skill: SkillDTO
+
+  var body: some View {
+    List {
+      Section {
+        Text(skill.description)
+        if let trigger = skill.trigger, trigger.isEmpty == false {
+          LabeledContent("Trigger", value: trigger)
+        }
+        LabeledContent("Source", value: skill.source.label)
+      }
+
+      if let content = skill.content, content.isEmpty == false {
+        Section("Instructions") {
+          Text(content)
+            .font(.callout.monospaced())
+            .textSelection(.enabled)
+            .accessibilityIdentifier("skill.detail.content")
+        }
+      }
+    }
+    .navigationTitle(skill.name)
+    .navigationBarTitleDisplayMode(.inline)
+    .accessibilityIdentifier("skill.detail.\(skill.name)")
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Presentation decisions
+// ---------------------------------------------------------------------------
+
+/// The pure decisions behind `AgentDetailView` (agent-detail refinement,
+/// 2026-09-07), kept out of the view so they can be unit-tested without
+/// rendering: which optional sections earn a header, whether Start Chat is
+/// offered, and when a system prompt is long enough to clamp.
+enum AgentDetailPresentation {
+  /// Lines shown before "Show more" for a long system prompt.
+  static let promptLineLimit = 6
+
+  /// Beyond this many characters a prompt is treated as long even without
+  /// newlines — a single 400-character paragraph wraps to well over
+  /// `promptLineLimit` lines on a phone.
+  static let promptCharacterLimit = 360
+
+  /// True when any of the Configuration section's optional values is set.
+  /// An empty array counts as absent: the gateway drops cleared keys, but a
+  /// client that sends `[]` should not resurrect the header.
+  static func hasConfiguration(_ config: AgentConfigDTO) -> Bool {
+    let lists = [config.fallbackModels, config.providers, config.plugins]
+    if lists.contains(where: { $0?.isEmpty == false }) { return true }
+    if let workspace = config.workspace, workspace.isEmpty == false { return true }
+    return config.maxTokens != nil
+  }
+
+  /// Start Chat needs an online gateway (mutations allowed) and an agent the
+  /// gateway will actually run — a disabled one is refused at first send.
+  static func canStartChat(status: RegisteredAgentStatus, online: Bool) -> Bool {
+    online && status != .disabled
+  }
+
+  /// The accessibility hint for Start Chat: the blocking condition, offline
+  /// first because it blocks everything else on the screen too. Empty when
+  /// the button is live.
+  static func startChatHint(status: RegisteredAgentStatus, online: Bool) -> String {
+    if online == false { return "Connect to the gateway to start a conversation" }
+    if status == .disabled { return "Enable this agent to start a conversation" }
+    return ""
+  }
+
+  /// Whether the prompt gets the `promptLineLimit` clamp and a toggle.
+  static func isPromptLong(_ prompt: String) -> Bool {
+    if prompt.count > promptCharacterLimit { return true }
+    let newlines = prompt.filter { $0 == "\n" }.count
+    return newlines + 1 > promptLineLimit
   }
 }

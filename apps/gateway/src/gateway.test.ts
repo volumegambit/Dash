@@ -22,6 +22,8 @@ function makeFakeAdapter(name: string): ChannelAdapter & {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     send: vi.fn().mockResolvedValue(undefined),
+    getHealth: () => 'connected',
+    onHealthChange: () => {},
     onMessage: (h) => {
       handler = h;
     },

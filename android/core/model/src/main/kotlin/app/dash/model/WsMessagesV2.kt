@@ -92,7 +92,10 @@ sealed interface MobileV2WsClientFrame {
         init {
             MobileV2ContractValidation.requireCanonicalUuid(id, "id")
             MobileV2ContractValidation.requireNonEmpty(agentId, "agentId")
-            MobileV2ContractValidation.requireCanonicalUuid(conversationId, "conversationId")
+            MobileV2ContractValidation.requireConversationIdentifier(
+                conversationId,
+                "conversationId",
+            )
             MobileV2ContractValidation.requireSafeInteger(sinceV2Seq, field = "sinceV2Seq")
         }
     }
@@ -115,7 +118,10 @@ sealed interface MobileV2WsClientFrame {
             MobileV2ContractValidation.requireLegacyRunId(id, "id")
             MobileV2ContractValidation.requireNonEmpty(agentId, "agentId")
             MobileV2ContractValidation.requireNonEmpty(channelId, "channelId")
-            MobileV2ContractValidation.requireCanonicalUuid(conversationId, "conversationId")
+            MobileV2ContractValidation.requireConversationIdentifier(
+                conversationId,
+                "conversationId",
+            )
             MobileV2ContractValidation.requireImages(images, "images")
             require(resumable)
         }
@@ -141,7 +147,10 @@ sealed interface MobileV2WsClientFrame {
             MobileV2ContractValidation.requireCanonicalUuid(inputId, "inputId")
             MobileV2ContractValidation.requireNonEmpty(agentId, "agentId")
             MobileV2ContractValidation.requireNonEmpty(channelId, "channelId")
-            MobileV2ContractValidation.requireCanonicalUuid(conversationId, "conversationId")
+            MobileV2ContractValidation.requireConversationIdentifier(
+                conversationId,
+                "conversationId",
+            )
             MobileV2ContractValidation.requireImages(images, "images")
             when (behavior) {
                 MobileV2InputBehavior.STEER -> require(expectedActiveTurnId != null) {
@@ -205,7 +214,10 @@ sealed interface MobileV2WsClientFrame {
     ) : MobileV2WsClientFrame {
         init {
             MobileV2ContractValidation.requireCanonicalUuid(id, "id")
-            MobileV2ContractValidation.requireCanonicalUuid(conversationId, "conversationId")
+            MobileV2ContractValidation.requireConversationIdentifier(
+                conversationId,
+                "conversationId",
+            )
             MobileV2ContractValidation.requireSafeInteger(
                 expectedQueueRevision,
                 field = "expectedQueueRevision",
@@ -258,7 +270,10 @@ sealed interface MobileV2ControlFrame : MobileV2WsServerFrame {
     ) : MobileV2ControlFrame {
         init {
             MobileV2ContractValidation.requireCanonicalUuid(id, "id")
-            MobileV2ContractValidation.requireCanonicalUuid(conversationId, "conversationId")
+            MobileV2ContractValidation.requireConversationIdentifier(
+                conversationId,
+                "conversationId",
+            )
             MobileV2ContractValidation.requireSafeInteger(v2ThroughSeq, field = "v2ThroughSeq")
         }
     }
@@ -276,7 +291,7 @@ sealed interface MobileV2ControlFrame : MobileV2WsServerFrame {
         init {
             MobileV2ContractValidation.requireLegacyRunId(id, "id")
             conversationId?.let {
-                MobileV2ContractValidation.requireCanonicalUuid(it, "conversationId")
+                MobileV2ContractValidation.requireConversationIdentifier(it, "conversationId")
             }
             MobileV2ContractValidation.requireNonEmpty(error, "error")
         }
@@ -298,12 +313,18 @@ sealed interface MobileV2SequencedFrame : MobileV2WsServerFrame {
         val userMessageId: String,
         val assistantMessageId: String,
         val revision: Long,
+        val origin: MobileV2ConversationOrigin? = null,
+        val kind: MobileV2ConversationKind? = null,
+        val requestId: String? = null,
     ) : MobileV2SequencedFrame {
         init {
             requireRunFrame(id, conversationId, runId, segmentTurnId, v2Seq)
             MobileV2ContractValidation.requireCanonicalUuid(userMessageId, "userMessageId")
             MobileV2ContractValidation.requireCanonicalUuid(assistantMessageId, "assistantMessageId")
             MobileV2ContractValidation.requireSafeInteger(revision, field = "revision")
+            requestId?.let {
+                MobileV2ContractValidation.requireCodePointLength(it, 1, 256, "requestId")
+            }
         }
     }
 
@@ -689,7 +710,7 @@ private fun encodeSequencedFrame(json: Json, value: MobileV2SequencedFrame): Jso
 
 private fun requireMutationIdentity(id: String, conversationId: String, inputId: String) {
     MobileV2ContractValidation.requireCanonicalUuid(id, "id")
-    MobileV2ContractValidation.requireCanonicalUuid(conversationId, "conversationId")
+    MobileV2ContractValidation.requireConversationIdentifier(conversationId, "conversationId")
     MobileV2ContractValidation.requireCanonicalUuid(inputId, "inputId")
 }
 
@@ -701,7 +722,7 @@ private fun requireRunFrame(
     v2Seq: Long,
 ) {
     MobileV2ContractValidation.requireLegacyRunId(id, "id")
-    MobileV2ContractValidation.requireCanonicalUuid(conversationId, "conversationId")
+    MobileV2ContractValidation.requireConversationIdentifier(conversationId, "conversationId")
     MobileV2ContractValidation.requireLegacyRunId(runId, "runId")
     MobileV2ContractValidation.requireLegacyRunId(segmentTurnId, "segmentTurnId")
     require(id == runId) { "Sequenced model frame id must equal runId" }
@@ -715,7 +736,7 @@ private fun requireInputFrame(
     queueRevision: Long,
 ) {
     MobileV2ContractValidation.requireCanonicalUuid(id, "id")
-    MobileV2ContractValidation.requireCanonicalUuid(conversationId, "conversationId")
+    MobileV2ContractValidation.requireConversationIdentifier(conversationId, "conversationId")
     MobileV2ContractValidation.requireSafeInteger(v2Seq, field = "v2Seq")
     MobileV2ContractValidation.requireSafeInteger(queueRevision, field = "queueRevision")
 }
@@ -728,7 +749,7 @@ private fun requireQueueFrame(
     pendingFollowUpCount: Long,
 ) {
     id?.let { MobileV2ContractValidation.requireCanonicalUuid(it, "id") }
-    MobileV2ContractValidation.requireCanonicalUuid(conversationId, "conversationId")
+    MobileV2ContractValidation.requireConversationIdentifier(conversationId, "conversationId")
     MobileV2ContractValidation.requireSafeInteger(v2Seq, field = "v2Seq")
     MobileV2ContractValidation.requireSafeInteger(queueRevision, field = "queueRevision")
     MobileV2ContractValidation.requireSafeInteger(

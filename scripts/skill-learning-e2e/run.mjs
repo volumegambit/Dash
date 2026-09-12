@@ -263,6 +263,34 @@ try {
     md.slice(0, 120) || '(missing)',
   );
 
+  // --- 2b. The user is told, in the conversation ----------------------------
+  //
+  // The review finishes after the turn is terminal, so its result is carried as
+  // a `notice` message rather than a turn event. This asserts the user can
+  // actually SEE that something was learned, which is the whole point of
+  // surfacing it: a silent loop is indistinguishable from a broken one.
+  console.log('\n2b. notify — a notice lands in the conversation');
+  const messagesRes = await fetch(
+    `${gw.mgmtUrl}/conversations/${conversation.id}/messages?limit=50`,
+  );
+  const page = messagesRes.ok ? await messagesRes.json() : { items: [] };
+  const notices = (page.items ?? []).filter((m) => m.content?.type === 'notice');
+  for (const notice of notices) {
+    console.log(`   notice: [${notice.content.kind}] ${notice.content.text}`);
+  }
+  check(
+    notices.some((m) => m.content.kind === 'skill_learned'),
+    'the conversation carries a skill_learned notice',
+    'a message with content.type=notice and kind=skill_learned',
+    JSON.stringify((page.items ?? []).map((m) => m.content?.type)),
+  );
+  check(
+    notices.every((m) => typeof m.content.text === 'string' && m.content.text.length > 0),
+    'every notice carries display text',
+    'non-empty text on each notice',
+    JSON.stringify(notices.map((m) => m.content?.text)),
+  );
+
   // --- 3. A later session can see it ---------------------------------------
   console.log('\n3. carry — the learned skill is in the catalogue');
   const res = await fetch(`${gw.mgmtUrl}/agents/${agent.id}/skills`);

@@ -3,6 +3,7 @@ import type { UpgradeWebSocket } from 'hono/ws';
 import { GatewayAdmissionController } from './admission-controller.js';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { mountChatWs } from './chat-ws.js';
+import type { JsonBody } from './json-body.test-helpers.js';
 import { createLanMobileApp } from './lan-mobile-app.js';
 import { createGatewayManagementApp } from './management-api.js';
 import type { ResumableChatHub } from './resumable-chat-hub.js';
@@ -243,12 +244,12 @@ describe('mountWsTicketRoute', () => {
     });
 
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as JsonBody;
     expect(body.ticket).toMatch(/^[0-9a-f]{64}$/);
-    expect(new Date(body.expiresAt).toISOString()).toBe(body.expiresAt);
+    expect(new Date(String(body.expiresAt)).toISOString()).toBe(body.expiresAt);
     // The caller gets back the very store the route mints into — that identity
     // is what every `/ws/chat` mount depends on to redeem.
-    expect(wsTickets.redeem(body.ticket)).toBe(true);
+    expect(wsTickets.redeem(String(body.ticket))).toBe(true);
   });
 
   it('mints v1 and v2 tickets into the same single-use store for either socket mount', async () => {
@@ -266,8 +267,8 @@ describe('mountWsTicketRoute', () => {
     });
     expect(v1.status).toBe(200);
     expect(v2.status).toBe(200);
-    const v1Ticket = (await v1.json()).ticket as string;
-    const v2Ticket = (await v2.json()).ticket as string;
+    const v1Ticket = ((await v1.json()) as { ticket: string }).ticket;
+    const v2Ticket = ((await v2.json()) as { ticket: string }).ticket;
 
     expect(wsTickets.redeem(v2Ticket)).toBe(true);
     expect(wsTickets.redeem(v2Ticket)).toBe(false);
@@ -287,7 +288,7 @@ describe('mountWsTicketRoute', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(wsTickets.redeem((await res.json()).ticket)).toBe(true);
+    expect(wsTickets.redeem(String(((await res.json()) as JsonBody).ticket))).toBe(true);
   });
 
   it('still forwards other /mobile/v1 routes unchanged', async () => {
@@ -327,7 +328,7 @@ describe('mountWsTicketRoute against the real management app', () => {
       headers: { Authorization: `Bearer ${MOBILE_TOKEN}` },
     });
     expect(mobileAuthed.status).toBe(200);
-    const body = await mobileAuthed.json();
+    const body = (await mobileAuthed.json()) as JsonBody;
     expect(body.ticket).toMatch(/^[0-9a-f]{64}$/);
     expect(typeof body.expiresAt).toBe('string');
   });

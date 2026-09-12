@@ -5,7 +5,22 @@ export interface PoolEntry {
   backend: AgentBackend;
   agent: DashAgent;
   lastActive: number;
-  pinned: boolean;
+  /**
+   * How many turns are in flight on this entry. A COUNT, not a flag: two turns
+   * can overlap on one conversation (the legacy chat path, the management API
+   * and the channel bridge all reach `chat()` without the hub's turn lease),
+   * and with a boolean the first to finish would unpin an entry the second is
+   * still streaming — leaving `dropConversation` free to stop a live backend.
+   */
+  pins: number;
+  /**
+   * What this entry was BUILT from, when the caller's backend depends on
+   * something that can change between turns. A backend binds its tool set (and
+   * its MCP allow-list) at `start()`, so an entry whose signature no longer
+   * matches cannot be reused — see {@link dropConversation}. Unused for
+   * ordinary agent conversations, whose config is re-read per turn.
+   */
+  signature?: string;
 }
 
 export interface PoolLease {
@@ -75,7 +90,7 @@ export class ConversationPool {
   private pending = new Map<string, PendingCreation>();
   private retiring = new Map<string, RetiringGeneration>();
   private leaseRefs = new Map<string, LeaseRefState>();
-  private legacyPins = new Set<string>();
+  private legacyPins = new Map<string, number>();
   private entryAgents = new Map<string, string>();
   private slotEpochs = new Map<string, number>();
   private agentEpochs = new Map<string, number>();
@@ -209,7 +224,7 @@ export class ConversationPool {
 
     let oldest: RetiredEntry | undefined;
     for (const [key, entry] of this.pool) {
-      if (entry.pinned) continue;
+      if (entry.pins > 0) continue;
       if (!oldest || entry.lastActive < oldest.entry.lastActive) {
         oldest = { key, agentName: this.entryAgents.get(key) ?? key.split('/')[0], entry };
       }
@@ -256,8 +271,8 @@ export class ConversationPool {
         backend,
         agent,
         lastActive: Date.now(),
-        pinned:
-          (this.leaseRefs.get(creation.key)?.count ?? 0) > 0 || this.legacyPins.has(creation.key),
+        pins:
+          (this.leaseRefs.get(creation.key)?.count ?? 0) + (this.legacyPins.get(creation.key) ?? 0),
       };
       this.pool.set(creation.key, entry);
       this.entryAgents.set(creation.key, creation.agentName);
@@ -314,7 +329,7 @@ export class ConversationPool {
     refs.count++;
     this.leaseRefs.set(k, refs);
     const existing = this.pool.get(k);
-    if (existing) existing.pinned = true;
+    if (existing) existing.pins++;
 
     let entry: PoolEntry;
     try {
@@ -323,7 +338,7 @@ export class ConversationPool {
       if (this.pool.get(k) !== entry) {
         throw new PoolCreationRetiredError(agentName, conversationId);
       }
-      entry.pinned = true;
+      entry.pins = refs.count + (this.legacyPins.get(k) ?? 0);
     } catch (error) {
       this.releaseLeaseRef(k, refs);
       throw error;
@@ -349,7 +364,7 @@ export class ConversationPool {
     if (next > 0) this.leaseRefs.set(k, refs);
     else this.leaseRefs.delete(k);
     const entry = this.pool.get(k);
-    if (entry) entry.pinned = next > 0 || this.legacyPins.has(k);
+    if (entry) entry.pins = Math.max(0, next) + (this.legacyPins.get(k) ?? 0);
   }
 
   private retireEntry(key: string): RetiredEntry | undefined {
@@ -380,7 +395,7 @@ export class ConversationPool {
 
   private async stopEntry(entry: PoolEntry, abortPinned: boolean): Promise<unknown[]> {
     const errors: unknown[] = [];
-    if (abortPinned && entry.pinned) {
+    if (abortPinned && entry.pins > 0) {
       try {
         entry.backend.abort();
       } catch (error) {
@@ -414,16 +429,18 @@ export class ConversationPool {
 
   pin(agentName: string, conversationId: string): void {
     const k = this.key(agentName, conversationId);
-    this.legacyPins.add(k);
+    this.legacyPins.set(k, (this.legacyPins.get(k) ?? 0) + 1);
     const entry = this.pool.get(k);
-    if (entry) entry.pinned = true;
+    if (entry) entry.pins++;
   }
 
   unpin(agentName: string, conversationId: string): void {
     const k = this.key(agentName, conversationId);
-    this.legacyPins.delete(k);
+    const current = this.legacyPins.get(k) ?? 0;
+    if (current > 1) this.legacyPins.set(k, current - 1);
+    else this.legacyPins.delete(k);
     const entry = this.pool.get(k);
-    if (entry) entry.pinned = (this.leaseRefs.get(k)?.count ?? 0) > 0;
+    if (entry && current > 0) entry.pins--;
   }
 
   get(agentName: string, conversationId: string): PoolEntry | undefined {
@@ -432,6 +449,28 @@ export class ConversationPool {
 
   has(agentName: string, conversationId: string): boolean {
     return this.pool.has(this.key(agentName, conversationId));
+  }
+
+  /**
+   * Drop one idle conversation entry so the next acquisition rebuilds it.
+   * The entry is detached synchronously; a same-key create waits for stop().
+   */
+  dropConversation(agentName: string, conversationId: string): boolean {
+    const key = this.key(agentName, conversationId);
+    const entry = this.pool.get(key);
+    if (!entry || entry.pins > 0) return false;
+    const retired = this.retireEntry(key);
+    if (!retired) return false;
+    const retiring = this.beginRetirement(retired);
+    void Promise.resolve(retired.entry.backend.stop())
+      .catch((error) => {
+        retiring.error = error;
+      })
+      .finally(() => {
+        if (this.retiring.get(retiring.key) === retiring) this.retiring.delete(retiring.key);
+        retiring.resolve();
+      });
+    return true;
   }
 
   evictAgent(agentName: string): Promise<void> {
@@ -468,7 +507,7 @@ export class ConversationPool {
   async evictIdle(): Promise<void> {
     const toEvict: PoolEntry[] = [];
     for (const [key, entry] of this.pool) {
-      if (entry.pinned) continue;
+      if (entry.pins > 0) continue;
       const retired = this.retireEntry(key);
       if (retired) toEvict.push(retired.entry);
     }
@@ -485,7 +524,7 @@ export class ConversationPool {
   interruptAll(): void {
     const errors: unknown[] = [];
     for (const entry of this.pool.values()) {
-      if (!entry.pinned) continue;
+      if (entry.pins <= 0) continue;
       try {
         entry.backend.abort();
       } catch (error) {
@@ -565,7 +604,7 @@ export class ConversationPool {
     for (const [key, entry] of this.pool) {
       const agentName = key.split('/')[0];
       agents[agentName] = (agents[agentName] ?? 0) + 1;
-      if (entry.pinned) pinned++;
+      if (entry.pins > 0) pinned++;
     }
     return { size: this.pool.size, maxSize: this.maxSize, pinned, agents };
   }

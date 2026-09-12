@@ -1,0 +1,18 @@
+{
+  "id": "00000000-0000-4000-8000-000000000211",
+  "conversationId": "sub_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "turnId": "turn-notice-01",
+  "ordinal": 7,
+  "role": "assistant",
+  "status": "completed",
+  "content": {
+    "type": "notice",
+    "kind": "future_notice",
+    "text": "Unknown notice."
+  },
+  "createdAt": "2026-09-06T09:12:00.000Z",
+  "updatedAt": "2026-09-06T09:12:00.000Z",
+  "runId": "turn-notice-01",
+  "segmentIndex": 0,
+  "deliveryKind": "normal"
+}

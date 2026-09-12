@@ -121,6 +121,50 @@ extension AppDependenciesFactory {
     }
   }
 
+  /// Whether `ChatView` should render its `chat.scrollAnchor` probe — the
+  /// only way a UI test can observe that `.scrollPosition(id:)` is genuinely
+  /// tracking real `ChatMessageState.id`s (Task 4 review fix, Important 1).
+  /// Scoped to the single scenario that needs it, so no other UI suite ever
+  /// sees the extra accessibility element.
+  enum UITestProbe {
+    @MainActor
+    static let isScrollAnchorProbeEnabled: Bool = {
+      let environment = ProcessInfo.processInfo.environment
+      let arguments = ProcessInfo.processInfo.arguments
+      let raw =
+        environment["DASH_UI_TEST_SCENARIO"]
+        ?? arguments.uiTestValue(after: "--dash-ui-test-scenario")
+      return raw == UITestScenario.longTranscript.rawValue
+    }()
+
+    /// Whether this process is running a UI-test scenario at all. Used by
+    /// `ConversationWindowSceneGuard` to close conversation windows that
+    /// iPadOS RESTORED from a previous run's scene session.
+    ///
+    /// Why this exists: scene sessions outlive the app, and
+    /// `XCUIApplication.terminate()` does NOT destroy them. Measured on the
+    /// iPad 26.5 simulator, a run that opens a conversation window leaves
+    /// that scene behind, and the NEXT launch comes up with the chat-only
+    /// window frontmost and the main window demoted to "1 Hidden Window" —
+    /// which broke the two `IPadUITests` cases that happened to run next
+    /// (6 tests, 2 failures) even though nothing was wrong with the app.
+    /// Every other piece of cross-launch state the suite depends on is
+    /// already isolated per launch by `DASH_UI_TEST_DATA_IDENTIFIER`; scene
+    /// sessions are the one thing that identifier cannot reach.
+    ///
+    /// Deliberately NOT a change to shipping behaviour: restoring the
+    /// last-used window is what iPadOS does for every multi-window app, and
+    /// Dash keeps doing it in Release. This only makes the UI-test harness's
+    /// "each launch starts from the main window" assumption true.
+    @MainActor
+    static let isRunningUITestScenario: Bool = {
+      let environment = ProcessInfo.processInfo.environment
+      let arguments = ProcessInfo.processInfo.arguments
+      return environment["DASH_UI_TEST_SCENARIO"] != nil
+        || arguments.uiTestValue(after: "--dash-ui-test-scenario") != nil
+    }()
+  }
+
   enum UITestScenarioError: Error, Equatable, Sendable {
     case unsupported(String)
   }
@@ -169,6 +213,21 @@ extension AppDependenciesFactory {
     /// page (ordinals 1–10) behind `longTranscriptOlderCursor` for "Load
     /// earlier", and a send that streams 90 text deltas over ~11s so a UI test
     /// can scroll mid-stream. Every other scenario keeps its 2-message thread.
+    ///
+    /// MERGE NOTE (2026-09-07): two sessions independently created a
+    /// `long-transcript` scenario for the same reason — `.pairedOnline`'s
+    /// two-message fixture cannot overflow a viewport, so there is nothing to
+    /// scroll away from, and adding filler to `.pairedOnline` was tried once
+    /// and broke every test built on the shared fixture. They are now ONE
+    /// case backed by main's fixture, which is a strict superset of the iPad
+    /// branch's 40 all-`user` `filler-` rows: it has the same 40 visible
+    /// messages plus a second page for "Load earlier" and an ~11s streamed
+    /// reply. `IPadUITests.testScrollingAwayFromTheBottomSurvivesRotation`
+    /// was repointed from the `filler-` id prefix to `long-` accordingly.
+    ///
+    /// It is also the only scenario that renders the `chat.scrollAnchor`
+    /// probe (`ChatView.scrollAnchorProbe`), so no other suite sees an extra
+    /// accessibility element.
     case longTranscript = "long-transcript"
 
     /// Explicit enumeration (rather than `self != .unpaired`) so adding a new
@@ -314,6 +373,25 @@ extension AppDependenciesFactory {
 
     /// Agent memory (Task 19): seeded per agent so the detail screen's
     /// Memory section has both a `user` and a `project` bucket to group.
+    static let skills: [String: [SkillDTO]] = [
+      "research-agent": [
+        SkillDTO(
+          name: "write-files",
+          description: "Use when writing files in this project",
+          trigger: nil,
+          source: .agent,
+          content: "- Always use printf instead of echo when writing files."
+        ),
+        SkillDTO(
+          name: "deep-research",
+          description: "Use for multi-source research tasks",
+          trigger: "research",
+          source: .plugin,
+          content: nil
+        ),
+      ]
+    ]
+
     static let memories: [String: [MemoryInfoDTO]] = [
       "research-agent": [
         memory(
@@ -584,13 +662,45 @@ extension AppDependenciesFactory {
       ]
     }
 
+    /// The id of the scripted NOTIFICATION turn on the parent conversation.
+    ///
+    /// §8.5's row: the gateway starts a turn on the orchestrator's own
+    /// conversation to wake it with a background child's result, and the body
+    /// is a machine-written `<subagent-result>` envelope the user never typed.
+    /// It exists so `chat.notification.<messageId>` — named in the D5 brief's
+    /// identifier list and in its Step 1 — is queried by something. Before
+    /// this, `NotificationRowView` was reachable in the app and rendered by no
+    /// test at any level.
+    static let notificationID = "ui-notification"
+
     static func cachedMessages(for scenario: UITestScenario) -> [ConversationMessageDTO] {
       #if DEBUG
         if let batch = UITestLaunchOptions.toolGallery {
           return toolGalleryMessages(batch)
         }
       #endif
-      if scenario == .streamingReconnect || scenario == .pendingRecovery { return [] }
+      if scenario == .streamingReconnect {
+        return [
+          message(
+            id: notificationID,
+            turnID: "ui-notification-turn",
+            role: .user,
+            status: .completed,
+            // `<summary>` on purpose: `notificationRowLabel` prefers it over
+            // the sender form and over the fallback, so the rendered label is
+            // deterministic and the UI test can assert the SUMMARY rather than
+            // the envelope.
+            text:
+              "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
+              + "<subagent-result id=\"ui-subagent\">"
+              + "<summary>researcher finished the launch checklist review</summary>"
+              + "</subagent-result>",
+            ordinal: 1,
+            origin: MessageOrigin.notification.rawValue
+          )
+        ]
+      }
+      if scenario == .pendingRecovery { return [] }
       if scenario == .longTranscript { return longTranscriptMessages }
       if scenario == .remoteBusy {
         return [
@@ -697,6 +807,126 @@ extension AppDependenciesFactory {
       )
     }
 
+    /// The id of the child `streaming-reconnect` spawns. Shared by the
+    /// scripted retired-mirror/`subagent_started` pair, by the row's
+    /// accessibility identifier, and by the child conversation this transcript
+    /// belongs to — because a worker id IS the child's conversation id.
+    static let subagentID = "ui-subagent"
+
+    /// The child's OWN transcript, served by `subagentTranscript(childID:)`
+    /// when a row is expanded (design 8.3).
+    ///
+    /// Two rows, both load-bearing:
+    ///
+    /// 1. A `origin: "parent"` user row — §8.5's muted "from orchestrator"
+    ///    line. It must keep its text (that text is the instruction the child
+    ///    is working from) and must offer neither Retry nor Edit & Resend.
+    /// 2. An assistant row whose `tool_use` id is `ui-tool` — the SAME id the
+    ///    parent's own tool card uses. That collision is deliberate: a
+    ///    `tool_use` id is only unique within its conversation, so the nested
+    ///    card answering to `chat.subagent.ui-subagent.tool.ui-tool` while the
+    ///    parent's answers to `chat.tool.ui-tool` is what proves §8.6's
+    ///    namespacing in the running app.
+    static func subagentMessages() -> [ConversationMessageDTO] {
+      [
+        ConversationMessageDTO(
+          id: "ui-subagent-brief",
+          conversationId: subagentID,
+          turnId: "ui-subagent-turn",
+          ordinal: 1,
+          role: .user,
+          status: .completed,
+          content: .user(text: "Check whether the launch checklist is complete", images: nil),
+          createdAt: now,
+          updatedAt: now,
+          origin: MessageOrigin.parent.rawValue
+        ),
+        ConversationMessageDTO(
+          id: "ui-subagent-reply",
+          conversationId: subagentID,
+          turnId: "ui-subagent-turn",
+          ordinal: 2,
+          role: .assistant,
+          status: .completed,
+          content: .assistant(events: [
+            .toolUseStart(id: "ui-tool", name: "search", input: .object(["query": .string("checklist")])),
+            .toolResult(
+              id: "ui-tool",
+              name: "search",
+              content: "Checklist is 4 of 5 done",
+              isError: false,
+              details: nil
+            ),
+            .response(
+              content: "Four of five items are done.",
+              usage: UsageDTO(
+                inputTokens: 3,
+                outputTokens: 5,
+                cacheReadTokens: nil,
+                cacheWriteTokens: nil
+              )
+            ),
+          ]),
+          createdAt: now.addingTimeInterval(1),
+          updatedAt: now.addingTimeInterval(1)
+        ),
+      ]
+    }
+
+    /// The id of the SECOND child `streaming-reconnect` spawns, adjacent to
+    /// the first so the two render as one parallel group (§8.2), and parked on
+    /// a question so its inline reply composer renders (§8.1).
+    static let secondSubagentID = "ui-subagent-2"
+
+    /// What `GET /conversations/{id}/subagents` serves for the shared
+    /// conversation — the tasks sheet's WHOLE model (§8.4).
+    ///
+    /// Both children are `background: true` and both are LIVE, deliberately:
+    /// that is the case the sheet exists for. A background child's finish
+    /// never reaches the parent's event stream, so the fold can only ever read
+    /// it as running, and the list is the only surface that can tell the
+    /// truth. It is also served BEFORE any turn is sent, which is honest —
+    /// these children outlive the turn that spawned them, so a client opening
+    /// the conversation later must still see them.
+    static func subagentListEntries() -> [SubagentListEntryDTO] {
+      [
+        SubagentListEntryDTO(
+          id: subagentID,
+          name: "scout",
+          type: "researcher",
+          description: "Check launch readiness",
+          status: "running",
+          background: true,
+          depth: 1,
+          startedAt: subagentStartedAt,
+          endedAt: nil,
+          usage: nil,
+          toolCallCount: 3,
+          report: nil,
+          oneShot: false
+        ),
+        SubagentListEntryDTO(
+          id: secondSubagentID,
+          name: nil,
+          type: "reviewer",
+          description: "Double-check the rollout steps",
+          status: "waiting_input",
+          background: true,
+          depth: 1,
+          startedAt: subagentStartedAt.addingTimeInterval(2),
+          endedAt: nil,
+          usage: nil,
+          toolCallCount: 1,
+          report: nil,
+          oneShot: false
+        ),
+      ]
+    }
+
+    /// Shared by the scripted `subagent_started` and by the REST list, so the
+    /// row and the sheet cannot disagree about when a child began.
+    static let subagentStartedAt = Date(timeIntervalSince1970: 1_788_480_000)
+
     static func message(
       id: String,
       turnID: String,
@@ -705,7 +935,8 @@ extension AppDependenciesFactory {
       text: String = "",
       images: [MessageImage]? = nil,
       events: [AgentEvent] = [],
-      ordinal: Int
+      ordinal: Int,
+      origin: String? = nil
     ) -> ConversationMessageDTO {
       ConversationMessageDTO(
         id: id,
@@ -716,7 +947,8 @@ extension AppDependenciesFactory {
         status: status,
         content: role == .user ? .user(text: text, images: images) : .assistant(events: events),
         createdAt: now.addingTimeInterval(TimeInterval(ordinal)),
-        updatedAt: now.addingTimeInterval(TimeInterval(ordinal))
+        updatedAt: now.addingTimeInterval(TimeInterval(ordinal)),
+        origin: origin
       )
     }
 
@@ -1332,7 +1564,11 @@ extension AppDependenciesFactory {
     private var cursors: [String: Int] = [:]
     private var retainedRequests: [String: String] = [:]
     private var memoryValues: [String: [MemoryInfoDTO]] = UITestScenarioFixtures.memories
+    private var skillValues: [String: [SkillDTO]] = UITestScenarioFixtures.skills
     private var didFailSleepingAgentEnable = false
+    /// Mutable, because `stopSubagent` really terminalizes a row here the way
+    /// the route does — that is what lets a UI test watch the badge count down.
+    private var subagentEntries: [SubagentListEntryDTO] = []
 
     init(scenario: UITestScenario, dataIdentifier: String) {
       self.dataIdentifier = dataIdentifier
@@ -1353,6 +1589,9 @@ extension AppDependenciesFactory {
       if scenario == .pendingRecovery || scenario == .activeRecovery {
         pendingSends[conversationValues[0].id] = UITestScenarioFixtures.recoveredPendingSend
         drafts[conversationValues[0].id] = UITestScenarioFixtures.recoveredNewerDraft
+      }
+      if scenario == .streamingReconnect {
+        subagentEntries = UITestScenarioFixtures.subagentListEntries()
       }
     }
 
@@ -1378,6 +1617,7 @@ extension AppDependenciesFactory {
       cursors.removeAll()
       retainedRequests.removeAll()
       memoryValues.removeAll()
+      skillValues.removeAll()
       _ = dataIdentifier
     }
 
@@ -1673,6 +1913,10 @@ extension AppDependenciesFactory {
       memoryValues[agentID] ?? []
     }
 
+    func skills(for agentID: String) -> [SkillDTO] {
+      skillValues[agentID] ?? []
+    }
+
     func deleteMemory(agentID: String, name: String) throws {
       guard var values = memoryValues[agentID],
         values.contains(where: { $0.name == name })
@@ -1859,6 +2103,79 @@ extension AppDependenciesFactory {
       return []
     }
 
+    func subagentTranscript(childID: String) throws -> SubagentTranscriptSnapshot {
+      guard subagentEntries.contains(where: { $0.id == childID }) else {
+        throw GatewayError.notFound
+      }
+      return SubagentTranscriptSnapshot(
+        messages: childID == UITestScenarioFixtures.subagentID
+          ? UITestScenarioFixtures.subagentMessages()
+          : [],
+        // Not one-shot, so the body composer is offered. The waiting-input
+        // reply is enabled either way — a one-shot child parked on
+        // `ask_orchestrator` can still be answered.
+        oneShot: false
+      )
+    }
+
+    func subagents(conversationID: String) -> [SubagentListEntryDTO] {
+      guard conversationID == UITestScenarioFixtures.sharedConversation.id else { return [] }
+      return subagentEntries
+    }
+
+    func stopSubagent(id: String) throws -> String {
+      guard let index = subagentEntries.firstIndex(where: { $0.id == id }) else {
+        throw GatewayError.notFound
+      }
+      let entry = subagentEntries[index]
+      // The route 409s a child that is ALREADY terminal rather than silently
+      // succeeding, so a client that raced the child's own finish learns which
+      // of the two won. Reproduced here verbatim
+      // (`apps/gateway/src/subagent-management.ts:424-431`).
+      guard SubagentCardStatus(wire: entry.status).isTerminal == false else {
+        throw GatewayError.validation("Sub-agent \(id) is already \(entry.status)")
+      }
+      subagentEntries[index] = SubagentListEntryDTO(
+        id: entry.id,
+        name: entry.name,
+        type: entry.type,
+        description: entry.description,
+        status: "cancelled",
+        background: entry.background,
+        depth: entry.depth,
+        startedAt: entry.startedAt,
+        endedAt: UITestScenarioFixtures.now,
+        usage: entry.usage,
+        toolCallCount: entry.toolCallCount,
+        report: entry.report,
+        oneShot: entry.oneShot
+      )
+      return "cancelled"
+    }
+
+    func resumeSubagent(id: String, message: String, requestID: String) throws {
+      guard let entry = subagentEntries.first(where: { $0.id == id }) else {
+        throw GatewayError.notFound
+      }
+      // A TERMINAL child is refused, reproducing `coordinator.resumeChild`'s
+      // own text (`packages/swarm/src/coordinator.ts:717`): a finished child
+      // has no live handle, so a resume goes down the rebuild path and a grant
+      // that cannot be rebuilt is refused with a 409. This is reachable from
+      // the tasks sheet by design — `SubagentTaskRow.canResume` offers Resume
+      // on every non-one-shot child including one that has finished — and it
+      // is the refusal that had no render site at all before D6 fix round 1.
+      guard SubagentCardStatus(wire: entry.status).isTerminal == false else {
+        throw GatewayError.validation(
+          "Agent \"\(entry.name ?? entry.id)\" cannot be resumed: its grant cannot be rebuilt."
+        )
+      }
+      // Otherwise the scripted gateway accepts it; the assertion that matters
+      // is in the app, where the optimistic row must render as an orchestrator
+      // row carrying the user's own text.
+      _ = message
+      _ = requestID
+    }
+
     func shutdown() {}
   }
 
@@ -1934,6 +2251,12 @@ extension AppDependenciesFactory {
 
     func connect() {}
 
+    /// The UI-test harness has no gateway to subscribe against; a
+    /// server-initiated turn is scripted directly onto `continuation`.
+    func subscribe(agentID: String, conversationID: String) {}
+
+    func unsubscribe(agentID: String, conversationID: String) {}
+
     func sendTurn(
       id: String,
       agentID: String,
@@ -2008,7 +2331,10 @@ extension AppDependenciesFactory {
           userMessageId: "user-ui-turn",
           assistantMessageId: "assistant-ui-turn",
           revision: 2,
-          seq: takeSequence()
+          seq: takeSequence(),
+          origin: nil,
+          kind: nil,
+          requestId: nil
         )
       )
       guard await pause(.milliseconds(100)) else { return }
@@ -2074,8 +2400,14 @@ extension AppDependenciesFactory {
       yieldEvent(
         turnID: turnID,
         conversationID: conversationID,
+        // A PERSISTED PRE-D8 shape: the retired `worker_spawned` mirror ahead
+        // of the `subagent_started` that is now the only anchor. Nothing emits
+        // this pair any more; the scenario keeps it because
+        // `ConversationUITests` asserting exactly ONE
+        // `chat.subagent.ui-subagent` element is the D8 drop policy proven in
+        // the running app, not just in the reducer.
         .workerSpawned(
-          workerId: "ui-worker",
+          workerId: "ui-subagent",
           runId: "ui-run",
           role: "researcher",
           brief: "Check launch readiness",
@@ -2085,13 +2417,84 @@ extension AppDependenciesFactory {
       yieldEvent(
         turnID: turnID,
         conversationID: conversationID,
-        .workerStatus(
-          workerId: "ui-worker",
-          runId: "ui-run",
-          role: "researcher",
+        .subagentStarted(
+          subagentId: "ui-subagent",
+          name: "scout",
+          subagentType: "researcher",
+          description: "Check launch readiness",
+          prompt: "Check whether the launch checklist is complete",
+          // `background: true` is load-bearing for the UI assertions, not
+          // decoration. This scenario's child never reports a terminal event
+          // and the parent turn DOES end, so a foreground child would be
+          // end-of-stream terminalized to `cancelled` mid-test — the row's
+          // label would depend on whether the assertion won the race against
+          // the scripted `done`. A background child is exempt (it is spawned
+          // to outlive its turn), so the row reads "Running" in both phases,
+          // and the exemption is pinned in the running app rather than only in
+          // the reducer.
+          model: "openai/gpt-5",
+          background: true,
+          depth: 1,
+          startedAt: Date(timeIntervalSince1970: 1_788_480_000),
+          isolation: nil,
+          parentTurnId: turnID
+        )
+      )
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        .subagentProgress(
+          subagentId: "ui-subagent",
           status: .running,
+          toolCallCount: 3,
+          elapsedMs: 7200,
           detail: "Reviewing the checklist",
           question: nil
+        )
+      )
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        // A SECOND child spawned inside the same message with nothing but
+        // sub-agent chrome in between, which is exactly §8.2's adjacency rule
+        // (`SubagentDraft.chromeRank`) — so the two render inside one parallel
+        // group with a summary line and a dot strip. Nothing had ever rendered
+        // that chrome in a UI test before; every existing sub-agent test ran
+        // against a cluster of ONE, where the group header does not exist.
+        //
+        // `background: true` for the same reason the first child is: this
+        // scenario's children never report a terminal event and the parent turn
+        // does end, so a foreground child would be end-of-stream terminalized
+        // to `cancelled` mid-test — and D1's rule that a question never
+        // survives onto a terminal row would then clear the reply below.
+        .subagentStarted(
+          subagentId: "ui-subagent-2",
+          name: nil,
+          subagentType: "reviewer",
+          description: "Double-check the rollout steps",
+          prompt: "Double-check the rollout steps",
+          model: "openai/gpt-5",
+          background: true,
+          depth: 1,
+          startedAt: Date(timeIntervalSince1970: 1_788_480_002),
+          isolation: nil,
+          parentTurnId: turnID
+        )
+      )
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        // Parks the second child on a question, so §8.1's inline reply
+        // composer RENDERS. D5 closed with that composer never having been
+        // rendered by any test — only what it sends was pinned, at feature
+        // level — and this is the cheapest thing that closes it.
+        .subagentProgress(
+          subagentId: "ui-subagent-2",
+          status: .waitingInput,
+          toolCallCount: 1,
+          elapsedMs: 3000,
+          detail: nil,
+          question: "Should the rollback step come first?"
         )
       )
       yieldEvent(
@@ -2144,7 +2547,10 @@ extension AppDependenciesFactory {
           userMessageId: "user-ui-turn",
           assistantMessageId: "assistant-ui-turn",
           revision: 2,
-          seq: takeSequence()
+          seq: takeSequence(),
+          origin: nil,
+          kind: nil,
+          requestId: nil
         )
       )
       let reply = UITestScenarioFixtures.longTranscriptStreamedReply

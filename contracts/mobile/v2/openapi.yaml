@@ -376,7 +376,7 @@ paths:
       - name: conversationId
         in: path
         required: true
-        schema: { $ref: '#/components/schemas/CanonicalUuid' }
+        schema: { $ref: '#/components/schemas/ConversationIdentifier' }
     get:
       operationId: replayConversationEvents
       parameters:
@@ -443,7 +443,7 @@ components:
       name: id
       in: path
       required: true
-      schema: { $ref: '#/components/schemas/CanonicalUuid' }
+      schema: { $ref: '#/components/schemas/ConversationIdentifier' }
     ConversationAgentId:
       name: agentId
       in: query
@@ -524,6 +524,10 @@ components:
       type: string
       format: uuid
       pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+    ConversationIdentifier:
+      description: A user conversation UUID or a sub-agent conversation id (`sub_<ulid>`).
+      type: string
+      pattern: '^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|sub_[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26})$'
     LegacyRunId:
       type: string
       minLength: 1
@@ -790,12 +794,46 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/MobileAgentEvent'
+        - type: object
+          additionalProperties: false
+          required: [type, kind, text]
+          properties:
+            type: { const: notice }
+            kind: { enum: [skill_learned, memory_saved] }
+            text: { type: string }
+    SubagentInfo:
+      type: object
+      additionalProperties: false
+      required: [type, status, description, prompt, model, background, depth, startedAt, toolCallCount, oneShot]
+      properties:
+        type: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1 }
+        status: { enum: [running, waiting_input, done, failed, cancelled, interrupted, max_turns] }
+        description: { type: string }
+        prompt: { type: string }
+        model: { type: string }
+        background: { type: boolean }
+        isolation: { const: worktree }
+        depth: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        usage:
+          type: object
+          additionalProperties: false
+          required: [inputTokens, outputTokens]
+          properties:
+            inputTokens: { type: integer, minimum: 0, maximum: 9007199254740991 }
+            outputTokens: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        toolCallCount: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        report: { type: string }
+        oneShot: { type: boolean }
+        workspace: { type: string, minLength: 1 }
     MobileV2ConversationSummary:
       type: object
       additionalProperties: false
-      required: [id, agentId, agentName, title, revision, status, activeTurnId, owningIssueId, projectId, lastSeq, lastMessagePreview, createdAt, updatedAt, queuePaused, queueRevision, pendingFollowUpCount, v2LastSeq]
+      required: [id, agentId, agentName, title, revision, status, activeTurnId, owningIssueId, projectId, lastSeq, lastMessagePreview, createdAt, updatedAt, kind, queuePaused, queueRevision, pendingFollowUpCount, v2LastSeq]
       properties:
-        id: { $ref: '#/components/schemas/CanonicalUuid' }
+        id: { $ref: '#/components/schemas/ConversationIdentifier' }
         agentId: { type: string, minLength: 1 }
         agentName: { type: string, minLength: 1 }
         title: { type: string }
@@ -812,6 +850,10 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         deletedAt: { type: string, format: date-time }
+        kind: { enum: [user, subagent] }
+        parentConversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
+        parentTurnId: { type: string, minLength: 1 }
+        subagent: { $ref: '#/components/schemas/SubagentInfo' }
         queuePaused: { type: boolean }
         queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
         pendingFollowUpCount: { type: integer, minimum: 0, maximum: 9007199254740991 }
@@ -822,7 +864,7 @@ components:
       required: [id, conversationId, turnId, ordinal, role, status, content, createdAt, updatedAt, runId, segmentIndex, deliveryKind]
       properties:
         id: { $ref: '#/components/schemas/CanonicalUuid' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         turnId: { $ref: '#/components/schemas/LegacyRunId' }
         ordinal: { type: integer, minimum: 1, maximum: 9007199254740991 }
         role: { enum: [user, assistant] }
@@ -835,6 +877,7 @@ components:
         segmentIndex: { type: integer, minimum: 0, maximum: 9007199254740991 }
         deliveryKind: { enum: [normal, steer, follow_up] }
         deliveryStatus: { enum: [pending, delivered, not_delivered] }
+        origin: { enum: [user, notification, parent] }
     MobileV2ConversationPage:
       type: object
       additionalProperties: false
@@ -903,19 +946,26 @@ components:
         queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
         v2ThroughSeq: { type: integer, minimum: 0, maximum: 9007199254740991 }
     ChatAccepted:
+      description: >-
+        `origin`, `kind`, and `requestId` are optional live metadata. Replay omits all three;
+        clients recover durable origin and kind from the conversation/message projections and
+        must treat requestId as a live-only correlation.
       type: object
       additionalProperties: false
       required: [type, id, conversationId, runId, segmentTurnId, v2Seq, userMessageId, assistantMessageId, revision]
       properties:
         type: { const: accepted }
         id: { $ref: '#/components/schemas/LegacyRunId' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         runId: { $ref: '#/components/schemas/LegacyRunId' }
         segmentTurnId: { $ref: '#/components/schemas/LegacyRunId' }
         v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
         userMessageId: { $ref: '#/components/schemas/CanonicalUuid' }
         assistantMessageId: { $ref: '#/components/schemas/CanonicalUuid' }
         revision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        origin: { enum: [user, notification, parent] }
+        kind: { enum: [user, subagent] }
+        requestId: { type: string, minLength: 1, maxLength: 256 }
     ChatEvent:
       type: object
       additionalProperties: false
@@ -923,7 +973,7 @@ components:
       properties:
         type: { const: event }
         id: { $ref: '#/components/schemas/LegacyRunId' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         runId: { $ref: '#/components/schemas/LegacyRunId' }
         segmentTurnId: { $ref: '#/components/schemas/LegacyRunId' }
         v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
@@ -935,7 +985,7 @@ components:
       properties:
         type: { const: done }
         id: { $ref: '#/components/schemas/LegacyRunId' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         runId: { $ref: '#/components/schemas/LegacyRunId' }
         segmentTurnId: { $ref: '#/components/schemas/LegacyRunId' }
         v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
@@ -947,7 +997,7 @@ components:
       properties:
         type: { const: error }
         id: { $ref: '#/components/schemas/LegacyRunId' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         runId: { $ref: '#/components/schemas/LegacyRunId' }
         segmentTurnId: { $ref: '#/components/schemas/LegacyRunId' }
         v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
@@ -961,7 +1011,7 @@ components:
       properties:
         type: { const: input_accepted }
         id: { $ref: '#/components/schemas/CanonicalUuid' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
         queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
         input: { $ref: '#/components/schemas/MobileV2PendingInput' }
@@ -972,7 +1022,7 @@ components:
       properties:
         type: { const: input_updated }
         id: { $ref: '#/components/schemas/CanonicalUuid' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
         queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
         input: { $ref: '#/components/schemas/MobileV2PendingInput' }
@@ -983,7 +1033,7 @@ components:
       properties:
         type: { const: input_removed }
         id: { $ref: '#/components/schemas/CanonicalUuid' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
         queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
         input: { $ref: '#/components/schemas/MobileV2PendingInput' }
@@ -994,7 +1044,7 @@ components:
       properties:
         type: { const: input_delivered }
         id: { $ref: '#/components/schemas/CanonicalUuid' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
         queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
         input: { $ref: '#/components/schemas/MobileV2PendingInput' }
@@ -1009,7 +1059,7 @@ components:
       properties:
         type: { const: input_failed }
         id: { $ref: '#/components/schemas/CanonicalUuid' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
         queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
         input: { $ref: '#/components/schemas/MobileV2PendingInput' }
@@ -1020,7 +1070,7 @@ components:
       properties:
         type: { const: queue_paused }
         id: { $ref: '#/components/schemas/CanonicalUuid' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
         queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
         queuePaused: { type: boolean }
@@ -1032,7 +1082,7 @@ components:
       properties:
         type: { const: queue_resumed }
         id: { $ref: '#/components/schemas/CanonicalUuid' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
         queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
         queuePaused: { type: boolean }
@@ -1182,7 +1232,7 @@ components:
         seq: { type: integer, minimum: 1, maximum: 9007199254740991 }
         msgId: { type: string, minLength: 1 }
         agentId: { type: string, minLength: 1 }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         timestamp: { type: string, format: date-time }
         payload:
           $ref: '#/components/schemas/ReplayPayload'
@@ -1201,7 +1251,7 @@ components:
       required: [type, conversationId, revision]
       properties:
         type: { const: 'conversation:changed' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
     ConversationDeletedEvent:
       type: object
@@ -1209,7 +1259,7 @@ components:
       required: [type, conversationId, revision]
       properties:
         type: { const: 'conversation:deleted' }
-        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
     WsTicketResponse:
       type: object

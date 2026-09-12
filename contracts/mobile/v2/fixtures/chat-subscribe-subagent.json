@@ -1,0 +1,7 @@
+{
+  "type": "subscribe_conversation",
+  "id": "00000000-0000-4000-8000-000000000051",
+  "agentId": "agent-01",
+  "conversationId": "sub_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "sinceV2Seq": 6
+}

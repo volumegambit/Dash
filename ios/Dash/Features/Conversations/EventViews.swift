@@ -24,19 +24,38 @@ struct AssistantEventViews: View {
   let isAnsweringEnabled: Bool
   let onAnswer: (String, String) -> Void
   let exposesResponseToAccessibility: Bool
+  /// Namespace for this projection's accessibility identifiers (§8.6).
+  /// `"chat"` in the parent's transcript, `"chat.subagent.<childId>"` inside a
+  /// child's — without it a nested tool card would answer to the same
+  /// `chat.tool.<toolId>` as a card in the parent, and a `tool_use` id is only
+  /// unique within its own conversation.
+  let identifierPrefix: String
+  /// How deep in the sub-agent tree this projection sits: 0 in the
+  /// orchestrator's own transcript, 1 inside a child's. Compared against
+  /// `maxSubagentDepth` to decide whether a row rendered here may open a
+  /// transcript of its own — mirroring web's
+  /// `nested={options.depth < MAX_SUBAGENT_DEPTH}`.
+  let subagentDepth: Int
+  let subagentInteraction: SubagentInteraction
 
   init(
     projection: AssistantMessageProjection,
     status: MessageStatus,
     isAnsweringEnabled: Bool = true,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
-    exposesResponseToAccessibility: Bool
+    exposesResponseToAccessibility: Bool,
+    identifierPrefix: String = "chat",
+    subagentDepth: Int = 0,
+    subagentInteraction: SubagentInteraction = .inert
   ) {
     self.projection = projection
     self.status = status
     self.isAnsweringEnabled = isAnsweringEnabled
     self.onAnswer = onAnswer
     self.exposesResponseToAccessibility = exposesResponseToAccessibility
+    self.identifierPrefix = identifierPrefix
+    self.subagentDepth = subagentDepth
+    self.subagentInteraction = subagentInteraction
   }
 
   var body: some View {
@@ -50,78 +69,98 @@ struct AssistantEventViews: View {
         TypingIndicatorView()
       }
 
-      if !projection.thinking.isEmpty {
-        ThinkingView(
-          thinking: projection.thinking,
-          isCollapsed: projection.isThinkingCollapsed
-        )
-      }
-
-      if !projection.text.isEmpty {
-        HStack(alignment: .bottom, spacing: 2) {
-          if exposesResponseToAccessibility {
-            MarkdownTextView(text: projection.text)
-              .accessibilityElement(children: .combine)
-              .accessibilityLabel(markdownPlainTextAccessibilityLabel(for: projection.text))
-              .accessibilityIdentifier("chat.final.response")
-          } else {
-            MarkdownTextView(text: projection.text)
-              .accessibilityHidden(true)
-          }
-
-          // Trailing caret (audit #6): a render-time-only adornment, never
-          // written into `projection.text` — that string also backs the
-          // a11y label above, `assistantContextMenuItems`' Copy/Share text
-          // in `MessageViews.swift`, and markdown re-parsing on every
-          // render, so mutating it would corrupt all three.
-          if status == .streaming {
-            StreamingCaretView()
-          }
-        }
-      }
-
-      // Consecutive tool calls are one action, not several messages (chat UI
-      // polish 2026-09-05). They used to inherit this stack's 12pt
-      // inter-block spacing, so three `gog` calls from a single turn read as
-      // three separate events and consumed half the screen. 4pt groups them
-      // as a run while still separating them from the prose above and below.
-      if projection.toolCards.isEmpty == false {
-        VStack(alignment: .leading, spacing: 4) {
-          ForEach(projection.toolCards) { tool in
-            ToolCardView(tool: tool)
-          }
-        }
-      }
-
-      ForEach(projection.workerCards) { worker in
-        WorkerCardView(worker: worker)
-      }
-
-      ForEach(projection.statusRows) { row in
-        if row.kind == .unknown {
-          UnknownEventView(type: row.unknownType ?? "unknown")
-        } else {
-          StatusRowView(row: row)
-        }
-      }
-
-      if let question = projection.pendingQuestion {
-        QuestionView(
-          question: question,
-          isAnsweringEnabled: isAnsweringEnabled,
-          onAnswer: onAnswer
-        )
+      ForEach(Array(projection.timeline.enumerated()), id: \.offset) { index, block in
+        timelineView(block, isLastText: index == lastTextIndex)
       }
 
       // Chrome trim (audit #17): usage is no longer rendered per-turn.
-      // `UsageView` itself stays — `WorkerCardView` still shows it for a
-      // completed worker's own usage, a different (non-noisy) context.
+      // `UsageView` itself stays — `SubagentCardView` still shows it for a
+      // completed child's own usage, a different (non-noisy) context.
 
       if let terminal = projection.terminal, terminal.isChromeWorthy {
         TerminalView(terminal: terminal)
       }
     }
   }
+
+  private var lastTextIndex: Int? {
+    projection.timeline.lastIndex {
+      if case .text = $0 { return true }
+      return false
+    }
+  }
+
+  @ViewBuilder
+  private func timelineView(_ block: AssistantTimelineBlock, isLastText: Bool) -> some View {
+    switch block {
+    case let .thinking(thinking):
+      ThinkingView(thinking: thinking, isCollapsed: projection.isThinkingCollapsed)
+    case let .text(text):
+      HStack(alignment: .bottom, spacing: 2) {
+        if exposesResponseToAccessibility {
+          MarkdownTextView(text: text)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(markdownPlainTextAccessibilityLabel(for: text))
+            .accessibilityIdentifier(isLastText ? "chat.final.response" : "chat.response.segment")
+        } else {
+          MarkdownTextView(text: text).accessibilityHidden(true)
+        }
+        if status == .streaming && isLastText { StreamingCaretView() }
+      }
+    case let .tool(tool):
+      // The prefix is what makes a CHILD's tool card addressable separately
+      // from its parent's (design §8.3); the timeline walk must not drop it.
+      ToolCardView(tool: tool, identifierPrefix: identifierPrefix)
+    case .subagents:
+      // §8.2: children whose start events were adjacent in this message render
+      // inside one group container. `isAdjacentToPrevious` is computed in the
+      // fold, because adjacency needs the EVENT STREAM and the card list does
+      // not carry it; orphans never join a cluster. Drawn at the marker the
+      // fold left at the first spawn, so the rows keep their place in the
+      // event order rather than sinking below a later text delta.
+      ForEach(subagentClusters(projection.subagentCards), id: \.first!.id) { cluster in
+        SubagentGroupView(
+          cards: cluster,
+          nested: subagentRowIsNested(depth: subagentDepth),
+          depth: subagentDepth,
+          interaction: subagentInteraction
+        )
+      }
+    case let .status(row):
+      if row.kind == .unknown {
+        UnknownEventView(type: row.unknownType ?? "unknown")
+      } else {
+        StatusRowView(row: row)
+      }
+    case let .question(question):
+      let current = projection.pendingQuestion?.id == question.id
+        ? projection.pendingQuestion ?? question : question
+      QuestionView(
+        question: current,
+        isAnsweringEnabled: isAnsweringEnabled && projection.pendingQuestion?.id == question.id,
+        onAnswer: onAnswer
+      )
+    }
+  }
+}
+
+/// Split the folded rows into §8.2's parallel clusters: a run of rows whose
+/// start events were adjacent in the same message, with nothing but sub-agent
+/// chrome between them.
+///
+/// Internal, not `private`, so `DashTests` can exercise the split without
+/// rendering SwiftUI — the same pattern as `failedTurnIDs` and
+/// `shouldShowTypingIndicator`.
+func subagentClusters(_ cards: [SubagentCardState]) -> [[SubagentCardState]] {
+  var clusters: [[SubagentCardState]] = []
+  for card in cards {
+    if card.isAdjacentToPrevious, clusters.isEmpty == false {
+      clusters[clusters.count - 1].append(card)
+    } else {
+      clusters.append([card])
+    }
+  }
+  return clusters
 }
 
 /// 3-dot pulse (chat-ux Phase 2, audit #6). Hidden from accessibility like
@@ -245,6 +284,8 @@ struct ThinkingView: View {
 /// the result here only branches on error/empty/short/long.
 struct ToolCardView: View {
   let tool: ToolCardState
+  /// See `AssistantEventViews.identifierPrefix`.
+  let identifierPrefix: String
 
   @State private var isExpanded: Bool
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -262,8 +303,9 @@ struct ToolCardView: View {
   /// card whose body you always want, and until now it sat behind the same
   /// tap as a successful `read`. Matches web's `ToolUseBlock` and MC's
   /// `ToolBlock`.
-  init(tool: ToolCardState) {
+  init(tool: ToolCardState, identifierPrefix: String = "chat") {
     self.tool = tool
+    self.identifierPrefix = identifierPrefix
     var expanded = ToolPresentation.isTodoWrite(tool.name) || tool.status == .failed
     #if DEBUG
       // Debug-only capture affordance: a tool BODY is behind a tap and
@@ -322,7 +364,7 @@ struct ToolCardView: View {
     }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Tool \(ToolPresentation.toolLabel(tool.name)), \(tool.status.title)")
-    .accessibilityIdentifier("chat.tool.\(tool.id)")
+    .accessibilityIdentifier("\(identifierPrefix).tool.\(tool.id)")
     // Haptics (chat-ux Phase 2, audit #7): matches `ThinkingView`'s
     // disclosure-toggle feedback.
     .sensoryFeedback(.selection, trigger: isExpanded)
@@ -771,58 +813,6 @@ struct TodoListView: View {
   }
 }
 
-/// MC design tokens (design doc appendix §0) needed for tool-card chrome
-/// that has no existing Dash design-system token.
-struct WorkerCardView: View {
-  let worker: WorkerCardState
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Label(worker.status.title, systemImage: worker.status.systemImage)
-        .font(.callout.weight(.semibold))
-
-      Text(worker.role)
-        .font(.subheadline.weight(.medium))
-
-      if let brief = worker.brief, !brief.isEmpty {
-        Text(brief)
-          .font(.callout)
-      }
-
-      if let model = worker.model, !model.isEmpty {
-        Label(model, systemImage: "cpu")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
-
-      if let detail = worker.detail, !detail.isEmpty {
-        Text(detail)
-          .font(.callout)
-      }
-
-      if let question = worker.question, !question.isEmpty {
-        Label(question, systemImage: "questionmark.bubble")
-          .font(.callout)
-      }
-
-      if let report = worker.report, !report.isEmpty {
-        Text(report)
-          .font(.callout)
-          .textSelection(.enabled)
-      }
-
-      if let usage = worker.usage {
-        UsageView(usage: usage)
-      }
-    }
-    .padding(10)
-    .background(Color.secondary.opacity(DashTheme.Opacity.fillSubtle), in: RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel("Worker \(worker.role), \(worker.status.title)")
-    .accessibilityIdentifier("chat.worker.\(worker.key.workerID)")
-  }
-}
-
 struct QuestionView: View {
   let question: QuestionState
   let isAnsweringEnabled: Bool
@@ -996,24 +986,30 @@ extension ToolCardStatus {
   }
 }
 
-extension WorkerCardStatus {
-  fileprivate var title: String {
+extension SubagentCardStatus {
+  /// Internal, not `fileprivate`: `SubagentViews.swift` reads it for the row's
+  /// accessible name, and `DashTests` reads it to pin that name.
+  var title: String {
     switch self {
-    case .running: "Worker running"
-    case .waitingInput: "Worker waiting for input"
-    case .done: "Worker completed"
-    case .failed: "Worker failed"
-    case .cancelled: "Worker cancelled"
+    case .running: "Running"
+    case .waiting: "Waiting for input"
+    case .done: "Completed"
+    case .failed: "Failed"
+    case .cancelled: "Cancelled"
+    case .interrupted: "Interrupted"
+    case .maxTurns: "Max turns reached"
     }
   }
 
   fileprivate var systemImage: String {
     switch self {
     case .running: "person.crop.circle.badge.clock"
-    case .waitingInput: "person.crop.circle.badge.questionmark"
+    case .waiting: "person.crop.circle.badge.questionmark"
     case .done: "person.crop.circle.badge.checkmark"
     case .failed: "person.crop.circle.badge.exclamationmark"
     case .cancelled: "person.crop.circle.badge.xmark"
+    case .interrupted: "person.crop.circle.badge.minus"
+    case .maxTurns: "person.crop.circle.badge.moon"
     }
   }
 }

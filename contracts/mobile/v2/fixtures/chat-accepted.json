@@ -1,11 +1,14 @@
 {
   "type": "accepted",
   "id": "00000000-0000-4000-8000-000000000003",
-  "conversationId": "00000000-0000-4000-8000-000000000001",
+  "conversationId": "sub_01ARZ3NDEKTSV4RRFFQ69G5FAV",
   "runId": "00000000-0000-4000-8000-000000000003",
   "segmentTurnId": "00000000-0000-4000-8000-000000000003",
   "v2Seq": 1,
   "userMessageId": "00000000-0000-4000-8000-000000000013",
   "assistantMessageId": "00000000-0000-4000-8000-000000000014",
-  "revision": 1
+  "revision": 1,
+  "origin": "parent",
+  "kind": "subagent",
+  "requestId": "resume-01"
 }

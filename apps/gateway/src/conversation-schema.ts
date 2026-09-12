@@ -70,6 +70,7 @@ function rebuildConversationMessages(db: DatabaseType): void {
       status          TEXT NOT NULL CHECK (status IN ('accepted','streaming','completed','cancelled','failed','interrupted')),
       delivery_kind   TEXT NOT NULL DEFAULT 'normal',
       delivery_status TEXT,
+      origin          TEXT NOT NULL DEFAULT 'user',
       created_at      TEXT NOT NULL,
       updated_at      TEXT NOT NULL,
       UNIQUE(conversation_id, ordinal),
@@ -78,11 +79,11 @@ function rebuildConversationMessages(db: DatabaseType): void {
 
     INSERT INTO conversation_messages_v2_migration (
       id, conversation_id, turn_id, run_id, segment_index, ordinal, role, content, status,
-      delivery_kind, delivery_status, created_at, updated_at
+      delivery_kind, delivery_status, origin, created_at, updated_at
     )
     SELECT
       id, conversation_id, turn_id, run_id, segment_index, ordinal, role, content, status,
-      delivery_kind, delivery_status, created_at, updated_at
+      delivery_kind, delivery_status, origin, created_at, updated_at
     FROM conversation_messages;
   `);
   const replacementCount = (

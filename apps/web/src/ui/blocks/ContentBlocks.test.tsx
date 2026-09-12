@@ -1,8 +1,70 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { ConversationContent } from '@dash/mobile-contract';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { ContentBlocks, getMessageCopyText } from './ContentBlocks.js';
 
+type ChatOrderExpected = {
+  kind: 'text' | 'thinking' | 'tool' | 'question';
+  id?: string;
+  label?: string;
+  status?: 'running' | 'succeeded' | 'failed';
+  text?: string;
+};
+
+type ChatOrderFixture = {
+  version: number;
+  cases: Array<{
+    name: string;
+    events: Extract<ConversationContent, { type: 'assistant' }>['events'];
+    expected: ChatOrderExpected[];
+  }>;
+};
+
+const chatOrderFixture = JSON.parse(
+  readFileSync(
+    join(import.meta.dirname, '../../../../../scripts/fixtures/chat-event-order.json'),
+    'utf8',
+  ),
+) as ChatOrderFixture;
+
+function orderedFixtureElements(expected: ChatOrderExpected[]): HTMLElement[] {
+  const tools = screen.queryAllByTestId('tool-use-block');
+  const thinking = screen.queryAllByTestId('thinking-block');
+  let toolIndex = 0;
+  let thinkingIndex = 0;
+  return expected.map((entry) => {
+    if (entry.kind === 'tool') {
+      const element = tools[toolIndex++];
+      expect(element).toBeTruthy();
+      expect(element.textContent).toContain(entry.label);
+      expect(element.getAttribute('data-status')).toBe(entry.status);
+      return element;
+    }
+    if (entry.kind === 'thinking') {
+      const element = thinking[thinkingIndex++];
+      expect(element).toBeTruthy();
+      return element;
+    }
+    return screen.getByText(entry.text ?? '');
+  });
+}
+
 describe('ContentBlocks', () => {
+  it.each(chatOrderFixture.cases)(
+    'matches shared assistant event order: $name',
+    ({ events, expected }) => {
+      render(<ContentBlocks content={{ type: 'assistant', events }} />);
+      const elements = orderedFixtureElements(expected);
+      for (let index = 1; index < elements.length; index++) {
+        expect(
+          elements[index - 1].compareDocumentPosition(elements[index]) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+      }
+    },
+  );
+
   it('renders user content as text', () => {
     const content: ConversationContent = { type: 'user', text: 'Is the mobile connection ready?' };
     render(<ContentBlocks content={content} />);
@@ -336,10 +398,24 @@ describe('ContentBlocks', () => {
   it('renders a fallback unknown-block for an unrecognized event type, without throwing', () => {
     const content: ConversationContent = {
       type: 'assistant',
-      events: [{ type: 'agent_spawned', name: 'worker-1' }],
+      events: [{ type: 'telemetry_ping', channel: 'metrics' }],
     };
     expect(() => render(<ContentBlocks content={content} />)).not.toThrow();
     expect(screen.getByTestId('unknown-block')).toBeTruthy();
+  });
+
+  // Task D2: `agent_spawned` is the coordinator's name-only announcement,
+  // pushed between a child's `worker_spawned` and its `subagent_started`
+  // (`packages/swarm/src/coordinator.ts`). The sub-agent row next to it is
+  // what renders the spawn — the announcement itself must not badge every
+  // spawn with an "Unsupported content" marker.
+  it('treats agent_spawned as chrome rather than unsupported content', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'agent_spawned', name: 'worker-1' }],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.queryByTestId('unknown-block')).toBeNull();
   });
 
   it('renders a fallback unknown-block for a malformed event (missing required field), without throwing', () => {
@@ -518,4 +594,37 @@ describe('getMessageCopyText', () => {
 
   // Tool-use UX 2026-09-05: the collapsed row answers what the agent did, to
   // what, and what came back. The third was missing entirely.
+});
+
+describe('notice content', () => {
+  it('renders a learned-skill notice as a chip', () => {
+    const { container } = render(
+      <ContentBlocks
+        content={{ type: 'notice', kind: 'skill_learned', text: 'Learned: write-files' } as never}
+      />,
+    );
+    const chip = container.querySelector('[data-testid="notice-chip"]');
+    expect(chip?.textContent).toBe('Learned: write-files');
+    expect(chip?.getAttribute('data-notice-kind')).toBe('skill_learned');
+  });
+
+  it('renders a swept-memory notice as a chip', () => {
+    const { container } = render(
+      <ContentBlocks
+        content={
+          { type: 'notice', kind: 'memory_saved', text: 'Remembered: prefers printf' } as never
+        }
+      />,
+    );
+    expect(container.querySelector('[data-notice-kind="memory_saved"]')).not.toBeNull();
+  });
+
+  it('does not fall through to the unknown-content block', () => {
+    // Before the notice branch existed this degraded to UnknownBlock, which is
+    // what a client too old to know about notices still does.
+    const { container } = render(
+      <ContentBlocks content={{ type: 'notice', kind: 'skill_learned', text: 'x' } as never} />,
+    );
+    expect(container.querySelector('[data-testid="notice-chip"]')).not.toBeNull();
+  });
 });

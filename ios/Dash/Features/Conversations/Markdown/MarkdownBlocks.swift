@@ -21,6 +21,12 @@ enum MarkdownBlock: Equatable, Sendable {
   case blockquote(String)
   case horizontalRule
   case table(MarkdownTable)
+  /// A standalone image: either explicit `![alt](url)` syntax on its own
+  /// line, or a bare URL whose path ends in an image extension. `alt` is
+  /// nil when absent/empty. Inline images embedded in prose are NOT
+  /// promoted here — only whole-line images, matching how the web/MC
+  /// renderers lay images out as block elements.
+  case image(url: URL, alt: String?)
 }
 
 struct MarkdownListItem: Equatable, Sendable {
@@ -142,6 +148,13 @@ func segmentMarkdown(_ text: String) -> [MarkdownBlock] {
       let (list, next) = parseList(lines, from: index)
       blocks.append(.list(list))
       index = next
+      continue
+    }
+
+    if let image = parseStandaloneImage(trimmed) {
+      flushParagraph()
+      blocks.append(image)
+      index += 1
       continue
     }
 
@@ -389,6 +402,65 @@ private func parseList(_ lines: [String], from start: Int) -> (MarkdownList, Int
 
   while frames.count > 1 { closeTop() }
   return (frames[0].list, index)
+}
+
+// MARK: - Images
+
+/// Image file extensions we promote a bare URL for — the four types Dash
+/// already accepts as attachments (`ImageBlock.mediaType`), matched
+/// case-insensitively against the URL's path.
+private let imageURLExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp"]
+
+/// Recognizes a whole-line image and returns an `.image` block, or `nil` if
+/// the line is anything else. Two forms are accepted:
+///
+/// 1. Explicit `![alt](url)` occupying the entire (trimmed) line. This is
+///    the same syntax react-markdown renders as an `<img>` on web.
+/// 2. A bare `http(s)` URL, alone on the line, whose path ends in a known
+///    image extension (`.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`). Agents that
+///    paste a generated-image URL bare (e.g. fal.media) render as an image
+///    rather than a tappable link. This is a deliberate divergence from the
+///    web/MC renderers, which only inline explicit `![](…)` — justified
+///    because SwiftUI `Text` cannot show a remote image inline at all, so a
+///    bare image URL would otherwise be a dead-looking link.
+///
+/// A URL embedded in surrounding prose is left alone (it stays a paragraph
+/// and is autolinked inline), so only lines that are *entirely* an image
+/// are promoted.
+private func parseStandaloneImage(_ trimmed: String) -> MarkdownBlock? {
+  if let explicit = parseExplicitImage(trimmed) { return explicit }
+  return parseBareImageURL(trimmed)
+}
+
+/// Parses a line that is exactly `![alt](url)` with nothing before or after.
+private func parseExplicitImage(_ trimmed: String) -> MarkdownBlock? {
+  guard trimmed.hasPrefix("!["), trimmed.hasSuffix(")") else { return nil }
+  guard let altEnd = trimmed.range(of: "](") else { return nil }
+  let altStart = trimmed.index(trimmed.startIndex, offsetBy: 2)
+  let alt = String(trimmed[altStart..<altEnd.lowerBound])
+  let urlString = String(trimmed[altEnd.upperBound..<trimmed.index(before: trimmed.endIndex)])
+    .trimmingCharacters(in: .whitespaces)
+  // A URL with an unescaped `)` would have been truncated by `hasSuffix(")")`
+  // matching the first close paren; guard against a stray `(` or `)` in what
+  // we captured so `![a](b) and (c)` doesn't parse as an image.
+  guard urlString.isEmpty == false, urlString.contains(")") == false,
+    urlString.contains("(") == false, urlString.contains(" ") == false,
+    let url = URL(string: urlString), isHTTPURL(url)
+  else { return nil }
+  return .image(url: url, alt: alt.isEmpty ? nil : alt)
+}
+
+/// Parses a line that is exactly a bare image-extension `http(s)` URL.
+private func parseBareImageURL(_ trimmed: String) -> MarkdownBlock? {
+  guard trimmed.contains(" ") == false, trimmed.contains("\n") == false else { return nil }
+  guard let url = URL(string: trimmed), isHTTPURL(url) else { return nil }
+  let ext = (url.path as NSString).pathExtension.lowercased()
+  guard imageURLExtensions.contains(ext) else { return nil }
+  return .image(url: url, alt: nil)
+}
+
+private func isHTTPURL(_ url: URL) -> Bool {
+  url.scheme == "http" || url.scheme == "https"
 }
 
 // MARK: - Tables

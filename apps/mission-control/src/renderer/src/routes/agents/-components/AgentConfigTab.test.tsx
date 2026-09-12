@@ -579,3 +579,97 @@ describe('AgentConfigTab connectors card', () => {
     await waitFor(() => expect(screen.queryByText(/gateway unreachable/i)).not.toBeInTheDocument());
   });
 });
+
+/**
+ * C3. The gateway reads `subagents?.enabled ?? swarm?.enabled ?? true`
+ * (`apps/gateway/src/subagent-config.ts` `isSubagentsEnabled`), so an agent
+ * registered before either block existed has sub-agents ON. The card rendered
+ * `swarmCfg?.enabled === true`, i.e. OFF, and Save wrote that back — silently
+ * disabling the feature for the whole default population, taking the `agent`
+ * tool away and leaving every existing child unable to resume.
+ */
+describe('AgentConfigTab swarm card gate', () => {
+  beforeEach(() => {
+    mockApi.plugins.list.mockResolvedValue([]);
+    mockApi.mcpListConnectors.mockResolvedValue([]);
+    mockApi.modelsList.mockResolvedValue({
+      models: [{ value: 'claude-sonnet-4-6', label: 'Sonnet', provider: 'anthropic' }],
+      source: 'live',
+      errors: {},
+      fetchedAt: '2026-04-13T00:00:00Z',
+      supportedModelsReviewedAt: '2026-04-13',
+    });
+  });
+
+  it('renders a DEFAULT agent (neither block set) as enabled, and Save does not disable it', async () => {
+    const user = userEvent.setup();
+    const updateConfig = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <AgentConfigTab agentId="agent-1" agentConfig={baseConfig} updateConfig={updateConfig} />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /swarm/i }));
+    const toggle = await screen.findByTestId('swarm-enabled-toggle');
+    expect(toggle).toBeChecked();
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(updateConfig).toHaveBeenCalled());
+    const patch = updateConfig.mock.calls[0][1] as {
+      swarm?: { enabled?: boolean };
+      subagents?: { enabled?: boolean };
+    };
+    expect(patch.subagents?.enabled).toBe(true);
+    expect(patch.swarm?.enabled).toBeUndefined();
+  });
+
+  it('honours an operator who turned the legacy swarm off, and writes the gate on subagents', async () => {
+    const user = userEvent.setup();
+    const updateConfig = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <AgentConfigTab
+        agentId="agent-1"
+        agentConfig={{ ...baseConfig, swarm: { enabled: false } }}
+        updateConfig={updateConfig}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /swarm/i }));
+    expect(await screen.findByTestId('swarm-enabled-toggle')).not.toBeChecked();
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(updateConfig).toHaveBeenCalled());
+    const patch = updateConfig.mock.calls[0][1] as { subagents?: { enabled?: boolean } };
+    expect(patch.subagents?.enabled).toBe(false);
+  });
+
+  it('preserves the rest of a stored subagents block when the gate is saved', async () => {
+    const user = userEvent.setup();
+    const updateConfig = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <AgentConfigTab
+        agentId="agent-1"
+        agentConfig={{
+          ...baseConfig,
+          subagents: { enabled: true, maxDepth: 2, allowedTypes: ['Explore'] },
+        }}
+        updateConfig={updateConfig}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /swarm/i }));
+    expect(await screen.findByTestId('swarm-enabled-toggle')).toBeChecked();
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(updateConfig).toHaveBeenCalled());
+    const patch = updateConfig.mock.calls[0][1] as {
+      subagents?: { enabled?: boolean; maxDepth?: number; allowedTypes?: string[] };
+    };
+    // The gateway replaces this block wholesale, so a `{ enabled }`-only patch
+    // would delete the caps.
+    expect(patch.subagents).toEqual({ enabled: true, maxDepth: 2, allowedTypes: ['Explore'] });
+  });
+});

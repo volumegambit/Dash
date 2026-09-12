@@ -224,15 +224,103 @@ Every read, create, update, or comment automatically links the agent's current c
 
 Not affected by workspace sandboxing — task data lives in the gateway's local database.
 
-## Swarm orchestration
+## Sub-agents
 
-When an agent has **[Swarm](/configuration#swarm)** enabled, it becomes an **orchestrator**: it can spawn short-lived **worker** subagents that run in parallel, steer them, collect their reports, and synthesize one answer. Enable swarm on the agent's **Configuration** tab in Mission Control; these tools then appear automatically — they are not part of the per-agent tool selection.
+An agent can hand a self-contained task to a **sub-agent**: a child agent with its own context, its own tool set, and its own transcript. The child never sees the parent's conversation — it gets only the prompt it is given — and it answers with one final report the parent reads and relays to you.
 
-Workers are ephemeral and live **within a single chat turn**. Each worker runs in its **own isolated context** (it never sees the orchestrator's conversation — only the brief it's given) but **shares the orchestrator's workspace**, so the orchestrator should tell each worker exactly which files or subdirectories to touch. A worker is granted a **subset** of the orchestrator's own tools — by default read-only ones (`read`, `grep`, `find`, `ls`); it can be given more (up to what the orchestrator itself has) via the `tools` argument. Workers never get MCP, skills, or the orchestrator's other tools.
+Sub-agents are **on by default** for every agent. The `agent` and `send_message` tools appear automatically; they are not part of the per-agent tool selection. See [Configuration → Sub-agents](/configuration#sub-agents) to turn them off, cap them, or change how eagerly an agent delegates.
 
-**Caps.** Spawning is bounded by the agent's swarm caps (concurrent workers, total workers per run, steers per worker, and a wall-clock limit) plus a gateway-wide global ceiling — see [Configuration → Swarm](/configuration#swarm). A tool call that would exceed a cap **fails with an error result** (rendered as an error tool block in chat) rather than silently doing nothing, so the orchestrator can adapt.
+<Tabs>
+  <Tab title="agent">
+    Launch a sub-agent to handle one task.
 
-The orchestrator has four tools:
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `prompt` | `string` | yes | The task, written to stand alone — the sub-agent does not see the conversation |
+    | `description` | `string` | yes | A short (3-5 word) description, shown on the row in chat |
+    | `subagent_type` | `string` | no | Which agent type to launch (default: `general-purpose`) |
+    | `model` | `string` | no | Model override: a `provider/model` id, or `inherit` to use the parent's model. Short alias names are accepted but resolve to nothing in this release — see [Troubleshooting](/troubleshooting#sub-agents) |
+    | `name` | `string` | no | A name to address the agent by later with `send_message` — up to 64 characters, starting with a letter or digit, then letters, digits, `_` or `-` |
+    | `run_in_background` | `boolean` | no | Run it detached and be notified on completion (default: `false`) |
+    | `isolation` | `string` | no | `worktree` — give the agent its own git worktree of the workspace |
+
+    Fails with an error result when a cap is reached, when the type is unknown (the message lists the valid types), when the requested model isn't allowed, when the definition would leave the agent with no tools at all, or when `isolation: worktree` is asked for in a workspace that isn't a git repository.
+  </Tab>
+  <Tab title="send_message">
+    Continue one of this conversation's sub-agents, by name or by id.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `to` | `string` | yes | The name or id of a sub-agent in this conversation |
+    | `message` | `string` | yes | The message to deliver |
+
+    Returns immediately. A **running** agent receives the message after its current turn finishes, not between its tool calls — unless it is **paused on an `ask_orchestrator` question**, in which case the message arrives at once as the answer and does not count against the message cap. A **finished** agent is resumed with its context intact and picks up from where it stopped. Either way, its next completion comes back as a notification.
+
+    Refuses an unknown name, a message past the per-agent steer cap, and a **new task** for a one-shot type (`Explore`, `Plan`). Answering a one-shot sub-agent that is paused on an `ask_orchestrator` question is not a new task and goes through — the same exemption the reply box on its row and the legacy `send_to_worker` use.
+  </Tab>
+  <Tab title="ask_orchestrator">
+    Every sub-agent gets this one tool of its own: ask the parent a question and **pause** until it answers.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `question` | `string` | yes | The blocker or decision to send up to the parent |
+
+    The sub-agent shows as **waiting for input** until it is answered or the request times out.
+
+    Three things can answer it, whatever the type: the parent's own `send_message`, the reply box on the sub-agent's row, and the legacy [`send_to_worker`](#legacy-swarm-tools). That includes the one-shot `Explore` and `Plan` — being one-shot refuses a new task, not an answer.
+
+    **A question lives only as long as the turn that launched the sub-agent.** When that turn ends the question is dropped, the sub-agent's `ask_orchestrator` call comes back aborted, and it carries on without an answer. A foreground `agent` call holds its turn open until the child finishes, so there is time to answer; a **background** sub-agent that is still waiting when its launching turn ends is no longer waiting for anyone.
+  </Tab>
+</Tabs>
+
+**Foreground or background.** By default `agent` waits: the parent blocks until the child finishes and the child's report comes back as the tool result. With `run_in_background: true` the call returns straight away with `Agent <name> launched in the background. You will be notified when it completes.`, the child keeps running after the parent's turn ends, and its completion arrives later as a notification (below).
+
+**Several at once.** An agent can call `agent` more than once in a single turn; those children run concurrently. Cancelling the turn cancels its foreground children and leaves background ones running.
+
+**Built-in agent types.**
+
+| Type | What it's for | Tools |
+|------|---------------|-------|
+| `general-purpose` | Researching complex questions, searching for code, multi-step tasks | Everything the parent has, except the skill-management, connector-management and Projects tools, which are never passed down. The four legacy swarm tools are not passed down either — a sub-agent that is still allowed to spawn gets `agent` and `send_message` instead, and one already at the nesting ceiling gets neither |
+| `Explore` | Broad read-only searches where you only want the conclusion | `read`, `grep`, `find`, `ls`, `web_fetch`, `web_search`, `load_skill` |
+| `Plan` | Designing a step-by-step implementation plan | The same read-only set |
+
+`Explore` and `Plan` are **one-shot**: they are read-only and cannot be given a new task, so `send_message` refuses one. Answering a question is not a new task — `send_message`, the reply box on the row and the legacy `send_to_worker` all get through to a paused one-shot. Your own types and plugin types are never one-shot; the one exception is a definition that deliberately **shadows** `Explore` or `Plan` by name, which replaces the built-in in that workspace and is resumable like any other type.
+
+**Your own agent types.** Drop a markdown file with Claude Code frontmatter into `.dash/agents/` (or `.claude/agents/`) in the agent's workspace and it becomes a launchable type — the frontmatter sets its name, description, tool list, model, and preloaded skills, and the body is its system prompt. Plugins ship types too. See [Configuration → Sub-agent types](/configuration#sub-agent-types) for the file format, where the files can live, and which one wins. Whatever a definition asks for, **a sub-agent can never hold a tool or an MCP server its parent doesn't have.**
+
+**Nesting.** A sub-agent can launch sub-agents of its own, down to the configured depth (`subagents.maxDepth`, default `3`). In chat, one level of nesting is shown: expanding a child shows its transcript, and a grandchild's row appears there but doesn't open.
+
+**Notifications.** When a background agent finishes — or a resumed one, or one you sent a message to — its parent is told in a new turn that starts on its own. In chat that arrives as a compact notification row followed by the agent's response to it. Nothing is lost while the parent is busy: notifications queue and are delivered together when its current turn ends.
+
+### What you see
+
+Each sub-agent draws a **collapsed row** where it was launched: status, type, the description it was given, and how many tools it has used with elapsed time. Click or tap the row to expand it and watch the child's own transcript live, with a box at the bottom to type into that child directly. When several start together they are grouped under one summary line.
+
+There's also a list of everything running in the conversation:
+
+- **Web** — a **Tasks** button in the top bar (with a live count) opens a tasks panel; each row has **Stop** and **Resume**.
+- **iOS** — a **Tasks** toolbar button opens a sheet, plus a strip above the composer while anything is live.
+- **Mission Control** — the people icon in the chat header opens the **Sub-agents** panel, with **Stop**, **Resume**, and the child's transcript in place. The icon appears once the conversation has sub-agents (or when the agent's Swarm card is ticked).
+
+Sub-agent rows are a chat-app feature. Over Telegram or WhatsApp you get the agent's final answer only.
+
+## Legacy swarm tools
+
+`spawn_worker`, `wait_workers`, `send_to_worker`, and `check_workers` are the earlier **swarm** tools. They still work, and they appear alongside `agent` and `send_message` whenever [sub-agents](#sub-agents) are enabled — but they are now **thin wrappers** over the same machinery, kept so prompts written against them keep working. **Write new agents against `agent` and `send_message`.**
+
+What that means in practice:
+
+- `spawn_worker` is an `agent` call with `subagent_type: general-purpose` and `run_in_background: true`. The `role` becomes the child's description (and its name, when the role is a legal name).
+- `send_to_worker` does what `send_message` does, which means it now **resumes a worker that has already finished** instead of refusing. The two differ only in **shape**: `send_to_worker` reports a refusal as a not-ok result, where `send_message` raises an error the agent sees as a failed tool call.
+- `wait_workers` and `check_workers` read the same children the sub-agent tools do.
+- Workers and sub-agents **share one set of caps** — there is one coordinator behind both.
+- A worker's **read-only default is unchanged**: with no `tools` argument it gets `read`, `grep`, `find`, and `ls`, intersected with what the parent holds.
+- Two consequences worth knowing: an agent whose `subagents.allowedTypes` excludes `general-purpose` now refuses `spawn_worker`, and a worker can launch sub-agents of its own.
+
+**Caps.** Spawning is bounded by the agent's caps (concurrent children, total per turn, messages per child, and a wall-clock limit) plus a gateway-wide ceiling — see [Configuration → Sub-agents](/configuration#sub-agents). A call that would exceed a cap **fails with an error result** (rendered as an error tool block in chat) rather than silently doing nothing, so the agent can adapt.
+
+The four tools:
 
 <Tabs>
   <Tab title="spawn_worker">
@@ -245,7 +333,7 @@ The orchestrator has four tools:
     | `tools` | `string[]` | no | Subset of the orchestrator's tools to grant the worker. Defaults to read-only tools |
     | `model` | `string` | no | Model id for the worker. Must be an allowed model; defaults to the orchestrator's model |
 
-    Fails with an error result when a cap is reached (too many workers at once, too many per run, or the global ceiling), when the model isn't allowed, or when a requested tool isn't one the orchestrator has.
+    Fails with an error result when a cap is reached (too many at once, too many per turn, or the global ceiling), when the model isn't allowed, or when a requested tool isn't one the orchestrator has.
   </Tab>
   <Tab title="wait_workers">
     Block until the referenced workers finish or need input, then return each one's status and report.
@@ -255,7 +343,7 @@ The orchestrator has four tools:
     | `workerIds` | `string[]` | no | Which workers to wait on. Omit to wait on all workers in the run |
     | `timeoutSeconds` | `number` | no | Max seconds to block before returning the current status (default: `300`) |
 
-    Respects the run's wall-clock cap and returns early when a worker is waiting on the orchestrator's input. This is the collection step of the loop.
+    Respects the wall-clock cap and returns early when a worker is waiting on the orchestrator's input. This is the collection step of the loop.
   </Tab>
   <Tab title="send_to_worker">
     Answer a worker that's waiting on the orchestrator, or steer a running worker with an extra instruction.
@@ -265,7 +353,7 @@ The orchestrator has four tools:
     | `workerId` | `string` | yes | The worker to steer or answer |
     | `message` | `string` | yes | The answer or additional instruction to deliver |
 
-    Steers are capped per worker; a worker that has already finished cannot be steered.
+    Messages are capped per worker. A worker that has already finished is **resumed** by this call rather than refused. A one-shot type is refused — as a not-ok result rather than an error — **unless it is paused on a question, in which case this call answers it.**
   </Tab>
   <Tab title="check_workers">
     Return a non-blocking snapshot of every worker in the run — id, role, status, and latest report or question. Use it to poll progress without blocking (unlike `wait_workers`).
@@ -274,21 +362,7 @@ The orchestrator has four tools:
   </Tab>
 </Tabs>
 
-Each **worker** gets one tool of its own:
-
-<Tabs>
-  <Tab title="ask_orchestrator">
-    Ask the orchestrator a question and **pause** until it answers.
-
-    | Parameter | Type | Required | Description |
-    |-----------|------|----------|-------------|
-    | `question` | `string` | yes | The blocker or decision to send up to the orchestrator |
-
-    The worker stays paused (shown as **waiting for input**) until the orchestrator replies via `send_to_worker`, the run ends, or the request times out. Use it for decisions only the orchestrator can make.
-  </Tab>
-</Tabs>
-
-You can watch and steer a live swarm from Mission Control's **swarm supervision panel** (the people icon in the chat header) — see [Architecture → Agent Swarm](/architecture#agent-swarm).
+A worker is a sub-agent, so it gets [`ask_orchestrator`](#sub-agents) like any other child, and it draws the same row in chat. Watch and steer one from the tasks panel, the tasks sheet, or Mission Control's **Sub-agents** panel — see [Architecture → Sub-agents](/architecture#sub-agents).
 
 ## Workspace sandboxing
 

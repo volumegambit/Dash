@@ -35,6 +35,44 @@ struct AgentConfigDTO: Codable, Hashable, Sendable {
   let providers: [String]?
 }
 
+/// A skill as the mobile API exposes it: read-only, without the gateway's
+/// on-disk path. `source` says where it came from — `agent` means the agent
+/// wrote it for itself.
+struct SkillDTO: Codable, Hashable, Identifiable, Sendable {
+  var id: String { name }
+  let name: String
+  let description: String
+  let trigger: String?
+  let source: SkillSource
+  let content: String?
+}
+
+/// Unknown sources decode to `.unknown` rather than throwing, so a gateway
+/// that adds one does not break skill listing on an older app.
+enum SkillSource: String, Codable, Hashable, Sendable {
+  case managed
+  case agent
+  case remote
+  case plugin
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = SkillSource(rawValue: raw) ?? .unknown
+  }
+
+  /// How the source reads to a user.
+  var label: String {
+    switch self {
+    case .agent: return "Learned"
+    case .managed: return "Added"
+    case .remote: return "Installed"
+    case .plugin: return "Built-in"
+    case .unknown: return "Other"
+    }
+  }
+}
+
 struct RegisteredAgentDTO: Codable, Hashable, Identifiable, Sendable {
   let id: String
   let name: String

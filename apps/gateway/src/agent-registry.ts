@@ -5,8 +5,10 @@ import { dirname } from 'node:path';
 /**
  * Per-agent swarm configuration. All fields optional — the gateway's
  * `swarm.defaults` fill any gap and `enabled` gates whether the agent may
- * spawn workers at all. `allowedModels`, when set, restricts the models an
- * orchestrator may hand to its workers. Persisted verbatim on the agent config
+ * spawn workers at all. `allowedModels` ADDS to what a worker may be given: the
+ * coordinator's allowed set is the UNION of the orchestrator's own model, its
+ * `fallbackModels` and this list (`coordinator.ts` `validateModel`), so it can
+ * never withhold the parent's model. Persisted verbatim on the agent config
  * (the registry round-trips the whole config object as JSON).
  */
 export interface AgentSwarmConfig {
@@ -16,6 +18,58 @@ export interface AgentSwarmConfig {
   maxSteersPerWorker?: number;
   maxRunSeconds?: number;
   allowedModels?: string[];
+}
+
+/**
+ * Per-agent sub-agent configuration — the Claude-Code-parity `agent` /
+ * `send_message` tooling that supersedes the raw `swarm` block. Every field is
+ * optional and absence is meaningful:
+ *
+ * - `enabled` unset falls back to the legacy `swarm.enabled`, then to `true`.
+ *   That is what makes sub-agents ON by default for agents registered before
+ *   this block existed while still honouring an operator who deliberately
+ *   turned the swarm off. See {@link isSubagentsEnabled}.
+ * - `delegation` unset is derived from the orchestrator's model tier (tier 0 /
+ *   frontier → `'auto'`, anything else → `'explicit'`).
+ * - The caps map onto {@link AgentSwarmConfig}'s equivalents and win over them
+ *   (see `subagentCapsFromConfig`).
+ *
+ * Persisted verbatim on the agent config (the registry round-trips the whole
+ * config object as JSON).
+ */
+export interface AgentSubagentsConfig {
+  /** Gate. Unset → `swarm.enabled` → `true`. */
+  enabled?: boolean;
+  /** Unset → derived from the model tier. */
+  delegation?: 'auto' | 'explicit';
+  /** Sub-agent type ids this orchestrator may spawn. Unset → all built-ins. */
+  allowedTypes?: string[];
+  /** Models a child may be given. Unset → falls back to `swarm.allowedModels`. */
+  allowedModels?: string[];
+  /**
+   * Bare model names a definition's `model:` or a per-call `model` may use —
+   * `{ sonnet: 'anthropic/claude-sonnet-4-6' }`. Claude Code's agent
+   * frontmatter accepts bare aliases, so this is what lets a file copied from
+   * there resolve instead of warning and inheriting the parent's model.
+   *
+   * A value containing `/` is a provider/model id and is taken verbatim; only
+   * a bare name is looked up here, and an unconfigured one still warns and
+   * falls back (`resolve-spawn.ts` `resolveChildModel`). No aliases ship by
+   * default: mapping `sonnet`/`opus`/`haiku` onto whatever provider an agent
+   * uses is an operator's decision.
+   */
+  modelAliases?: Record<string, string>;
+  maxConcurrent?: number;
+  maxPerTurn?: number;
+  maxRunSeconds?: number;
+  /**
+   * How deep this orchestrator's descendants may nest (0 = may not nest at
+   * all). ENFORCED in two places: a child at the ceiling is not handed the
+   * `agent` tool at all (`subagent-tools.ts` `createChildSpawnTools`), and the
+   * coordinator refuses a spawn past it (`depth limit reached`) as defence in
+   * depth.
+   */
+  maxDepth?: number;
 }
 
 export interface GatewayAgentConfig {
@@ -43,8 +97,6 @@ export interface GatewayAgentConfig {
     urls?: string[];
     learning?: 'auto' | 'on' | 'off';
     minToolCalls?: number;
-    /** When true, every proposed lesson is staged for human approval. */
-    approval?: boolean;
   };
   providerApiKeys?: Record<string, string>;
   workspace?: string;
@@ -52,6 +104,8 @@ export interface GatewayAgentConfig {
   mcpServers?: string[];
   /** Per-agent swarm caps + gating. See {@link AgentSwarmConfig}. */
   swarm?: AgentSwarmConfig;
+  /** Per-agent sub-agent gating, delegation mode + caps. See {@link AgentSubagentsConfig}. */
+  subagents?: AgentSubagentsConfig;
   /**
    * Per-agent automated memory. `undefined` = enabled with sweep 'auto'
    * (backward compat — legacy agents persisted before the memory system have

@@ -1,6 +1,12 @@
 import '@testing-library/jest-dom/vitest';
+import { readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import type { ConversationRef, McConversationView } from '@dash/mc';
-import type { ConversationMessage, MobileWsServerFrame } from '@dash/mobile-contract';
+import type {
+  ConversationMessage,
+  MobileWsServerFrame,
+  SubagentListEntry,
+} from '@dash/mobile-contract';
 import type {
   MobileV2ConversationBootstrap,
   MobileV2ConversationMessage,
@@ -29,6 +35,45 @@ vi.mock('@tanstack/react-router', () => ({
 }));
 
 const { Chat, MessageBubble, V2ConversationTimeline } = await import('./chat.js');
+
+type ChatOrderExpected = {
+  kind: 'text' | 'thinking' | 'tool' | 'question';
+  label?: string;
+  text?: string;
+};
+
+type ChatOrderFixture = {
+  version: number;
+  cases: Array<{
+    name: string;
+    events: Record<string, unknown>[];
+    expected: ChatOrderExpected[];
+  }>;
+};
+
+const chatOrderFixture = JSON.parse(
+  readFileSync(
+    join(import.meta.dirname, '../../../../../../scripts/fixtures/chat-event-order.json'),
+    'utf8',
+  ),
+) as ChatOrderFixture;
+
+function orderedFixtureElements(expected: ChatOrderExpected[]): HTMLElement[] {
+  return expected.map((entry) => {
+    if (entry.kind === 'tool') {
+      return screen.getByRole('button', { name: new RegExp(entry.label ?? '') });
+    }
+    if (entry.kind === 'thinking') {
+      return screen.getByRole('button', { name: 'Show thinking' });
+    }
+    if (entry.kind === 'question') {
+      return screen.getByText((_, element) =>
+        Boolean(element?.tagName === 'P' && element.textContent?.includes(entry.text ?? '')),
+      );
+    }
+    return screen.getByText(entry.text ?? '');
+  });
+}
 
 const agent1 = {
   id: 'agent-1',
@@ -60,6 +105,7 @@ const gatewayConversation: McConversationView = {
   lastMessagePreview: 'cached transcript',
   createdAt: '2026-07-12T00:00:00Z',
   updatedAt: '2026-07-12T00:00:02Z',
+  kind: 'user',
   origin: 'gateway',
   offline: false,
   readOnly: false,
@@ -584,6 +630,209 @@ describe('canonical conversation UI', () => {
     expect(mockApi.chatCancel).toHaveBeenCalledWith(ref, 'local-turn', expect.any(String));
     expect(screen.getByTestId('status-bar-rename')).toBeDisabled();
     expect(screen.getByTestId('status-bar-delete')).toBeDisabled();
+  });
+
+  /**
+   * D3 — the wedge. `sending[key]` is optimistic and only `refreshTerminal`
+   * clears it; lose the turn's `done` (which D5 did to every turn that spawned
+   * a child) and a later authoritative read puts `activeTurnId` back to
+   * `null`. The composer locked on `activeTurnId !== null || isStreaming`
+   * while Stop rendered on `activeTurnId` alone, so the two predicates
+   * disagreed and left no control at all.
+   */
+  it('offers Stop for a local turn the server no longer considers active', async () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    // The gateway's own answer at that moment was `{ status: 'idle',
+    // activeTurnId: null }` — see `x1-screens/32.7-wedged-composer-server-idle.png`.
+    const idle = { ...gatewayConversation, status: 'idle' as const, activeTurnId: null };
+    setCanonicalState([idle], ref);
+    useChatStore.setState({ sending: { [conversationKey(ref)]: true } });
+
+    render(<Chat />);
+
+    const stop = screen.getByLabelText('Cancel response');
+    expect(stop).toBeEnabled();
+    await userEvent.click(stop);
+    expect(useChatStore.getState().sending[conversationKey(ref)]).toBe(false);
+  });
+
+  /**
+   * D6 — the notification prompt rendered raw.
+   *
+   * A background child's completion wakes the conversation with a
+   * server-initiated turn whose user-side row is the block
+   * `packages/swarm/src/notifications.ts` composes. MC drew that block as a
+   * full user bubble, `[SYSTEM NOTIFICATION - NOT USER INPUT]` and all
+   * (`x1-screens/32.1-cards-and-meta.png`). Design §8.5 says a row.
+   */
+  it('summarizes a notification turn instead of drawing its raw prompt', () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    const raw =
+      '[SYSTEM NOTIFICATION - NOT USER INPUT]\n\n' +
+      '<task-notification>\n<task-id>sub_01M21PVS</task-id>\n' +
+      '<agent-name>writer</agent-name>\n<status>done</status>\n' +
+      '<summary>Agent "reply with WRITTEN" finished</summary>\n' +
+      '<result>\nWRITTEN\n</result>\n</task-notification>';
+    setCanonicalState([gatewayConversation], ref);
+    useChatStore.setState({
+      messages: {
+        [conversationKey(ref)]: [
+          {
+            id: 'notif-user',
+            role: 'user',
+            origin: 'notification',
+            status: 'complete',
+            seq: 12,
+            createdAt: '2026-09-09T00:00:00.000Z',
+            content: { type: 'user', text: raw },
+          } as unknown as ConversationMessage,
+          {
+            id: 'parent-user',
+            role: 'user',
+            origin: 'parent',
+            status: 'complete',
+            seq: 13,
+            createdAt: '2026-09-09T00:00:01.000Z',
+            content: { type: 'user', text: 'reply with exactly the word WRITTEN' },
+          } as unknown as ConversationMessage,
+        ],
+      },
+    });
+
+    render(<Chat />);
+
+    expect(screen.getByTestId('notification-row')).toHaveTextContent(
+      'Agent "reply with WRITTEN" finished',
+    );
+    expect(screen.queryByText(/SYSTEM NOTIFICATION - NOT USER INPUT/)).toBeNull();
+    // §8.5's other row: `origin: 'parent'` keeps its TEXT, because that text is
+    // the instruction the child is working from — it must not collapse to the
+    // notification label, and it must not be a user bubble either.
+    const orchestrator = screen.getByTestId('orchestrator-row');
+    expect(orchestrator).toHaveTextContent('from orchestrator');
+    expect(orchestrator).toHaveTextContent('reply with exactly the word WRITTEN');
+  });
+
+  /**
+   * D2 — a background child drew a SECOND card. On replay of one conversation
+   * with five children, `subagent-card-toggle-*` returned TEN elements
+   * (`x1-screens/32.8-replay-duplicate-cards.png`). The two copies also
+   * disagreed, one reading `0 tool uses` and the other `1 tool use · 3s`.
+   *
+   * Driven by `subagent-notification-frames.jsonl`: one real conversation, an
+   * assistant turn that spawns a background `writer` and the server-initiated
+   * notification turn its completion wakes.
+   */
+  it('draws one card for a child the notification turn reports again', () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    const frames = readFileSync(
+      resolve(
+        __dirname,
+        '../../../../../../contracts/mobile/v1/fixtures/subagent-notification-frames.jsonl',
+      ),
+      'utf8',
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; id: string; event?: McAgentEvent });
+    const byTurn = new Map<string, McAgentEvent[]>();
+    for (const frame of frames) {
+      if (frame.type !== 'event' || !frame.event) continue;
+      byTurn.set(frame.id, [...(byTurn.get(frame.id) ?? []), frame.event]);
+    }
+    const turns = [...byTurn.entries()];
+    expect(turns).toHaveLength(2);
+
+    setCanonicalState([gatewayConversation], ref);
+    useChatStore.setState({
+      messages: {
+        [conversationKey(ref)]: turns.map(
+          ([turnId, events], index) =>
+            ({
+              id: turnId,
+              role: 'assistant',
+              status: 'complete',
+              seq: index + 1,
+              createdAt: `2026-09-09T00:00:0${index}.000Z`,
+              content: { type: 'assistant', events },
+            }) as unknown as ConversationMessage,
+        ),
+      },
+    });
+
+    render(<Chat />);
+
+    const started = turns[0][1].find((e) => e.type === 'subagent_started') as
+      | { subagentId: string }
+      | undefined;
+    expect(started).toBeDefined();
+    expect(screen.getAllByTestId(`subagent-card-toggle-${started?.subagentId}`)).toHaveLength(1);
+  });
+
+  it('draws one v2 card when a notification turn reports the same child again', () => {
+    const frames = readFileSync(
+      resolve(
+        __dirname,
+        '../../../../../../contracts/mobile/v1/fixtures/subagent-notification-frames.jsonl',
+      ),
+      'utf8',
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; id: string; event?: McAgentEvent });
+    const byTurn = new Map<string, McAgentEvent[]>();
+    for (const frame of frames) {
+      if (frame.type !== 'event' || !frame.event) continue;
+      byTurn.set(frame.id, [...(byTurn.get(frame.id) ?? []), frame.event]);
+    }
+    const turns = [...byTurn.entries()];
+    const messages = turns.map(
+      ([turnId, events], index): MobileV2ConversationMessage => ({
+        id: `v2-assistant-${index}`,
+        conversationId: gatewayConversation.id,
+        turnId: `${turnId}:segment`,
+        runId: turnId,
+        segmentIndex: 0,
+        ordinal: index * 2 + 1,
+        role: 'assistant',
+        status: 'completed',
+        deliveryKind: 'normal',
+        content: { type: 'assistant', events },
+        createdAt: `2026-09-09T00:00:0${index}.000Z`,
+        updatedAt: `2026-09-09T00:00:0${index}.000Z`,
+      }),
+    );
+    messages.splice(1, 0, {
+      id: 'v2-notification-prompt',
+      conversationId: gatewayConversation.id,
+      turnId: 'notification-run:prompt',
+      runId: 'notification-run',
+      segmentIndex: 0,
+      ordinal: 2,
+      role: 'user',
+      status: 'completed',
+      deliveryKind: 'normal',
+      origin: 'notification',
+      content: {
+        type: 'user',
+        text: '<task-notification><task-id>sub_01M21PVS839FQA3STD22Z2BNKM</task-id></task-notification>',
+      },
+      createdAt: '2026-09-09T00:00:01.000Z',
+      updatedAt: '2026-09-09T00:00:01.000Z',
+    });
+    installMainV2(
+      v2Bootstrap(gatewayConversation, {
+        activeTurnId: null,
+        messages,
+      }),
+    );
+
+    render(<Chat />);
+
+    expect(
+      screen.getAllByTestId('subagent-card-toggle-sub_01M21PVS839FQA3STD22Z2BNKM'),
+    ).toHaveLength(1);
+    expect(screen.getByTestId('notification-row')).toBeInTheDocument();
   });
 
   it('keeps archived history readable and marks it archived while locking mutations', async () => {
@@ -1291,6 +1540,20 @@ describe('MessageBubble tool rows (tool-use UX 2026-09-05)', () => {
     };
   }
 
+  it.each(chatOrderFixture.cases)(
+    'matches shared assistant event order: $name',
+    ({ events, expected }) => {
+      render(<MessageBubble message={assistantMessage(events)} />);
+      const elements = orderedFixtureElements(expected);
+      for (let index = 1; index < elements.length; index++) {
+        expect(
+          elements[index - 1].compareDocumentPosition(elements[index]) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+      }
+    },
+  );
+
   it('shows what a tool call returned in the collapsed header', () => {
     const { container } = render(
       <MessageBubble
@@ -1411,6 +1674,861 @@ describe('MessageBubble auto-retry rendering', () => {
     expect(container.textContent).toContain('Retrying (attempt 1)');
     expect(container.textContent).toContain('Recovered fine.');
     expect(container.querySelector('.text-red')).toBeNull();
+  });
+});
+
+// --- Sub-agent cards (design §8.1, §8.3) ------------------------------------
+
+describe('MessageBubble sub-agent cards', () => {
+  const START = '2026-09-04T00:00:00.000Z';
+  const END = '2026-09-04T00:00:45.000Z';
+  // Every card below is drawn for the conversation the store has selected, the
+  // way the Chat route draws it. A bubble that states a different conversation
+  // — or none — draws read-only cards, which is its own test.
+  const CARD_KEY = 'gateway:parent-1';
+
+  function assistantMessage(events: Record<string, unknown>[]) {
+    return {
+      id: 'm1',
+      role: 'assistant' as const,
+      content: { type: 'assistant' as const, events },
+      timestamp: '2026-07-06T00:00:00Z',
+    };
+  }
+
+  const started = {
+    type: 'subagent_started' as const,
+    subagentId: 'sub_a',
+    name: 'reviewer',
+    subagentType: 'code-reviewer',
+    description: 'Review the diff',
+    prompt: 'Review it',
+    model: 'anthropic/claude-opus-4',
+    background: false,
+    depth: 1,
+    startedAt: START,
+  };
+  const finishedEvent = {
+    type: 'subagent_finished' as const,
+    subagentId: 'sub_a',
+    name: 'reviewer',
+    subagentType: 'code-reviewer',
+    description: 'Review the diff',
+    status: 'done',
+    report: 'Two findings, both minor.',
+    toolCallCount: 12,
+    startedAt: START,
+    endedAt: END,
+  };
+
+  function entry(over: Record<string, unknown> = {}): SubagentListEntry {
+    return {
+      id: 'sub_a',
+      type: 'code-reviewer',
+      description: 'Review the diff',
+      status: 'running',
+      background: false,
+      depth: 1,
+      startedAt: START,
+      toolCallCount: 12,
+      oneShot: false,
+      ...over,
+    } as SubagentListEntry;
+  }
+
+  beforeEach(() => {
+    // A card only ever renders inside a selected conversation, and the list
+    // re-read is addressed to that conversation.
+    useChatStore.setState({
+      subagents: [],
+      subagentUi: {},
+      selectedConversationRef: { id: 'parent-1', origin: 'gateway' },
+    });
+    mockApi.subagentsList.mockReset();
+    mockApi.subagentsList.mockResolvedValue([]);
+    mockApi.conversationMessages.mockReset();
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+    mockApi.subagentResume.mockReset();
+    mockApi.subagentResume.mockResolvedValue({ ok: true, status: 'running', mode: 'queued' });
+  });
+
+  it('renders one card with the type, description and "12 tool uses · 45s"', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([started, finishedEvent])}
+        conversationKey={CARD_KEY}
+      />,
+    );
+
+    const card = screen.getByTestId('subagent-card-sub_a');
+    expect(card).toHaveTextContent('code-reviewer');
+    expect(card).toHaveTextContent('Review the diff');
+    expect(within(card).getByTestId('subagent-card-meta')).toHaveTextContent('12 tool uses · 45s');
+  });
+
+  /**
+   * D8 ruling 4 — one malformed persisted event must not make a conversation
+   * unopenable. MC has no strict decode (`McAgentEvent` mirrors the open
+   * `AgentEvent` shape), so the degradation is at RENDER time. Measured, not
+   * assumed: it renders NOTHING for the bad event and every sibling survives.
+   * Same outcome as web; iOS placeholders it instead, because `.unknown` is
+   * the only non-fatal escape a strict decoder has.
+   */
+  it('drops a malformed sub-agent event, keeping every sibling in the message', () => {
+    const { container } = render(
+      <MessageBubble
+        conversationKey={CARD_KEY}
+        message={assistantMessage([
+          { type: 'text_delta', text: 'before' },
+          // `subagent_finished` with no `subagentId` — the key the fold uses.
+          {
+            type: 'subagent_finished',
+            subagentType: 'Explore',
+            description: 'd',
+            status: 'done',
+            report: 'r',
+          },
+          { type: 'text_delta', text: 'after' },
+        ])}
+      />,
+    );
+
+    expect(screen.queryByTestId('subagent-card-meta')).toBeNull();
+    expect(screen.queryByText('Activity from a newer Dash version')).not.toBeInTheDocument();
+    expect(container.textContent).toContain('before');
+    expect(container.textContent).toContain('after');
+  });
+
+  // A persisted PRE-D8 message carries the retired mirror. It must draw
+  // exactly one card (from the canonical half) and no unknown-activity row.
+  it('no longer draws a child as activity from a newer Dash version', () => {
+    render(
+      <MessageBubble
+        conversationKey={CARD_KEY}
+        message={assistantMessage([
+          {
+            type: 'worker_spawned',
+            workerId: 'sub_a',
+            runId: 'r',
+            role: 'reviewer',
+            brief: 'b',
+            model: 'm',
+          },
+          { type: 'agent_spawned', name: 'reviewer' },
+          started,
+        ])}
+      />,
+    );
+
+    expect(screen.queryByText('Activity from a newer Dash version')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('subagent-card-sub_a')).toHaveLength(1);
+  });
+
+  it('renders no elapsed segment for a terminal child with no endedAt', () => {
+    render(
+      <MessageBubble
+        conversationKey={CARD_KEY}
+        message={assistantMessage([
+          { ...started, startedAt: undefined } as unknown as McAgentEvent,
+        ])}
+      />,
+    );
+
+    const meta = screen.getByTestId('subagent-card-meta');
+    expect(meta).toHaveTextContent('0 tool uses');
+    expect(meta.textContent).not.toContain('·');
+  });
+
+  // The store's `subagents` list belongs to the SELECTED conversation. A card
+  // drawn for any other one — `SessionPanel` draws a project session's
+  // transcript with the same bubble — must not read it, and must not offer
+  // actions whose follow-up read would refresh a different conversation.
+  // Same id, different origin: the store models that pair deliberately.
+  it('renders fold-only for a card that is not on the selected conversation', () => {
+    useChatStore.setState({ subagents: [entry({ status: 'done', oneShot: true })] });
+
+    render(
+      <MessageBubble
+        message={assistantMessage([{ ...started, background: true }])}
+        conversationKey="local:parent-1"
+      />,
+    );
+
+    const card = screen.getByTestId('subagent-card-sub_a');
+    expect(card).toHaveAttribute('data-status', 'running');
+    expect(screen.queryByTestId('subagent-card-toggle-sub_a')).not.toBeInTheDocument();
+  });
+
+  // Design §8.2: adjacent children render inside one group container with a
+  // summary line, a dot strip and a collapse-as-a-unit toggle. The line is
+  // `formatClusterSummary`'s, which is byte-identical to web's and to the
+  // spec's own example.
+  it('draws two adjacent children as one parallel group with the spec summary line', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([])}
+        streamingEvents={[started, { ...started, subagentId: 'sub_b', name: 'planner' }]}
+        conversationKey={CARD_KEY}
+      />,
+    );
+
+    const group = screen.getByTestId('subagent-group');
+    expect(group).toHaveTextContent('2 agents · 2 running');
+    expect(within(group).getByTestId('subagent-card-sub_a')).toBeInTheDocument();
+    expect(within(group).getByTestId('subagent-card-sub_b')).toBeInTheDocument();
+  });
+
+  // The group header is a card-level affordance one level up, and it obeys the
+  // same rule: it writes `subagentUi`, which belongs to the selected
+  // conversation. Off it, the summary line renders and nothing is clickable.
+  it('gives a parallel group no toggle when it is not on the selected conversation', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([])}
+        streamingEvents={[started, { ...started, subagentId: 'sub_b', name: 'planner' }]}
+        conversationKey="local:parent-1"
+      />,
+    );
+
+    expect(screen.getByTestId('subagent-group')).toHaveTextContent('2 agents · 2 running');
+    expect(screen.queryByTestId('subagent-group-toggle-sub_a')).not.toBeInTheDocument();
+  });
+
+  // The header counts what the cards beneath it count. The broad trigger is an
+  // ordinary `background: true` fan-out: those children outlive the parent
+  // turn, so no event ever moves the fold again and only the list read knows
+  // what became of them. Left on the fold, the summary line and the dot strip
+  // would contradict the cards under them for the life of the conversation.
+  it('counts the resolved statuses in the group summary and dots, as its cards do', () => {
+    useChatStore.setState({ subagents: [entry({ status: 'running' })] });
+
+    render(
+      <MessageBubble
+        message={assistantMessage([
+          { ...started, background: true },
+          finishedEvent,
+          { ...started, subagentId: 'sub_b', name: 'planner', background: true },
+        ])}
+        conversationKey={CARD_KEY}
+      />,
+    );
+
+    expect(screen.getByTestId('subagent-card-sub_a')).toHaveAttribute('data-status', 'running');
+    expect(screen.getByTestId('subagent-group')).toHaveTextContent('2 agents · 2 running');
+    const dot = screen.getByTestId('subagent-group-dot-sub_a');
+    expect(dot).toHaveAttribute('title', 'code-reviewer: running');
+    expect(dot.className).toContain('bg-accent');
+  });
+
+  // Off the selected conversation the fold is the only honest source — the
+  // list describes somebody else's children — so the summary line and the dots
+  // stay on it, exactly as the cards beneath them do.
+  it('leaves the group summary and dots on the fold off the selected conversation', () => {
+    useChatStore.setState({ subagents: [entry({ status: 'running' })] });
+
+    render(
+      <MessageBubble
+        message={assistantMessage([
+          { ...started, background: true },
+          finishedEvent,
+          { ...started, subagentId: 'sub_b', name: 'planner', background: true },
+        ])}
+        conversationKey="local:parent-1"
+      />,
+    );
+
+    expect(screen.getByTestId('subagent-card-sub_a')).toHaveAttribute('data-status', 'done');
+    expect(screen.getByTestId('subagent-group')).toHaveTextContent('2 agents · 1 running · 1 done');
+    expect(screen.getByTestId('subagent-group-dot-sub_a')).toHaveAttribute(
+      'title',
+      'code-reviewer: done',
+    );
+  });
+
+  it('collapses a parallel group as a unit', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([])}
+        streamingEvents={[started, { ...started, subagentId: 'sub_b', name: 'planner' }]}
+        conversationKey={CARD_KEY}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('subagent-group-toggle-sub_a'));
+
+    expect(screen.queryByTestId('subagent-card-sub_a')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('subagent-card-sub_b')).not.toBeInTheDocument();
+    expect(screen.getByTestId('subagent-group')).toHaveTextContent('2 agents · 2 running');
+  });
+
+  it('gives a lone child no group chrome, and splits a group on other content', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([])}
+        streamingEvents={[
+          started,
+          { type: 'text_delta', text: 'thinking out loud' },
+          { ...started, subagentId: 'sub_b', name: 'planner' },
+        ]}
+        conversationKey={CARD_KEY}
+      />,
+    );
+
+    expect(screen.queryByTestId('subagent-group')).not.toBeInTheDocument();
+    expect(screen.getByTestId('subagent-card-sub_a')).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-card-sub_b')).toBeInTheDocument();
+  });
+
+  it('reads the server status over its own fold', () => {
+    useChatStore.setState({ subagents: [entry({ status: 'running' })] });
+
+    render(
+      <MessageBubble
+        message={assistantMessage([started, finishedEvent])}
+        conversationKey={CARD_KEY}
+      />,
+    );
+
+    expect(screen.getByTestId('subagent-card-sub_a')).toHaveAttribute('data-status', 'running');
+  });
+
+  it('falls back to the fold for a child the list does not carry', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([started, finishedEvent])}
+        conversationKey={CARD_KEY}
+      />,
+    );
+
+    expect(screen.getByTestId('subagent-card-sub_a')).toHaveAttribute('data-status', 'done');
+  });
+
+  // Ruling 2: the fold is still holding a live question because no child event
+  // reaches a parent whose turn is over; only the server knows the child was
+  // stopped. The one-line detail keeps the question text — it IS the last thing
+  // the child said — but the reply affordance must be gone.
+  it('offers no reply on a row the server says is finished', () => {
+    useChatStore.setState({ subagents: [entry({ status: 'cancelled' })] });
+    const waiting = {
+      type: 'subagent_progress' as const,
+      subagentId: 'sub_a',
+      status: 'waiting_input' as const,
+      question: 'Which branch?',
+      toolCallCount: 1,
+      elapsedMs: 10,
+    };
+
+    render(
+      <MessageBubble
+        message={assistantMessage([started, waiting])}
+        streamingEvents={[started, waiting]}
+        conversationKey={CARD_KEY}
+      />,
+    );
+
+    expect(screen.getByTestId('subagent-card-sub_a')).toHaveAttribute('data-status', 'cancelled');
+    expect(screen.queryByTestId('subagent-reply-input-sub_a')).not.toBeInTheDocument();
+  });
+
+  it('fetches the child transcript on first expansion and renders it nested', async () => {
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        {
+          id: 'cm1',
+          conversationId: 'sub_a',
+          turnId: 't1',
+          ordinal: 1,
+          role: 'assistant',
+          status: 'completed',
+          content: { type: 'assistant', events: [{ type: 'text_delta', text: 'child says hi' }] },
+          createdAt: START,
+          updatedAt: START,
+        },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+
+    render(
+      <MessageBubble
+        message={assistantMessage([started, finishedEvent])}
+        conversationKey={CARD_KEY}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    await waitFor(() => expect(mockApi.conversationMessages).toHaveBeenCalledWith('sub_a'));
+    expect(await screen.findByText('child says hi')).toBeInTheDocument();
+    expect(screen.getByText('Two findings, both minor.')).toBeInTheDocument();
+  });
+
+  // Ruling 7: both other clients cap nesting at one level, and an expandable
+  // grandchild would fetch a new transcript on every expansion, without bound.
+  it('renders a grandchild inside an expanded card without a toggle', async () => {
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        {
+          id: 'cm1',
+          conversationId: 'sub_a',
+          turnId: 't1',
+          ordinal: 1,
+          role: 'assistant',
+          status: 'completed',
+          content: {
+            type: 'assistant',
+            events: [{ ...started, subagentId: 'sub_b', depth: 2, description: 'Grandchild work' }],
+          },
+          createdAt: START,
+          updatedAt: START,
+        },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+
+    render(
+      <MessageBubble
+        message={assistantMessage([started, finishedEvent])}
+        conversationKey={CARD_KEY}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    expect(await screen.findByTestId('subagent-card-sub_b')).toBeInTheDocument();
+    expect(screen.queryByTestId('subagent-card-toggle-sub_b')).not.toBeInTheDocument();
+  });
+
+  // A BACKGROUND child parked on a question in a message whose turn is long
+  // over — the case the whole panel exists for, and the one where the fold's
+  // end-of-stream terminalization is exempted.
+  const waitingBackground = [
+    { ...started, background: true },
+    {
+      type: 'subagent_progress' as const,
+      subagentId: 'sub_a',
+      status: 'waiting_input' as const,
+      question: 'Which branch?',
+      toolCallCount: 1,
+      elapsedMs: 10,
+    },
+  ];
+
+  // A message the child is still streaming must render as LIVE: the walk's
+  // tail-flush draws an unresolved `tool_use_start` as "interrupted" and the
+  // fold terminalizes a grandchild to `cancelled` when it is told the stream
+  // has ended.
+  it('renders a still-streaming child message as live, not as interrupted', async () => {
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        {
+          id: 'cm1',
+          conversationId: 'sub_a',
+          turnId: 't1',
+          ordinal: 1,
+          role: 'assistant',
+          status: 'streaming',
+          content: {
+            type: 'assistant',
+            events: [{ type: 'tool_use_start', id: 'x1', name: 'bash', input: {} }],
+          },
+          createdAt: START,
+          updatedAt: START,
+        },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+
+    render(
+      <MessageBubble
+        message={assistantMessage([started])}
+        streamingEvents={[started]}
+        conversationKey={CARD_KEY}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    const transcript = await screen.findByTestId('subagent-transcript');
+    expect(transcript.textContent).not.toContain('interrupted');
+  });
+
+  // The other half of the same claim: with `isStreaming=false` the fold
+  // terminalizes a grandchild that has no `subagent_finished` to `cancelled`.
+  it('keeps a grandchild of a still-streaming child message running, not cancelled', async () => {
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        {
+          id: 'cm1',
+          conversationId: 'sub_a',
+          turnId: 't1',
+          ordinal: 1,
+          role: 'assistant',
+          status: 'streaming',
+          content: {
+            type: 'assistant',
+            events: [{ ...started, subagentId: 'sub_b', depth: 2, description: 'Grandchild work' }],
+          },
+          createdAt: START,
+          updatedAt: START,
+        },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+
+    render(
+      <MessageBubble
+        message={assistantMessage([started])}
+        streamingEvents={[started]}
+        conversationKey={CARD_KEY}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    const grandchild = await screen.findByTestId('subagent-card-sub_b');
+    expect(grandchild).toHaveAttribute('data-status', 'running');
+  });
+
+  it('uses the pause and hourglass glyphs the spec names', () => {
+    const { container } = render(
+      <MessageBubble
+        conversationKey={CARD_KEY}
+        message={assistantMessage([
+          started,
+          { ...finishedEvent, status: 'interrupted', report: '' },
+        ])}
+      />,
+    );
+    expect(container.querySelector('.lucide-pause')).not.toBeNull();
+
+    cleanup();
+    const second = render(
+      <MessageBubble
+        conversationKey={CARD_KEY}
+        message={assistantMessage([started, { ...finishedEvent, status: 'max_turns', report: '' }])}
+      />,
+    );
+    expect(second.container.querySelector('.lucide-hourglass')).not.toBeNull();
+  });
+
+  // §8.1 puts the pending question on the COLLAPSED row precisely so nobody
+  // has to expand a card to discover a child is stuck. A read-only card still
+  // says so; what it drops is the reply box, which is the action.
+  // A card off the selected conversation has NO live source: the list belongs
+  // to another conversation, the poll re-reads only that one, and a background
+  // child's fold is never moved again once its parent's turn has ended. So it
+  // renders nothing live — the clock does not tick and the yellow question,
+  // which the fold may have been holding for hours, is not shown as if it were
+  // still being asked. It says what it is instead.
+  it('draws a read-only card as a snapshot, with no ticking clock and no question', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage(waitingBackground)}
+        conversationKey="local:parent-1"
+      />,
+    );
+
+    const card = screen.getByTestId('subagent-card-sub_a');
+    expect(card).toHaveAttribute('data-status', 'waiting');
+    expect(within(card).getByTestId('subagent-card-meta').textContent).not.toContain('·');
+    expect(card.querySelector('.animate-spin')).toBeNull();
+    expect(screen.queryByTestId('subagent-question-sub_a')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('subagent-reply-input-sub_a')).not.toBeInTheDocument();
+    expect(screen.getByTestId('subagent-card-snapshot-sub_a')).toHaveTextContent('snapshot');
+  });
+
+  // Frozen, not blank: a run the fold saw finish has a real duration, and a
+  // snapshot of it is honest. This is D1/D2's rule — an elapsed segment needs
+  // `endedAt`, never `now`.
+  it('keeps a finished read-only card its recorded duration', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([started, finishedEvent])}
+        conversationKey="local:parent-1"
+      />,
+    );
+
+    expect(screen.getByTestId('subagent-card-meta')).toHaveTextContent('12 tool uses · 45s');
+    expect(screen.getByTestId('subagent-card-snapshot-sub_a')).toBeInTheDocument();
+  });
+
+  it('replies to a waiting child from the card, and re-reads afterwards', async () => {
+    useChatStore.setState({ subagents: [entry({ status: 'waiting_input' })] });
+
+    render(
+      <MessageBubble message={assistantMessage(waitingBackground)} conversationKey={CARD_KEY} />,
+    );
+
+    expect(screen.getByTestId('subagent-question-sub_a')).toHaveTextContent('Which branch?');
+    fireEvent.change(screen.getByTestId('subagent-reply-input-sub_a'), {
+      target: { value: 'main' },
+    });
+    fireEvent.click(screen.getByTestId('subagent-reply-button-sub_a'));
+
+    await waitFor(() =>
+      expect(mockApi.subagentResume).toHaveBeenCalledWith('sub_a', 'main', expect.any(String)),
+    );
+    await waitFor(() => expect(mockApi.subagentsList).toHaveBeenCalled());
+  });
+
+  // The reply box appears the instant the FOLD sees the child park, and
+  // `subagent_progress` is deliberately not a list trigger — so REST still
+  // says `running` for up to 20 s while the user is looking at the question.
+  // Deciding "is this an answer?" from REST alone gets that window wrong, and
+  // an answer starts no turn, emits no `accepted` and persists no user row:
+  // the optimistic row would have nothing to pair with and nothing to
+  // supersede it.
+  it('adds no optimistic row for an answer the list has not caught up with', async () => {
+    useChatStore.setState({
+      conversations: [{ ...gatewayConversation, id: 'parent-1', agentId: 'agent-1' }],
+      subagents: [entry({ status: 'running' })],
+    });
+
+    render(
+      <MessageBubble message={assistantMessage(waitingBackground)} conversationKey={CARD_KEY} />,
+    );
+    // The hold is what turns optimism on at all, so the card must be open.
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+    await waitFor(() => expect(mockApi.subagentSubscribe).toHaveBeenCalledWith('agent-1', 'sub_a'));
+
+    fireEvent.change(screen.getByTestId('subagent-reply-input-sub_a'), {
+      target: { value: 'main' },
+    });
+    fireEvent.click(screen.getByTestId('subagent-reply-button-sub_a'));
+
+    await waitFor(() => expect(mockApi.subagentResume).toHaveBeenCalled());
+    const rows = useChatStore.getState().subagentUi.sub_a.transcript ?? [];
+    expect(rows.filter((row) => row.role === 'user')).toHaveLength(0);
+  });
+
+  // …and the complement, so the fix cannot be "never show the row": a steer
+  // typed into the BODY composer of a running child does get one, because its
+  // `accepted` really is coming.
+  it('still shows the row for a steer typed into a running child', async () => {
+    useChatStore.setState({
+      conversations: [{ ...gatewayConversation, id: 'parent-1', agentId: 'agent-1' }],
+      subagents: [entry({ status: 'running' })],
+    });
+
+    render(<MessageBubble message={assistantMessage([started])} conversationKey={CARD_KEY} />);
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+    await waitFor(() => expect(mockApi.subagentSubscribe).toHaveBeenCalledWith('agent-1', 'sub_a'));
+
+    fireEvent.change(screen.getByTestId('subagent-compose-input-sub_a'), {
+      target: { value: 'try the other branch' },
+    });
+    fireEvent.click(screen.getByTestId('subagent-compose-button-sub_a'));
+
+    await waitFor(() => expect(mockApi.subagentResume).toHaveBeenCalled());
+    const rows = useChatStore.getState().subagentUi.sub_a.transcript ?? [];
+    expect(rows.filter((row) => row.role === 'user')).toHaveLength(1);
+  });
+
+  // Ruling 5: a refusal with no render site is a refusal nobody sees. The card
+  // is one of the two action sites; the panel is the other.
+  it('shows the gateway reason on the card when a reply is refused', async () => {
+    useChatStore.setState({ subagents: [entry({ status: 'waiting_input' })] });
+    mockApi.subagentResume.mockResolvedValue({
+      ok: false,
+      reason: 'sub-agent type Explore is one-shot and cannot be resumed',
+    });
+
+    render(
+      <MessageBubble message={assistantMessage(waitingBackground)} conversationKey={CARD_KEY} />,
+    );
+
+    fireEvent.change(screen.getByTestId('subagent-reply-input-sub_a'), {
+      target: { value: 'main' },
+    });
+    fireEvent.click(screen.getByTestId('subagent-reply-button-sub_a'));
+
+    expect(
+      await screen.findByText('sub-agent type Explore is one-shot and cannot be resumed'),
+    ).toBeInTheDocument();
+    // The sentence the user typed survives the refusal.
+    expect(screen.getByTestId('subagent-reply-input-sub_a')).toHaveValue('main');
+  });
+
+  // D2 fix round 2 (`10cacdc2`): a one-shot child PARKED ON A QUESTION can be
+  // answered. Only a one-shot child that is not waiting refuses.
+  it('lets a one-shot child parked on a question be answered', () => {
+    useChatStore.setState({ subagents: [entry({ status: 'waiting_input', oneShot: true })] });
+
+    render(
+      <MessageBubble message={assistantMessage(waitingBackground)} conversationKey={CARD_KEY} />,
+    );
+    fireEvent.change(screen.getByTestId('subagent-reply-input-sub_a'), {
+      target: { value: 'main' },
+    });
+
+    expect(screen.getByTestId('subagent-reply-input-sub_a')).not.toBeDisabled();
+    expect(screen.getByTestId('subagent-reply-button-sub_a')).not.toBeDisabled();
+  });
+
+  // Ruling 1: subscribe exactly while the card is expanded. The parent's own
+  // conversation has to be in the store for the hold to be addressable — a
+  // child rides its parent's agent id.
+  const parentConversation: McConversationView = {
+    ...gatewayConversation,
+    id: 'parent-1',
+    agentId: 'agent-1',
+  };
+
+  it("holds the child's stream while the card is open, and lets it go on collapse", async () => {
+    useChatStore.setState({ conversations: [parentConversation] });
+
+    render(<MessageBubble message={assistantMessage([started])} conversationKey={CARD_KEY} />);
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    await waitFor(() => expect(mockApi.subagentSubscribe).toHaveBeenCalledWith('agent-1', 'sub_a'));
+
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    await waitFor(() => expect(mockApi.subagentUnsubscribe).toHaveBeenCalledWith('sub_a'));
+  });
+
+  // Ruling 7. A grandchild has no toggle, so it cannot be expanded — and it
+  // must not take a hold on its own account either.
+  it('takes no hold for a card that cannot be opened', async () => {
+    useChatStore.setState({ conversations: [parentConversation] });
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        {
+          id: 'cm1',
+          conversationId: 'sub_a',
+          turnId: 't1',
+          ordinal: 1,
+          role: 'assistant',
+          status: 'completed',
+          content: {
+            type: 'assistant',
+            events: [{ ...started, subagentId: 'sub_b', depth: 2, description: 'Grandchild' }],
+          },
+          createdAt: START,
+          updatedAt: START,
+        },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+
+    render(<MessageBubble message={assistantMessage([started])} conversationKey={CARD_KEY} />);
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    expect(await screen.findByTestId('subagent-card-sub_b')).toBeInTheDocument();
+    expect(mockApi.subagentSubscribe).not.toHaveBeenCalledWith('agent-1', 'sub_b');
+  });
+
+  // The whole point of D7b: an open card grows on its own, with no re-fetch and
+  // no action by the user.
+  it('grows while it is open, from the child’s own stream', async () => {
+    useChatStore.setState({ conversations: [parentConversation] });
+
+    render(<MessageBubble message={assistantMessage([started])} conversationKey={CARD_KEY} />);
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+    await waitFor(() => expect(mockApi.subagentSubscribe).toHaveBeenCalledWith('agent-1', 'sub_a'));
+
+    await act(async () => {
+      await useChatStore.getState().applyFrame({
+        type: 'accepted',
+        id: 'child-turn-1',
+        conversationId: 'sub_a',
+        userMessageId: 'child-user-1',
+        assistantMessageId: 'child-assistant-1',
+        revision: 3,
+        seq: 41,
+      } as MobileWsServerFrame);
+      await useChatStore.getState().applyFrame({
+        type: 'event',
+        id: 'child-turn-1',
+        conversationId: 'sub_a',
+        seq: 42,
+        event: { type: 'text_delta', text: 'arriving live' },
+      } as MobileWsServerFrame);
+    });
+
+    expect(await screen.findByText('arriving live')).toBeInTheDocument();
+  });
+
+  it('disables the composer of a running one-shot child and says why', async () => {
+    useChatStore.setState({ subagents: [entry({ status: 'running', oneShot: true })] });
+
+    render(
+      <MessageBubble
+        message={assistantMessage([started])}
+        streamingEvents={[started]}
+        conversationKey={CARD_KEY}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    expect(await screen.findByTestId('subagent-compose-button-sub_a')).toBeDisabled();
+    expect(screen.getByTestId('subagent-card-sub_a')).toHaveTextContent('one-shot');
+  });
+});
+
+/**
+ * The Sub-agents panel affordance read `swarm?.enabled === true`, one of the
+ * two blocks the gateway consults. The gateway's gate is
+ * `subagents?.enabled ?? swarm?.enabled ?? true`, so for the DEFAULT
+ * population — an agent with neither block, which has sub-agents on and holds
+ * the `agent` tool — the toolbar button was hidden until a child happened to
+ * exist. Turning the feature on from the Swarm card, which now writes
+ * `subagents.enabled`, would not have brought it back either.
+ */
+describe('Sub-agents panel affordance', () => {
+  const withConfig = (config: Record<string, unknown>) => ({
+    ...agent1,
+    config: { ...agent1.config, ...config },
+  });
+
+  // The affordance is `enabled || this conversation already has children`, so
+  // a child left in the store by an earlier test would hide the gate half of
+  // it — which is the half these cases are about.
+  beforeEach(() => {
+    mockApi.subagentsList.mockResolvedValue([]);
+    useChatStore.setState({ subagents: [], subagentUi: {} });
+  });
+
+  it('is shown for an agent with NEITHER block — sub-agents are on by default', async () => {
+    useAgentsStore.setState({ agents: [agent1], loading: false, error: null });
+    setCanonicalState([gatewayConversation], { id: gatewayConversation.id, origin: 'gateway' });
+    render(<Chat />);
+    expect(await screen.findByTestId('swarm-panel-toggle')).toBeInTheDocument();
+  });
+
+  it('is shown when only subagents.enabled says so, over a legacy swarm off', async () => {
+    useAgentsStore.setState({
+      agents: [withConfig({ swarm: { enabled: false }, subagents: { enabled: true } })],
+      loading: false,
+      error: null,
+    });
+    setCanonicalState([gatewayConversation], { id: gatewayConversation.id, origin: 'gateway' });
+    render(<Chat />);
+    expect(await screen.findByTestId('swarm-panel-toggle')).toBeInTheDocument();
+  });
+
+  it('is hidden for an agent that really has sub-agents off and no children', async () => {
+    // Both directions in ONE test, so the negative cannot be a mistyped
+    // selector quietly matching nothing.
+    useAgentsStore.setState({ agents: [agent1], loading: false, error: null });
+    setCanonicalState([gatewayConversation], { id: gatewayConversation.id, origin: 'gateway' });
+    render(<Chat />);
+    expect(await screen.findByTestId('swarm-panel-toggle')).toBeInTheDocument();
+    cleanup();
+
+    useAgentsStore.setState({
+      agents: [withConfig({ subagents: { enabled: false } })],
+      loading: false,
+      error: null,
+    });
+    setCanonicalState([gatewayConversation], { id: gatewayConversation.id, origin: 'gateway' });
+    render(<Chat />);
+    await waitFor(() => expect(screen.queryByTestId('swarm-panel-toggle')).not.toBeInTheDocument());
   });
 });
 
@@ -1651,5 +2769,42 @@ describe('MessageBubble v2 input and question treatment', () => {
 
     expect(screen.getByText('Finished before persistence.')).toBeInTheDocument();
     expect(container.querySelector('.animate-spin')).not.toBeInTheDocument();
+  });
+});
+
+describe('MessageBubble notice chips', () => {
+  function noticeMessage(kind: 'skill_learned' | 'memory_saved', text: string) {
+    return {
+      id: 'n1',
+      role: 'assistant' as const,
+      content: { type: 'notice' as const, kind, text },
+      timestamp: '2026-09-06T00:00:00Z',
+    };
+  }
+
+  it('renders a learned skill as a chip', () => {
+    render(<MessageBubble message={noticeMessage('skill_learned', 'Learned: write-files')} />);
+
+    const chip = screen.getByTestId('notice-chip');
+    expect(chip).toHaveTextContent('Learned: write-files');
+    expect(chip).toHaveAttribute('data-notice-kind', 'skill_learned');
+  });
+
+  it('renders a swept memory as a chip', () => {
+    render(<MessageBubble message={noticeMessage('memory_saved', 'Remembered: prefers printf')} />);
+
+    const chip = screen.getByTestId('notice-chip');
+    expect(chip).toHaveTextContent('Remembered: prefers printf');
+    expect(chip).toHaveAttribute('data-notice-kind', 'memory_saved');
+  });
+
+  it('does not render the assistant event pipeline for a notice', () => {
+    // A notice carries no events; rendering it through renderEvents would throw
+    // or produce an empty assistant bubble instead of a chip.
+    const { container } = render(
+      <MessageBubble message={noticeMessage('skill_learned', 'Learned: x')} />,
+    );
+    expect(container.querySelector('[data-testid="notice-chip"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('interrupted');
   });
 });

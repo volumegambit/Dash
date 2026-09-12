@@ -1,6 +1,16 @@
+import { type CreateAgentToolsOptions, NAME_RE, createChildSpawnSeam } from './agent-tool.js';
 import type { SwarmCoordinator } from './coordinator.js';
+import { DEFAULT_SUBAGENT_TYPE } from './subagent-status.js';
 import type { SwarmExtraTool, WorkerStatus } from './types.js';
-import type { WorkerHandle } from './worker-handle.js';
+
+/** The one thing `ask_orchestrator` needs from a child: its question waiter. */
+export interface QuestionHost {
+  waitForQuestion(
+    question: string,
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
+  ): Promise<string>;
+}
 
 /**
  * The swarm tools are the LLM-facing surface of a swarm run. The orchestrator
@@ -103,16 +113,25 @@ const ASK_ORCHESTRATOR_PARAMETERS = {
 /** ask_orchestrator waits up to 10 minutes for the orchestrator to answer. */
 const ASK_TIMEOUT_MS = 600_000;
 
-export interface CreateSwarmToolsOptions {
-  coordinator: SwarmCoordinator;
-  agentId: string;
-  /**
-   * Late-bound conversation id: called per tool invocation. The gateway wires
-   * this to `backend.getCurrentSessionId()` so each tool call resolves the run
-   * for the conversation the orchestrator turn belongs to (like projects tools).
-   */
-  conversationId: () => string;
-}
+/**
+ * The legacy four are §5.2 FACADES over the same machinery `agent` /
+ * `send_message` use, so they need everything a typed spawn needs: the
+ * definition roster, the parent's grant, its model. Same options object as
+ * {@link CreateAgentToolsOptions} — the gateway builds both bundles from one
+ * set of inputs, which is what makes "one coordinator, shared caps" true.
+ */
+export type CreateSwarmToolsOptions = CreateAgentToolsOptions;
+
+/**
+ * The built-in grant `spawn_worker` has always documented ("Defaults to
+ * read-only tools") and `SwarmCoordinator.validateTools` has always applied
+ * when `tools` was omitted. Kept as the facade's explicit override rather than
+ * inherited from the `general-purpose` definition, which has no `tools:` key
+ * and therefore resolves to the parent's WHOLE grant — routing the legacy tool
+ * through it unqualified would hand every legacy worker `bash`, `edit` and
+ * `write` for the first time.
+ */
+const LEGACY_DEFAULT_TOOLS = ['read', 'grep', 'find', 'ls'] as const;
 
 /** Coerce a raw params value into a shape with known optional fields. */
 function asRecord(params: unknown): Record<string, unknown> {
@@ -147,6 +166,7 @@ function summarizeWorker(w: {
 export function createSwarmTools(opts: CreateSwarmToolsOptions): SwarmExtraTool[] {
   const { coordinator, agentId } = opts;
   const convo = () => opts.conversationId();
+  const seam = opts.seam ?? createChildSpawnSeam(opts);
 
   const spawnWorker: SwarmExtraTool = {
     name: 'spawn_worker',
@@ -160,18 +180,35 @@ export function createSwarmTools(opts: CreateSwarmToolsOptions): SwarmExtraTool[
       const brief = typeof p.brief === 'string' ? p.brief : '';
       if (!role) throw new Error('role is required.');
       if (!brief) throw new Error('brief is required.');
-      const tools = Array.isArray(p.tools) ? (p.tools as string[]) : undefined;
+      const requested = Array.isArray(p.tools) ? (p.tools as string[]) : undefined;
       const model = typeof p.model === 'string' ? p.model : undefined;
-      const { workerId, status } = coordinator.spawnWorker(agentId, convo(), {
+
+      // §5.2: `spawn_worker` = `agent(subagent_type: general-purpose,
+      // tools: <subset>, run_in_background: true)` with the role as `name` and
+      // the brief as `prompt`.
+      const { grant } = seam.grantFor(DEFAULT_SUBAGENT_TYPE);
+      // An EXPLICIT subset goes through verbatim so the coordinator's
+      // `validateTools` still refuses (with its actionable message) a tool the
+      // orchestrator does not hold. The DEFAULT is filtered instead, which is
+      // exactly what `validateTools` did for an omitted list.
+      const tools = requested ?? LEGACY_DEFAULT_TOOLS.filter((t) => grant.tools.includes(t));
+
+      const { workerId } = await seam.spawn({
+        typeName: DEFAULT_SUBAGENT_TYPE,
+        prompt: brief,
+        description: role,
         role,
-        brief,
-        tools,
-        model,
+        // A role is free text and `name` is a strict identifier; a role that
+        // cannot be one is simply not a name (the row still shows the role).
+        ...(NAME_RE.test(role) ? { name: role } : {}),
+        ...(model !== undefined ? { model } : {}),
+        background: true,
+        toolsOverride: [...tools],
       });
       const run = coordinator.getLiveRun(agentId, convo());
       return {
         content: [{ type: 'text', text: `spawned ${workerId} (${role})` }],
-        details: { workerId, runId: run?.runId, status },
+        details: { workerId, runId: run?.runId, status: 'spawning' as const },
       };
     },
   };
@@ -208,7 +245,7 @@ export function createSwarmTools(opts: CreateSwarmToolsOptions): SwarmExtraTool[
     name: 'send_to_worker',
     label: 'Send to Worker',
     description:
-      'Answer a worker that is waiting on you, or steer a running worker with an additional instruction. Use this between wait_workers calls to unblock or redirect a worker, then wait again. Steers are capped per worker; a worker that has already finished cannot be steered.',
+      'Answer a worker that is waiting on you, or steer a running worker with an additional instruction. Use this between wait_workers calls to unblock or redirect a worker, then wait again. Steers are capped per worker; a worker that has already FINISHED is resumed with your message instead, keeping its context.',
     parameters: SEND_TO_WORKER_PARAMETERS,
     execute: async (_id, params) => {
       const p = asRecord(params);
@@ -216,7 +253,26 @@ export function createSwarmTools(opts: CreateSwarmToolsOptions): SwarmExtraTool[
       const message = typeof p.message === 'string' ? p.message : '';
       if (!workerId) throw new Error('workerId is required.');
       if (!message) throw new Error('message is required.');
-      const { ok, status } = coordinator.sendToWorker(agentId, convo(), { workerId, message });
+      // §5.2: `send_to_worker` = `send_message`. One gate for both outcomes —
+      // a RUNNING child queues it, a FINISHED one is resumed with it — where
+      // the pre-D8 path (`coordinator.sendToWorker`) could only steer a live
+      // handle and answered `ok: false` for a child that had finished.
+      //
+      // `sendToChild` THROWS for the refusals `send_message` reports as errors
+      // (unknown target, one-shot, steer cap). The legacy tool's result shape
+      // is `{ ok, status, workerId }` and a legacy caller reads `ok` — E1's
+      // assertion 8 reads these results — so a refusal stays a not-ok RESULT
+      // here rather than becoming an isError.
+      let ok: boolean;
+      let status: WorkerStatus;
+      try {
+        const res = coordinator.sendToChild(convo(), workerId, message);
+        ok = res.ok;
+        status = res.status;
+      } catch {
+        ok = false;
+        status = coordinator.findWorker(agentId, convo(), workerId)?.status ?? 'cancelled';
+      }
       const text = ok
         ? `delivered to ${workerId} (${status})`
         : `could not deliver to ${workerId} (${status})`;
@@ -251,7 +307,7 @@ export function createSwarmTools(opts: CreateSwarmToolsOptions): SwarmExtraTool[
 /**
  * Build the worker-side `ask_orchestrator` tool. Passed to a worker via
  * WorkerSpec.extraTools by the coordinator. Calling it pauses the worker
- * (worker_status{waiting_input}) until the orchestrator answers (send_to_worker),
+ * (subagent_progress{waiting_input}) until the orchestrator answers (send_to_worker),
  * the run closes, the pi signal aborts, or a 10-minute timeout elapses.
  *
  * `closed` is the run's `closed` signal; it is combined with pi's per-call
@@ -259,7 +315,7 @@ export function createSwarmTools(opts: CreateSwarmToolsOptions): SwarmExtraTool[
  * cancel rejection propagates as a thrown Error (pi → isError result).
  */
 export function createAskOrchestratorTool(
-  handle: WorkerHandle,
+  handle: QuestionHost,
   closed: AbortSignal,
 ): SwarmExtraTool {
   return {

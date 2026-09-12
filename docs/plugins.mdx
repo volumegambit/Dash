@@ -53,7 +53,7 @@ A plugin is a directory with an optional `.claude-plugin/plugin.json` manifest p
 |-----------|--------------|------------|
 | `skills/` | Reusable [skills](/skills) (`SKILL.md` files) | Enabled |
 | `commands/` | Slash commands — `/<plugin>:<command>` | Enabled |
-| `agents/` | Loadable specialist subagents | Enabled |
+| `agents/` | Sub-agent types an agent can launch | Enabled |
 | `.mcp.json` | MCP servers (extra [tools](/tools)) | Enabled **and** trusted |
 | `hooks/hooks.json` | Shell commands that run at key points in a run | Enabled **and** trusted |
 | `providers/` | LLM provider catalogs that add selectable models | Enabled **and** trusted |
@@ -188,10 +188,10 @@ A plugin's `skills/<name>/SKILL.md` files join the agent's **skill index** — t
 
 ### Commands and subagents
 
-A plugin's `commands/<name>.md` becomes a slash command **`/<plugin>:<command>`** — a plugin named `research` with `commands/triage.md` exposes `/research:triage`. A plugin's `agents/<name>.md` (Claude Code subagent format) becomes a loadable specialist invocable as **`/<plugin>:<agent>`**, or loaded by the agent through `load_skill`. Both are **markdown**, so they work on `enabled` alone — no trust needed. The plugin name namespaces them, so the slash form matches exactly with no ambiguity.
+A plugin's `commands/<name>.md` becomes a slash command **`/<plugin>:<command>`** — a plugin named `research` with `commands/triage.md` exposes `/research:triage`. A plugin's `agents/<name>.md` (Claude Code subagent format) becomes a **sub-agent type** named `<plugin>:<agent>`, which an agent launches with the [`agent` tool](/tools#sub-agents). Both are **markdown**, so they work on `enabled` alone — no trust needed. The plugin name namespaces them, so neither can clash with anything else.
 
 <Note>
-**Plugin subagents run in the main session**, not as isolated child agents. Their `tools` frontmatter is therefore advisory, not enforced — a loaded specialist can use the agent's full tool set. For **isolated** parallel workers — each with its own context and a restricted tool subset — enable the agent's [Swarm](/configuration#swarm) feature instead.
+**Plugin sub-agents run in their own context**, not in the main session. Their `tools` and `model` frontmatter is **enforced** — earlier releases loaded these files into the current conversation and treated `tools` as advisory. A sub-agent still never receives a tool or MCP server its parent lacks. See [Configuration → Plugin sub-agent types](/configuration#plugin-sub-agent-types).
 </Note>
 
 ### MCP servers, hooks, and executables

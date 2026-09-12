@@ -22,6 +22,16 @@ describe('relay-client', () => {
   let loopback: http.Server | undefined;
   let relay: WebSocketServer | undefined;
   let chat: WebSocketServer | undefined;
+
+  /**
+   * `relay` / `chat` are declared optional so afterEach can tear them down, so a
+   * closure that captures one is never narrowed. This asserts the server is up
+   * at the point of use rather than widening the declaration.
+   */
+  function must<T>(server: T | undefined): T {
+    if (!server) throw new Error('expected the websocket server to be started');
+    return server;
+  }
   let client: RelayClient | undefined;
 
   afterEach(async () => {
@@ -60,12 +70,12 @@ describe('relay-client', () => {
     const mgmtPort = await listen(loopback);
 
     relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
-    await new Promise<void>((r) => relay.on('listening', () => r()));
+    await new Promise<void>((r) => must(relay).on('listening', () => r()));
     const relayPort = (relay.address() as AddressInfo).port;
 
     const received: Frame[] = [];
     const gwSocket = new Promise<WebSocket>((resolve) => {
-      relay.on('connection', (ws, req) => {
+      must(relay).on('connection', (ws, req) => {
         // The gateway must present the relay token on dial-in.
         expect(req.headers.authorization).toBe('Bearer rt');
         ws.on('message', (raw: Buffer) => received.push(decodeFrame(raw.toString())));
@@ -121,12 +131,12 @@ describe('relay-client', () => {
     const mgmtPort = await listen(loopback);
 
     relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
-    await new Promise<void>((r) => relay.on('listening', () => r()));
+    await new Promise<void>((r) => must(relay).on('listening', () => r()));
     const relayPort = (relay.address() as AddressInfo).port;
 
     const received: Frame[] = [];
     const gwSocket = new Promise<WebSocket>((resolve) => {
-      relay.on('connection', (ws) => {
+      must(relay).on('connection', (ws) => {
         ws.on('message', (raw: Buffer) => received.push(decodeFrame(raw.toString())));
         resolve(ws);
       });
@@ -175,12 +185,12 @@ describe('relay-client', () => {
     const mgmtPort = await listen(loopback);
 
     relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
-    await new Promise<void>((r) => relay.on('listening', () => r()));
+    await new Promise<void>((r) => must(relay).on('listening', () => r()));
     const relayPort = (relay.address() as AddressInfo).port;
 
     const received: Frame[] = [];
     const gwSocket = new Promise<WebSocket>((resolve) => {
-      relay.on('connection', (ws) => {
+      must(relay).on('connection', (ws) => {
         ws.on('message', (raw: Buffer) => received.push(decodeFrame(raw.toString())));
         resolve(ws);
       });
@@ -239,11 +249,11 @@ describe('relay-client', () => {
     });
 
     relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
-    await new Promise<void>((r) => relay.on('listening', () => r()));
+    await new Promise<void>((r) => must(relay).on('listening', () => r()));
     const relayPort = (relay.address() as AddressInfo).port;
     const received: Frame[] = [];
     const gwSocket = new Promise<WebSocket>((resolve) => {
-      relay.on('connection', (ws) => {
+      must(relay).on('connection', (ws) => {
         ws.on('message', (raw: Buffer) => received.push(decodeFrame(raw.toString())));
         resolve(ws);
       });
@@ -355,11 +365,11 @@ describe('relay-client', () => {
     chat.on('connection', (lws) => lws.close(4001, 'Unauthorized'));
 
     relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
-    await new Promise<void>((r) => relay.on('listening', () => r()));
+    await new Promise<void>((r) => must(relay).on('listening', () => r()));
     const relayPort = (relay.address() as AddressInfo).port;
     const received: Frame[] = [];
     const gwSocket = new Promise<WebSocket>((resolve) => {
-      relay.on('connection', (ws) => {
+      must(relay).on('connection', (ws) => {
         ws.on('message', (raw: Buffer) => received.push(decodeFrame(raw.toString())));
         resolve(ws);
       });
@@ -386,7 +396,7 @@ describe('relay-client', () => {
     await waitFor(() => received.some((f) => f.t === 'close' && f.code === 4001));
     expect(received.find((f) => f.t === 'close')?.code).toBe(4001);
 
-    await new Promise<void>((r) => chat.close(() => r()));
+    await new Promise<void>((r) => must(chat).close(() => r()));
   });
 
   it('pauses the loopback source under backpressure, then drains fully on credit', async () => {

@@ -23,6 +23,10 @@ export interface StoredConversation {
   createdAt: string;
   updatedAt: string;
   deletedAt?: string;
+  kind?: import('@dash/mobile-contract').ConversationKind;
+  parentConversationId?: string;
+  parentTurnId?: string;
+  subagent?: import('@dash/mobile-contract').SubagentInfo;
 }
 
 export interface StoredConversationMessage {
@@ -37,6 +41,7 @@ export interface StoredConversationMessage {
   deliveryKind: 'normal' | 'steer' | 'follow_up';
   deliveryStatus?: 'pending' | 'delivered' | 'not_delivered';
   content: import('@dash/mobile-contract').ConversationContent;
+  origin?: import('@dash/mobile-contract').ConversationMessageOrigin;
   createdAt: string;
   updatedAt: string;
 }
@@ -82,6 +87,8 @@ export interface AcceptRunInput {
   runId: string;
   text: string;
   images?: import('@dash/mobile-contract').MobileImage[];
+  /** Defaults to `user`; system and child turns pass their durable origin. */
+  origin?: import('@dash/mobile-contract').ConversationMessageOrigin;
 }
 
 export interface AcceptedRun {
@@ -260,5 +267,6 @@ export interface DeliveredSteerContext {
 export interface V2RecoveryResult {
   conversationsInterrupted: number;
   terminalsAppended: number;
+  subagentsInterrupted: number;
   eligibleConversationIds: string[];
 }

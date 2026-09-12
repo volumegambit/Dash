@@ -523,7 +523,7 @@ export function createHookEngine(
     // Subagent lifecycle events fire around swarm worker lifecycles. The
     // matcher is tested against the worker ROLE (the swarm analog of Claude
     // Code's agent type). Block decisions are NOT honored on either event: the
-    // WorkerHandle seam that triggers these is a synchronous fire-and-forget
+    // ChildHandle seam that triggers these is a synchronous fire-and-forget
     // callback — by the time a hook could answer, the worker is already
     // running (start) or terminal (stop). Only additionalContext is collected.
 

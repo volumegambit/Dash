@@ -356,10 +356,11 @@ describe('mobile v2 contract', () => {
     expect(rawUuidFormats[0]).toBe(schema.$defs.CanonicalUuid);
   });
 
-  it('keeps command, entity, conversation, transition, and message identities UUID-only', async () => {
+  it('keeps command, entity, transition, and message identities UUID-only while allowing subagent conversations', async () => {
     const commandId = '00000000-0000-4000-8000-000000000011';
     const inputId = '00000000-0000-4000-8000-000000000012';
     const conversationId = '00000000-0000-4000-8000-000000000013';
+    const subagentConversationId = 'sub_01ARZ3NDEKTSV4RRFFQ69G5FAV';
     const segmentTurnId = '00000000-0000-4000-8000-000000000014';
     const userMessageId = '00000000-0000-4000-8000-000000000015';
     const pendingInput = {
@@ -402,6 +403,12 @@ describe('mobile v2 contract', () => {
       await validateWsValue('ChatEnqueueInput', { ...enqueue, conversationId: 'turn-01' }),
     ).toBe(false);
     expect(
+      await validateWsValue('ChatEnqueueInput', {
+        ...enqueue,
+        conversationId: subagentConversationId,
+      }),
+    ).toBe(true);
+    expect(
       await validateWsValue('MobileV2PendingInput', {
         ...pendingInput,
         segmentTurnId: 'turn-01',
@@ -423,6 +430,175 @@ describe('mobile v2 contract', () => {
         input: pendingInput,
       }),
     ).toBe(false);
+    expect(
+      await validateWsValue('InputAccepted', {
+        type: 'input_accepted',
+        id: commandId,
+        conversationId: subagentConversationId,
+        v2Seq: 1,
+        queueRevision: 1,
+        input: pendingInput,
+      }),
+    ).toBe(true);
+  });
+
+  it('uses ConversationIdentifier for every REST and WebSocket conversation identity', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components: {
+        parameters: Record<string, { schema: unknown }>;
+        schemas: Record<string, Record<string, unknown>>;
+      };
+    };
+    const websocket = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs: Record<string, Record<string, unknown>>;
+    };
+    const canonical = '00000000-0000-4000-8000-000000000001';
+    const subagent = 'sub_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const invalid = ['turn-01', 'sub_01ARZ3NDEKTSV4RRFFQ69G5FA', 'sub_01ARZ3NDEKTSV4RRFFQ69G5FAI'];
+
+    expect(openapi.components.schemas.ConversationIdentifier).toBeDefined();
+    expect(websocket.$defs.ConversationIdentifier).toBeDefined();
+    for (const value of [canonical, subagent]) {
+      expect(await validateOpenApiValue('ConversationIdentifier', value), value).toBe(true);
+      expect(await validateWsValue('ConversationIdentifier', value), value).toBe(true);
+    }
+    for (const value of invalid) {
+      expect(await validateOpenApiValue('ConversationIdentifier', value), value).toBe(false);
+      expect(await validateWsValue('ConversationIdentifier', value), value).toBe(false);
+    }
+
+    expect(openapi.components.parameters.ConversationId.schema).toEqual({
+      $ref: '#/components/schemas/ConversationIdentifier',
+    });
+    expect(openapi.components.schemas.MobileV2ConversationSummary.properties).toMatchObject({
+      id: { $ref: '#/components/schemas/ConversationIdentifier' },
+    });
+    expect(openapi.components.schemas.MobileV2ConversationMessage.properties).toMatchObject({
+      id: { $ref: '#/components/schemas/CanonicalUuid' },
+      conversationId: { $ref: '#/components/schemas/ConversationIdentifier' },
+    });
+
+    const assertConversationRefs = (value: unknown, expectedRef: string, path = '$'): void => {
+      if (Array.isArray(value)) {
+        value.forEach((item, index) =>
+          assertConversationRefs(item, expectedRef, `${path}[${index}]`),
+        );
+        return;
+      }
+      if (value === null || typeof value !== 'object') return;
+      for (const [key, child] of Object.entries(value)) {
+        if (key === 'conversationId' && child && typeof child === 'object') {
+          expect(child, `${path}.conversationId`).toEqual({ $ref: expectedRef });
+        }
+        assertConversationRefs(child, expectedRef, `${path}.${key}`);
+      }
+    };
+    assertConversationRefs(openapi, '#/components/schemas/ConversationIdentifier');
+    assertConversationRefs(websocket, '#/$defs/ConversationIdentifier');
+  });
+
+  it('composes mainline conversation kind, subagent metadata, notices, and message origin', async () => {
+    const api = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+    const summary = api.components.schemas.MobileV2ConversationSummary;
+    const subagent = api.components.schemas.SubagentInfo;
+    const content = api.components.schemas.ConversationContent;
+    const message = api.components.schemas.MobileV2ConversationMessage;
+
+    expect(summary.required).toContain('kind');
+    expect(summary.properties).toMatchObject({
+      kind: { enum: ['user', 'subagent'] },
+      parentConversationId: { $ref: '#/components/schemas/ConversationIdentifier' },
+      parentTurnId: { type: 'string', minLength: 1 },
+      subagent: { $ref: '#/components/schemas/SubagentInfo' },
+    });
+    expect(subagent).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: [
+        'type',
+        'status',
+        'description',
+        'prompt',
+        'model',
+        'background',
+        'depth',
+        'startedAt',
+        'toolCallCount',
+        'oneShot',
+      ],
+    });
+    expect((content.oneOf as Array<Record<string, unknown>>)[2]).toMatchObject({
+      additionalProperties: false,
+      required: ['type', 'kind', 'text'],
+      properties: {
+        type: { const: 'notice' },
+        kind: { enum: ['skill_learned', 'memory_saved'] },
+        text: { type: 'string' },
+      },
+    });
+    expect(message.required).not.toContain('origin');
+    expect(message.properties).toMatchObject({
+      origin: { enum: ['user', 'notification', 'parent'] },
+    });
+
+    const userSummary = await fixture<Record<string, unknown>>('conversation-summary.json');
+    const childSummary = await fixture<Record<string, unknown>>(
+      'conversation-summary-subagent.json',
+    );
+    const noticeMessage = await fixture<Record<string, unknown>>(
+      'conversation-message-notice.json',
+    );
+    expect(await validateOpenApiValue('MobileV2ConversationSummary', userSummary)).toBe(true);
+    expect(await validateOpenApiValue('MobileV2ConversationSummary', childSummary)).toBe(true);
+    expect(await validateOpenApiValue('MobileV2ConversationMessage', noticeMessage)).toBe(true);
+
+    const sparseChild = { ...childSummary };
+    Reflect.deleteProperty(sparseChild, 'parentConversationId');
+    Reflect.deleteProperty(sparseChild, 'parentTurnId');
+    Reflect.deleteProperty(sparseChild, 'subagent');
+    expect(await validateOpenApiValue('MobileV2ConversationSummary', sparseChild)).toBe(true);
+    expect(
+      await validateOpenApiValue('MobileV2ConversationSummary', {
+        ...childSummary,
+        subagent: { ...(childSummary.subagent as object), future: true },
+      }),
+    ).toBe(false);
+    expect(
+      await validateOpenApiValue('MobileV2ConversationMessage', {
+        ...noticeMessage,
+        origin: 'future',
+      }),
+    ).toBe(false);
+  });
+
+  it('allows optional live accepted metadata while replay safely omits it', async () => {
+    const live = await fixture<Record<string, unknown>>('chat-accepted.json');
+    const replay = await fixture<{ frames: Array<Record<string, unknown>> }>(
+      'conversation-replay-page.json',
+    );
+    const websocket = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs: Record<string, { required: string[]; properties: Record<string, unknown> }>;
+    };
+    const accepted = websocket.$defs.ChatAccepted;
+
+    expect(accepted.required).not.toContain('origin');
+    expect(accepted.required).not.toContain('kind');
+    expect(accepted.required).not.toContain('requestId');
+    expect(accepted.properties).toMatchObject({
+      origin: { enum: ['user', 'notification', 'parent'] },
+      kind: { enum: ['user', 'subagent'] },
+      requestId: { type: 'string', minLength: 1, maxLength: 256 },
+    });
+    expect(live).toMatchObject({ origin: 'parent', kind: 'subagent', requestId: 'resume-01' });
+    expect(await validateWsValue('ChatAccepted', live)).toBe(true);
+    const replayAccepted = replay.frames.find((frame) => frame.type === 'accepted');
+    expect(replayAccepted).toBeDefined();
+    expect(replayAccepted).not.toHaveProperty('origin');
+    expect(replayAccepted).not.toHaveProperty('kind');
+    expect(replayAccepted).not.toHaveProperty('requestId');
+    expect(await validateOpenApiValue('ChatAccepted', replayAccepted)).toBe(true);
   });
 
   it('keeps control frames unsequenced and every durable frame sequenced', async () => {
@@ -593,7 +769,7 @@ describe('mobile v2 contract', () => {
     expect(await validateOpenApiValue('QuotedSafeInteger', '"9007199254740992"')).toBe(false);
   });
 
-  it('keeps REST and WebSocket UUID-only fields canonical while inherited run IDs stay bounded', async () => {
+  it('keeps non-conversation UUID fields canonical while inherited run IDs stay bounded', async () => {
     const api = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
       components: { schemas: Record<string, Record<string, unknown>> };
     };
@@ -803,7 +979,10 @@ describe('mobile v2 contract', () => {
     expect(new Set(files).size).toBe(files.length);
     expect([...files].sort()).toEqual(await listFixtureFiles(join(root, 'fixtures')));
     expect(files.filter((file) => file.startsWith('invalid/')).sort()).toEqual([
+      'invalid/chat-accepted-bad-origin.json',
       'invalid/control-with-v2-seq.json',
+      'invalid/conversation-message-bad-notice-kind.json',
+      'invalid/conversation-summary-bad-subagent-id.json',
       'invalid/legacy-run-id-blank.json',
       'invalid/legacy-run-id-too-large.json',
       'invalid/negative-revision.json',

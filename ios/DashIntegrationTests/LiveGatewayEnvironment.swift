@@ -516,7 +516,7 @@ final class LiveSyncRecording: Sendable {
 extension MobileWSServerFrame {
   fileprivate var liveTurnID: String {
     switch self {
-    case .accepted(let id, _, _, _, _, _),
+    case .accepted(let id, _, _, _, _, _, _, _, _),
       .event(let id, _, _, _),
       .done(let id, _, _, _),
       .error(let id, _, _, _, _, _, _):

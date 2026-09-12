@@ -7,11 +7,12 @@ import {
   MemoryStore,
   type RunOptions,
 } from '@dash/agent';
-import { SwarmCoordinator, type WorkerFactory } from '@dash/swarm';
+import { SwarmCoordinator } from '@dash/swarm';
 import { describe, expect, it, vi } from 'vitest';
 import { GatewayAdmissionController } from './admission-controller.js';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
+import { createFakeChildDriver } from './fake-child-driver.js';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -59,10 +60,11 @@ async function exerciseMixedRunConflict(options: {
     systemPrompt: 'test',
     ...(options.swarm ? { swarm: { enabled: true } } : {}),
   });
-  const workerFactory: WorkerFactory = async () => {
-    throw new Error('workers are not used by this lifecycle test');
-  };
-  const swarmCoordinator = new SwarmCoordinator({ workerFactory });
+  const swarmCoordinator = new SwarmCoordinator({
+    childDriver: createFakeChildDriver(async () => {
+      throw new Error('children are not used by this lifecycle test');
+    }),
+  });
   const attach = vi.spyOn(swarmCoordinator, 'attach');
   const agents = createAgentChatCoordinator({
     registry,
@@ -150,6 +152,7 @@ describe('AgentChatCoordinator run ownership lifecycle', () => {
     const allowReconcile = deferred<void>();
     let runCalls = 0;
     let backendPhase: 'idle' | 'active' | 'ended-unsealed' | 'sealed' = 'idle';
+    const backendIsSealed = () => backendPhase === 'sealed';
     const sealSteering = vi.fn(async () => {
       if (backendPhase === 'idle') return [];
       backendPhase = 'sealed';
@@ -171,7 +174,7 @@ describe('AgentChatCoordinator run ownership lifecycle', () => {
         try {
           yield { type: 'text_delta', text: 'unexpected' };
         } finally {
-          if (backendPhase !== 'sealed') backendPhase = 'ended-unsealed';
+          if (!backendIsSealed()) backendPhase = 'ended-unsealed';
         }
       },
     };
@@ -226,6 +229,7 @@ describe('AgentChatCoordinator run ownership lifecycle', () => {
     let runCalls = 0;
     let providerCalls = 0;
     let backendPhase: 'idle' | 'active' | 'ended-unsealed' | 'sealed' = 'idle';
+    const backendIsSealed = () => backendPhase === 'sealed';
     const sealSteering = vi.fn(async () => {
       if (backendPhase === 'idle') return [];
       backendPhase = 'sealed';
@@ -255,7 +259,7 @@ describe('AgentChatCoordinator run ownership lifecycle', () => {
         try {
           yield { type: 'text_delta', text: 'started' };
         } finally {
-          if (backendPhase !== 'sealed') backendPhase = 'ended-unsealed';
+          if (!backendIsSealed()) backendPhase = 'ended-unsealed';
         }
       },
     };
@@ -463,8 +467,8 @@ describe('AgentChatCoordinator run ownership lifecycle', () => {
         model: 'anthropic/claude-sonnet-4-20250514',
         systemPrompt: 'test',
       });
-      let chatSpy: ReturnType<typeof vi.spyOn> | undefined;
-      let memorySpy: ReturnType<typeof vi.spyOn> | undefined;
+      let chatSpy: { mockRestore(): void } | undefined;
+      let memorySpy: { mockRestore(): void } | undefined;
       if (heldPhase === 'config') {
         const originalChat = DashAgent.prototype.chat;
         chatSpy = vi.spyOn(DashAgent.prototype, 'chat').mockImplementation(function (
@@ -582,9 +586,9 @@ describe('AgentChatCoordinator shared admission', () => {
       });
       const admission = new GatewayAdmissionController();
       const swarmCoordinator = new SwarmCoordinator({
-        workerFactory: async () => {
-          throw new Error('workers are not used by this test');
-        },
+        childDriver: createFakeChildDriver(async () => {
+          throw new Error('children are not used by this test');
+        }),
       });
       const attach = vi.spyOn(swarmCoordinator, 'attach');
       const agents = createAgentChatCoordinator({

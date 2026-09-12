@@ -55,9 +55,89 @@ function parseSse(raw: string): unknown[] {
     });
 }
 
+/**
+ * Assert an event carries exactly `required`, plus any subset of `optional`.
+ * Sub-agent events (design 2026-09-04 sub-agents, 7.2) have optional members
+ * (`name`, `isolation`, `usage`, `detail`, `question`), so an exact `toEqual`
+ * cannot express them — but an unlisted key is still a contract drift.
+ */
+function assertEventShape(
+  event: Record<string, unknown>,
+  required: Record<string, unknown>,
+  optional: readonly string[],
+): void {
+  expect(event).toMatchObject(required);
+  const allowed = new Set([...Object.keys(required), ...optional]);
+  expect(Object.keys(event).filter((key) => !allowed.has(key))).toEqual([]);
+}
+
+/**
+ * The `worker_*` mirrors D8 retired. No producer emits one, and no VALID
+ * fixture may carry one — a fixture is what a client is written against, so a
+ * retired event in one is how a client re-grows a fold for something the
+ * gateway will never send again. Persisted pre-D8 transcripts still contain
+ * them; that is a client DECODE concern, not a contract-fixture one.
+ */
+const RETIRED_EVENT_TYPES = new Set(['worker_spawned', 'worker_status', 'worker_done']);
+
 function assertCanonicalAgentEvent(value: unknown): void {
   if (typeof value !== 'object' || value === null) return;
   const event = value as Record<string, unknown>;
+  if (typeof event.type === 'string' && RETIRED_EVENT_TYPES.has(event.type)) {
+    throw new Error(
+      `retired event type "${event.type}" in a valid fixture: the worker_* mirrors were removed in D8`,
+    );
+  }
+  if (event.type === 'subagent_started') {
+    assertEventShape(
+      event,
+      {
+        type: 'subagent_started',
+        subagentId: expect.any(String),
+        subagentType: expect.any(String),
+        description: expect.any(String),
+        prompt: expect.any(String),
+        model: expect.any(String),
+        background: expect.any(Boolean),
+        depth: expect.any(Number),
+        startedAt: expect.any(String),
+      },
+      ['name', 'isolation'],
+    );
+    return;
+  }
+  if (event.type === 'subagent_progress') {
+    assertEventShape(
+      event,
+      {
+        type: 'subagent_progress',
+        subagentId: expect.any(String),
+        status: expect.stringMatching(/^(running|waiting_input)$/),
+        toolCallCount: expect.any(Number),
+        elapsedMs: expect.any(Number),
+      },
+      ['detail', 'question'],
+    );
+    return;
+  }
+  if (event.type === 'subagent_finished') {
+    assertEventShape(
+      event,
+      {
+        type: 'subagent_finished',
+        subagentId: expect.any(String),
+        subagentType: expect.any(String),
+        description: expect.any(String),
+        status: expect.stringMatching(/^(done|failed|cancelled|interrupted|max_turns)$/),
+        report: expect.any(String),
+        toolCallCount: expect.any(Number),
+        startedAt: expect.any(String),
+        endedAt: expect.any(String),
+      },
+      ['name', 'usage'],
+    );
+    return;
+  }
   if (event.type === 'text_delta') {
     expect(event).toEqual({ type: 'text_delta', text: expect.any(String) });
   } else if (event.type === 'question') {
@@ -68,7 +148,7 @@ function assertCanonicalAgentEvent(value: unknown): void {
       options: expect.any(Array),
     });
   } else if (event.type === 'response') {
-    expect(event).toEqual({
+    expect(event).toMatchObject({
       type: 'response',
       content: expect.any(String),
       usage: {
@@ -76,6 +156,17 @@ function assertCanonicalAgentEvent(value: unknown): void {
         outputTokens: expect.any(Number),
       },
     });
+    // The two cache counters are optional and REAL: `piagent.ts:1246` fills
+    // them from the provider, every client models them (`AgentEvent.swift:7`,
+    // `AgentEvent.kt:111`, `chat.context.tsx:32`) and a captured gateway
+    // stream carries them. Only this helper had never seen one, because every
+    // fixture before the E3-x1 captures was hand-written.
+    const usage = event.usage as Record<string, unknown>;
+    const allowed = new Set(['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens']);
+    expect(Object.keys(usage).filter((key) => !allowed.has(key))).toEqual([]);
+    expect(Object.keys(event).filter((key) => !['type', 'content', 'usage'].includes(key))).toEqual(
+      [],
+    );
   }
 }
 
@@ -107,6 +198,46 @@ async function listFixtureFiles(dir: string, prefix = ''): Promise<string[]> {
 }
 
 describe('mobile v1 contract fixtures', () => {
+  /**
+   * D8 retired the `worker_*` mirrors. Two halves, and the second is what makes
+   * the first mean anything: no fixture carries one, AND the assertion every
+   * valid fixture is put through actually REJECTS one. Without the second, the
+   * corpus scan is satisfied by an assertion that ignores unknown types — which
+   * is exactly what `assertCanonicalAgentEvent` did before D8.
+   */
+  it('rejects a retired worker_* event, and no fixture file contains one', async () => {
+    for (const type of ['worker_spawned', 'worker_status', 'worker_done']) {
+      expect(() => assertCanonicalAgentEvent({ type, workerId: 'w1', runId: 'r1' })).toThrow(
+        /retired event type/,
+      );
+      // …and through the walker every fixture is actually put through.
+      expect(() => assertCanonicalAgentEvents({ type: 'event', event: { type } })).toThrow(
+        /retired event type/,
+      );
+    }
+    // The canonical family still passes the same walker.
+    expect(() =>
+      assertCanonicalAgentEvents({
+        type: 'event',
+        event: {
+          type: 'subagent_progress',
+          subagentId: 'sub_a',
+          status: 'running',
+          toolCallCount: 1,
+          elapsedMs: 2,
+        },
+      }),
+    ).not.toThrow();
+
+    const files = await listFixtureFiles(join(root, 'fixtures'));
+    const offenders: string[] = [];
+    for (const file of files) {
+      const raw = await readFile(join(root, 'fixtures', file), 'utf8');
+      if (/"worker_(spawned|status|done)"/.test(raw)) offenders.push(file);
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('publishes only TLS pairing versions with one phone capability per fixture', async () => {
     const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
       components?: {
@@ -425,6 +556,67 @@ describe('mobile v1 contract fixtures', () => {
         fixture.valid,
       );
     }
+  });
+
+  it('carries turn origin and conversation kind as optional accepted-frame fields', async () => {
+    const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs?: Record<string, { required?: string[]; properties?: Record<string, unknown> }>;
+    };
+    const accepted = ws.$defs?.ChatAccepted;
+    // Optional on the wire: a pre-C2 client never sends or sees them.
+    expect(accepted?.required).not.toContain('origin');
+    expect(accepted?.required).not.toContain('kind');
+    expect(accepted?.properties?.origin).toEqual({ enum: ['user', 'notification', 'parent'] });
+    expect(accepted?.properties?.kind).toEqual({ enum: ['user', 'subagent'] });
+
+    for (const name of ['ChatSubscribe', 'ChatUnsubscribe'] as const) {
+      expect(ws.$defs?.[name]?.required).toEqual(['type', 'id', 'agentId', 'conversationId']);
+    }
+    const clientFrame = ws.$defs?.MobileWsClientFrame as { oneOf?: Array<{ $ref?: string }> };
+    expect(clientFrame.oneOf?.map((entry) => entry.$ref)).toEqual([
+      '#/$defs/MobileWsMessageFrame',
+      '#/$defs/ChatResume',
+      '#/$defs/ChatAnswer',
+      '#/$defs/ChatCancel',
+      '#/$defs/ChatSubscribe',
+      '#/$defs/ChatUnsubscribe',
+    ]);
+  });
+
+  it('correlates a sub-agent resume with the accepted frame it produces', async () => {
+    const doc = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components: {
+        schemas: Record<
+          string,
+          {
+            required?: string[];
+            properties?: Record<string, unknown>;
+            additionalProperties?: boolean;
+          }
+        >;
+      };
+    };
+    const request = doc.components.schemas.SubagentResumeRequest;
+    // Optional on BOTH sides: an older client omits it and an older gateway
+    // never echoes it, so neither end breaks on the other.
+    expect(request.required).toEqual(['message']);
+    expect(request.properties?.requestId).toMatchObject({
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+    });
+    expect(request.additionalProperties).toBe(false);
+
+    const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs?: Record<string, { required?: string[]; properties?: Record<string, unknown> }>;
+    };
+    const accepted = ws.$defs?.ChatAccepted;
+    expect(accepted?.required).not.toContain('requestId');
+    expect(accepted?.properties?.requestId).toEqual({
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+    });
   });
 
   it('has no duplicate or unlisted fixture files', async () => {

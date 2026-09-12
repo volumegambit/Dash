@@ -1,5 +1,31 @@
 import Foundation
 
+extension MobileV2ContractValidation {
+  static func validateConversationIdentifier(_ value: String, field: String) throws {
+    if (try? validateCanonicalUUID(value, field: field)) != nil {
+      return
+    }
+
+    let bytes = Array(value.utf8)
+    let hasSubagentPrefix = bytes.count == 30
+      && bytes[0...3].elementsEqual([0x73, 0x75, 0x62, 0x5F])
+    let isCrockfordBase32: (UInt8) -> Bool = { byte in
+      switch byte {
+      case 0x30...0x39, 0x41...0x48, 0x4A...0x4B, 0x4D...0x4E, 0x50...0x54,
+        0x56...0x5A, 0x61...0x68, 0x6A...0x6B, 0x6D...0x6E, 0x70...0x74,
+        0x76...0x7A:
+        true
+      default:
+        false
+      }
+    }
+    try require(
+      hasSubagentPrefix && bytes.dropFirst(4).allSatisfy(isCrockfordBase32),
+      field: field
+    )
+  }
+}
+
 struct MobileV2StrictImage: Codable {
   let value: MessageImage
 
@@ -161,11 +187,13 @@ struct MobileV2StrictConversationContent: Codable {
     case text
     case images
     case events
+    case kind
   }
 
   private enum Kind: String, Codable {
     case user
     case assistant
+    case notice
   }
 
   init(_ value: MessageContent) {
@@ -206,6 +234,18 @@ struct MobileV2StrictConversationContent: Codable {
           forKey: .events
         ).map(\.value)
       )
+    case .notice:
+      try MobileV2ContractValidation.validateKeys(
+        decoder,
+        allowed: Set([CodingKeys.type, .kind, .text].map(\.rawValue)),
+        required: Set([CodingKeys.type, .kind, .text].map(\.rawValue))
+      )
+      let kind = try container.decode(NoticeKind.self, forKey: .kind)
+      try MobileV2ContractValidation.require(kind != .unknown, field: "content.kind")
+      value = .notice(
+        kind: kind,
+        text: try container.decode(String.self, forKey: .text)
+      )
     }
   }
 
@@ -225,6 +265,182 @@ struct MobileV2StrictConversationContent: Codable {
     case let .assistant(events):
       try container.encode(Kind.assistant, forKey: .type)
       try container.encode(events.map(MobileV2StrictAgentEvent.init), forKey: .events)
+    case let .notice(kind, text):
+      try MobileV2ContractValidation.require(kind != .unknown, field: "content.kind")
+      try container.encode(Kind.notice, forKey: .type)
+      try container.encode(kind, forKey: .kind)
+      try container.encode(text, forKey: .text)
+    case .unknown:
+      throw MobileV2ContractValidationError.invalidField("content.type")
+    }
+  }
+}
+
+private struct MobileV2StrictSubagentUsage: Codable {
+  let value: SubagentUsageDTO
+
+  private enum CodingKeys: String, CodingKey, CaseIterable {
+    case inputTokens
+    case outputTokens
+  }
+
+  init(_ value: SubagentUsageDTO) {
+    self.value = value
+  }
+
+  init(from decoder: Decoder) throws {
+    let keys = Set(CodingKeys.allCases.map(\.rawValue))
+    try MobileV2ContractValidation.validateKeys(decoder, allowed: keys, required: keys)
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    value = SubagentUsageDTO(
+      inputTokens: try container.decode(Int.self, forKey: .inputTokens),
+      outputTokens: try container.decode(Int.self, forKey: .outputTokens)
+    )
+    try validate()
+  }
+
+  func encode(to encoder: Encoder) throws {
+    try validate()
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(value.inputTokens, forKey: .inputTokens)
+    try container.encode(value.outputTokens, forKey: .outputTokens)
+  }
+
+  fileprivate func validate() throws {
+    try MobileV2ContractValidation.validateNonnegative(
+      value.inputTokens,
+      field: "subagent.usage.inputTokens"
+    )
+    try MobileV2ContractValidation.validateNonnegative(
+      value.outputTokens,
+      field: "subagent.usage.outputTokens"
+    )
+  }
+}
+
+private struct MobileV2StrictSubagentInfo: Codable {
+  let value: SubagentInfoDTO
+
+  private enum CodingKeys: String, CodingKey, CaseIterable {
+    case type
+    case name
+    case status
+    case description
+    case prompt
+    case model
+    case background
+    case isolation
+    case depth
+    case startedAt
+    case endedAt
+    case usage
+    case toolCallCount
+    case report
+    case oneShot
+    case workspace
+  }
+
+  private static let statuses: Set<String> = [
+    "running",
+    "waiting_input",
+    "done",
+    "failed",
+    "cancelled",
+    "interrupted",
+    "max_turns",
+  ]
+
+  init(_ value: SubagentInfoDTO) {
+    self.value = value
+  }
+
+  init(from decoder: Decoder) throws {
+    let allowed = Set(CodingKeys.allCases.map(\.rawValue))
+    let required = allowed.subtracting([
+      CodingKeys.name.rawValue,
+      CodingKeys.isolation.rawValue,
+      CodingKeys.endedAt.rawValue,
+      CodingKeys.usage.rawValue,
+      CodingKeys.report.rawValue,
+      CodingKeys.workspace.rawValue,
+    ])
+    try MobileV2ContractValidation.validateKeys(decoder, allowed: allowed, required: required)
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    for key in CodingKeys.allCases where required.contains(key.rawValue) == false {
+      try MobileV2ContractValidation.validateOptionalNonNull(container, key: key)
+    }
+    value = SubagentInfoDTO(
+      type: try container.decode(String.self, forKey: .type),
+      name: try container.decodeIfPresent(String.self, forKey: .name),
+      status: try container.decode(String.self, forKey: .status),
+      description: try container.decode(String.self, forKey: .description),
+      prompt: try container.decode(String.self, forKey: .prompt),
+      model: try container.decode(String.self, forKey: .model),
+      background: try container.decode(Bool.self, forKey: .background),
+      isolation: try container.decodeIfPresent(String.self, forKey: .isolation),
+      depth: try container.decode(Int.self, forKey: .depth),
+      startedAt: try container.decode(Date.self, forKey: .startedAt),
+      endedAt: try container.decodeIfPresent(Date.self, forKey: .endedAt),
+      usage: try container.decodeIfPresent(
+        MobileV2StrictSubagentUsage.self,
+        forKey: .usage
+      )?.value,
+      toolCallCount: try container.decode(Int.self, forKey: .toolCallCount),
+      report: try container.decodeIfPresent(String.self, forKey: .report),
+      oneShot: try container.decode(Bool.self, forKey: .oneShot),
+      workspace: try container.decodeIfPresent(String.self, forKey: .workspace)
+    )
+    try validate()
+  }
+
+  func encode(to encoder: Encoder) throws {
+    try validate()
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(value.type, forKey: .type)
+    try container.encodeIfPresent(value.name, forKey: .name)
+    try container.encode(value.status, forKey: .status)
+    try container.encode(value.description, forKey: .description)
+    try container.encode(value.prompt, forKey: .prompt)
+    try container.encode(value.model, forKey: .model)
+    try container.encode(value.background, forKey: .background)
+    try container.encodeIfPresent(value.isolation, forKey: .isolation)
+    try container.encode(value.depth, forKey: .depth)
+    try container.encode(value.startedAt, forKey: .startedAt)
+    try container.encodeIfPresent(value.endedAt, forKey: .endedAt)
+    if let usage = value.usage {
+      try container.encode(MobileV2StrictSubagentUsage(usage), forKey: .usage)
+    }
+    try container.encode(value.toolCallCount, forKey: .toolCallCount)
+    try container.encodeIfPresent(value.report, forKey: .report)
+    try container.encode(value.oneShot, forKey: .oneShot)
+    try container.encodeIfPresent(value.workspace, forKey: .workspace)
+  }
+
+  fileprivate func validate() throws {
+    try MobileV2ContractValidation.validateNonempty(value.type, field: "subagent.type")
+    if let name = value.name {
+      try MobileV2ContractValidation.validateNonempty(name, field: "subagent.name")
+    }
+    try MobileV2ContractValidation.require(
+      Self.statuses.contains(value.status),
+      field: "subagent.status"
+    )
+    if let isolation = value.isolation {
+      try MobileV2ContractValidation.require(
+        isolation == "worktree",
+        field: "subagent.isolation"
+      )
+    }
+    try MobileV2ContractValidation.validateNonnegative(value.depth, field: "subagent.depth")
+    if let usage = value.usage {
+      try MobileV2StrictSubagentUsage(usage).validate()
+    }
+    try MobileV2ContractValidation.validateNonnegative(
+      value.toolCallCount,
+      field: "subagent.toolCallCount"
+    )
+    if let workspace = value.workspace {
+      try MobileV2ContractValidation.validateNonempty(workspace, field: "subagent.workspace")
     }
   }
 }
@@ -244,6 +460,10 @@ struct MobileV2ConversationSummary: Codable, Hashable, Identifiable, Sendable {
   let createdAt: Date
   let updatedAt: Date
   let deletedAt: Date?
+  let kind: ConversationKind
+  let parentConversationId: String?
+  let parentTurnId: String?
+  let subagent: SubagentInfoDTO?
   let queuePaused: Bool
   let queueRevision: Int
   let pendingFollowUpCount: Int
@@ -264,6 +484,10 @@ struct MobileV2ConversationSummary: Codable, Hashable, Identifiable, Sendable {
     case createdAt
     case updatedAt
     case deletedAt
+    case kind
+    case parentConversationId
+    case parentTurnId
+    case subagent
     case queuePaused
     case queueRevision
     case pendingFollowUpCount
@@ -285,6 +509,10 @@ struct MobileV2ConversationSummary: Codable, Hashable, Identifiable, Sendable {
     createdAt: Date,
     updatedAt: Date,
     deletedAt: Date?,
+    kind: ConversationKind = .user,
+    parentConversationId: String? = nil,
+    parentTurnId: String? = nil,
+    subagent: SubagentInfoDTO? = nil,
     queuePaused: Bool,
     queueRevision: Int,
     pendingFollowUpCount: Int,
@@ -304,6 +532,10 @@ struct MobileV2ConversationSummary: Codable, Hashable, Identifiable, Sendable {
     self.createdAt = createdAt
     self.updatedAt = updatedAt
     self.deletedAt = deletedAt
+    self.kind = kind
+    self.parentConversationId = parentConversationId
+    self.parentTurnId = parentTurnId
+    self.subagent = subagent
     self.queuePaused = queuePaused
     self.queueRevision = queueRevision
     self.pendingFollowUpCount = pendingFollowUpCount
@@ -312,10 +544,18 @@ struct MobileV2ConversationSummary: Codable, Hashable, Identifiable, Sendable {
 
   init(from decoder: Decoder) throws {
     let allowed = Set(CodingKeys.allCases.map(\.rawValue))
-    let required = allowed.subtracting([CodingKeys.deletedAt.rawValue])
+    let required = allowed.subtracting([
+      CodingKeys.deletedAt.rawValue,
+      CodingKeys.parentConversationId.rawValue,
+      CodingKeys.parentTurnId.rawValue,
+      CodingKeys.subagent.rawValue,
+    ])
     try MobileV2ContractValidation.validateKeys(decoder, allowed: allowed, required: required)
     let container = try decoder.container(keyedBy: CodingKeys.self)
     try MobileV2ContractValidation.validateOptionalNonNull(container, key: .deletedAt)
+    try MobileV2ContractValidation.validateOptionalNonNull(container, key: .parentConversationId)
+    try MobileV2ContractValidation.validateOptionalNonNull(container, key: .parentTurnId)
+    try MobileV2ContractValidation.validateOptionalNonNull(container, key: .subagent)
     id = try container.decode(String.self, forKey: .id)
     agentId = try container.decode(String.self, forKey: .agentId)
     agentName = try container.decode(String.self, forKey: .agentName)
@@ -330,6 +570,16 @@ struct MobileV2ConversationSummary: Codable, Hashable, Identifiable, Sendable {
     createdAt = try container.decode(Date.self, forKey: .createdAt)
     updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
+    kind = try container.decode(ConversationKind.self, forKey: .kind)
+    parentConversationId = try container.decodeIfPresent(
+      String.self,
+      forKey: .parentConversationId
+    )
+    parentTurnId = try container.decodeIfPresent(String.self, forKey: .parentTurnId)
+    subagent = try container.decodeIfPresent(
+      MobileV2StrictSubagentInfo.self,
+      forKey: .subagent
+    )?.value
     queuePaused = try container.decode(Bool.self, forKey: .queuePaused)
     queueRevision = try container.decode(Int.self, forKey: .queueRevision)
     pendingFollowUpCount = try container.decode(Int.self, forKey: .pendingFollowUpCount)
@@ -354,6 +604,12 @@ struct MobileV2ConversationSummary: Codable, Hashable, Identifiable, Sendable {
     try container.encode(createdAt, forKey: .createdAt)
     try container.encode(updatedAt, forKey: .updatedAt)
     try container.encodeIfPresent(deletedAt, forKey: .deletedAt)
+    try container.encode(kind, forKey: .kind)
+    try container.encodeIfPresent(parentConversationId, forKey: .parentConversationId)
+    try container.encodeIfPresent(parentTurnId, forKey: .parentTurnId)
+    if let subagent {
+      try container.encode(MobileV2StrictSubagentInfo(subagent), forKey: .subagent)
+    }
     try container.encode(queuePaused, forKey: .queuePaused)
     try container.encode(queueRevision, forKey: .queueRevision)
     try container.encode(pendingFollowUpCount, forKey: .pendingFollowUpCount)
@@ -361,12 +617,24 @@ struct MobileV2ConversationSummary: Codable, Hashable, Identifiable, Sendable {
   }
 
   private func validate() throws {
-    try MobileV2ContractValidation.validateCanonicalUUID(id, field: "id")
+    try MobileV2ContractValidation.validateConversationIdentifier(id, field: "id")
     try MobileV2ContractValidation.validateNonempty(agentId, field: "agentId")
     try MobileV2ContractValidation.validateNonempty(agentName, field: "agentName")
     try MobileV2ContractValidation.validatePositive(revision, field: "revision")
     if let activeTurnId {
       try MobileV2ContractValidation.validateLegacyRunID(activeTurnId, field: "activeTurnId")
+    }
+    if let parentConversationId {
+      try MobileV2ContractValidation.validateConversationIdentifier(
+        parentConversationId,
+        field: "parentConversationId"
+      )
+    }
+    if let parentTurnId {
+      try MobileV2ContractValidation.validateNonempty(parentTurnId, field: "parentTurnId")
+    }
+    if let subagent {
+      try MobileV2StrictSubagentInfo(subagent).validate()
     }
     try MobileV2ContractValidation.validateNonnegative(lastSeq, field: "lastSeq")
     try MobileV2ContractValidation.validateNonnegative(queueRevision, field: "queueRevision")
@@ -433,6 +701,7 @@ struct MobileV2ConversationMessage: Codable, Hashable, Identifiable, Sendable {
   let segmentIndex: Int
   let deliveryKind: MobileV2DeliveryKind
   let deliveryStatus: MobileV2DeliveryStatus?
+  let origin: String?
 
   private enum CodingKeys: String, CodingKey, CaseIterable {
     case id
@@ -448,6 +717,7 @@ struct MobileV2ConversationMessage: Codable, Hashable, Identifiable, Sendable {
     case segmentIndex
     case deliveryKind
     case deliveryStatus
+    case origin
   }
 
   init(
@@ -463,7 +733,8 @@ struct MobileV2ConversationMessage: Codable, Hashable, Identifiable, Sendable {
     runId: String,
     segmentIndex: Int,
     deliveryKind: MobileV2DeliveryKind,
-    deliveryStatus: MobileV2DeliveryStatus?
+    deliveryStatus: MobileV2DeliveryStatus?,
+    origin: String? = nil
   ) {
     self.id = id
     self.conversationId = conversationId
@@ -478,14 +749,19 @@ struct MobileV2ConversationMessage: Codable, Hashable, Identifiable, Sendable {
     self.segmentIndex = segmentIndex
     self.deliveryKind = deliveryKind
     self.deliveryStatus = deliveryStatus
+    self.origin = origin
   }
 
   init(from decoder: Decoder) throws {
     let allowed = Set(CodingKeys.allCases.map(\.rawValue))
-    let required = allowed.subtracting([CodingKeys.deliveryStatus.rawValue])
+    let required = allowed.subtracting([
+      CodingKeys.deliveryStatus.rawValue,
+      CodingKeys.origin.rawValue,
+    ])
     try MobileV2ContractValidation.validateKeys(decoder, allowed: allowed, required: required)
     let container = try decoder.container(keyedBy: CodingKeys.self)
     try MobileV2ContractValidation.validateOptionalNonNull(container, key: .deliveryStatus)
+    try MobileV2ContractValidation.validateOptionalNonNull(container, key: .origin)
     id = try container.decode(String.self, forKey: .id)
     conversationId = try container.decode(String.self, forKey: .conversationId)
     turnId = try container.decode(String.self, forKey: .turnId)
@@ -505,6 +781,7 @@ struct MobileV2ConversationMessage: Codable, Hashable, Identifiable, Sendable {
       MobileV2DeliveryStatus.self,
       forKey: .deliveryStatus
     )
+    origin = try container.decodeIfPresent(String.self, forKey: .origin)
     try validate()
   }
 
@@ -524,6 +801,7 @@ struct MobileV2ConversationMessage: Codable, Hashable, Identifiable, Sendable {
     try container.encode(segmentIndex, forKey: .segmentIndex)
     try container.encode(deliveryKind, forKey: .deliveryKind)
     try container.encodeIfPresent(deliveryStatus, forKey: .deliveryStatus)
+    try container.encodeIfPresent(origin, forKey: .origin)
   }
 
   var v1Projection: ConversationMessageDTO {
@@ -536,17 +814,27 @@ struct MobileV2ConversationMessage: Codable, Hashable, Identifiable, Sendable {
       status: status,
       content: content,
       createdAt: createdAt,
-      updatedAt: updatedAt
+      updatedAt: updatedAt,
+      origin: origin
     )
   }
 
   private func validate() throws {
     try MobileV2ContractValidation.validateCanonicalUUID(id, field: "id")
-    try MobileV2ContractValidation.validateCanonicalUUID(conversationId, field: "conversationId")
+    try MobileV2ContractValidation.validateConversationIdentifier(
+      conversationId,
+      field: "conversationId"
+    )
     try MobileV2ContractValidation.validateLegacyRunID(turnId, field: "turnId")
     try MobileV2ContractValidation.validatePositive(ordinal, field: "ordinal")
     try MobileV2ContractValidation.validateLegacyRunID(runId, field: "runId")
     try MobileV2ContractValidation.validateNonnegative(segmentIndex, field: "segmentIndex")
+    if let origin {
+      try MobileV2ContractValidation.require(
+        MessageOrigin(rawValue: origin) != nil,
+        field: "origin"
+      )
+    }
   }
 }
 

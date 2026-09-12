@@ -23,6 +23,7 @@ import {
   GatewayHttpError,
   GatewayManagementClient,
   InvalidGatewayLanTlsFingerprintError,
+  subagentsEnabledFor,
 } from './gateway-client.js';
 
 const BASE_URL = 'http://localhost:9300';
@@ -1012,5 +1013,45 @@ describe('GatewayManagementClient', () => {
       expect((failure as GatewayHttpError).apiError).toBeUndefined();
       expect((failure as GatewayHttpError).body).toBe('not json');
     });
+  });
+});
+
+/**
+ * The gateway reads `subagents?.enabled ?? swarm?.enabled ?? true`
+ * (`apps/gateway/src/subagent-config.ts`). Reading only ONE of the two blocks
+ * has been a Mission Control defect twice — the Swarm card rendered every
+ * default agent as OFF, and the chat route hid the Sub-agents panel for the
+ * same population — so the precedence lives in one place with its own cases.
+ */
+describe('subagentsEnabledFor', () => {
+  const base = { model: 'm', systemPrompt: 'p' };
+
+  it('is ON for an agent with neither block — the default population', () => {
+    expect(subagentsEnabledFor(base)).toBe(true);
+  });
+
+  it('honours the legacy swarm block when there is no subagents block', () => {
+    expect(subagentsEnabledFor({ ...base, swarm: { enabled: false } })).toBe(false);
+    expect(subagentsEnabledFor({ ...base, swarm: { enabled: true } })).toBe(true);
+  });
+
+  it('lets subagents.enabled win over the legacy block, in both directions', () => {
+    expect(
+      subagentsEnabledFor({ ...base, swarm: { enabled: false }, subagents: { enabled: true } }),
+    ).toBe(true);
+    expect(
+      subagentsEnabledFor({ ...base, swarm: { enabled: true }, subagents: { enabled: false } }),
+    ).toBe(false);
+  });
+
+  it('ignores a subagents block that sets everything BUT the gate', () => {
+    expect(subagentsEnabledFor({ ...base, subagents: { maxDepth: 0 } })).toBe(true);
+    expect(
+      subagentsEnabledFor({ ...base, swarm: { enabled: false }, subagents: { maxDepth: 0 } }),
+    ).toBe(false);
+  });
+
+  it('is OFF when there is no agent at all', () => {
+    expect(subagentsEnabledFor(undefined)).toBe(false);
   });
 });

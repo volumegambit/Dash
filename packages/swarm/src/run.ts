@@ -1,7 +1,10 @@
 import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
-import type { SwarmCaps, WorkerBackend, WorkerStatus } from './types.js';
-import { WorkerHandle, type WorkerHandleOptions } from './worker-handle.js';
+import type { ChildHandle, TerminalChildStatus } from './child-handle.js';
+import type { SwarmCaps, WorkerSpec, WorkerStatus } from './types.js';
+
+/** A worker's spec at its terminal transition — see `onWorkerFinished`. */
+export type FinishedWorkerSpec = Omit<WorkerSpec, 'extraTools'> & { workerStatus: string };
 
 /** A worker as seen by the panel/management API. */
 export interface RunWorkerSnapshot {
@@ -14,6 +17,21 @@ export interface RunWorkerSnapshot {
   usage: { inputTokens: number; outputTokens: number };
   startedAt?: number;
   endedAt?: number;
+  /** Resolved subagent type ('general-purpose' when the caller named none). */
+  subagentType: string;
+  /** 3-5 word UI label; falls back to the role. */
+  description: string;
+  /** Addressable name, when the caller gave one. */
+  name?: string;
+  toolCallCount: number;
+  background: boolean;
+  oneShot: boolean;
+  /**
+   * The directory the worker ran in — its own worktree when it was isolated,
+   * the shared workspace otherwise. Optional because a snapshot rebuilt from
+   * the durable event log (crash recovery) predates the field.
+   */
+  workspace?: string;
 }
 
 /** Lightweight run listing (panel). */
@@ -33,7 +51,13 @@ export interface RunSnapshot extends RunSummary {
   workers: RunWorkerSnapshot[];
 }
 
-const TERMINAL: ReadonlySet<WorkerStatus> = new Set<WorkerStatus>(['done', 'failed', 'cancelled']);
+const TERMINAL: ReadonlySet<WorkerStatus> = new Set<WorkerStatus>([
+  'done',
+  'failed',
+  'cancelled',
+  'interrupted',
+  'max_turns',
+]);
 
 export interface SwarmRunOptions {
   runId: string;
@@ -51,17 +75,35 @@ export interface SwarmRunOptions {
   orchestratorAbort?: () => void;
   /** Invoked whenever a worker's status becomes terminal. */
   onWorkerTerminal?(run: SwarmRun): void;
+  /**
+   * Invoked once per worker terminal transition with that worker's spec, so the
+   * spawner can undo per-child setup (the gateway's worktree isolation).
+   *
+   * Carries the terminal `workerStatus`, which the gateway's cleanup reads: a
+   * `max_turns` child is resumable, so its worktree is KEPT while every other
+   * terminal status releases it.
+   */
+  onWorkerFinished?(spec: FinishedWorkerSpec): void | Promise<void>;
 }
 
 /**
- * A single swarm run: the container of `WorkerHandle`s spawned during one live
- * turn. Owns the event `channel`, the wall-clock timer, and the `closed`
- * `AbortSignal` used to settle in-flight tool calls (wait_workers, ask).
+ * A single swarm run: the PER-TURN container of the `ChildHandle`s spawned
+ * during one live turn. Owns the event `channel`, the wall-clock timer, and the
+ * `closed` `AbortSignal` used to settle in-flight tool calls (wait_workers,
+ * ask).
  *
- * Correctness discipline mirrors WorkerHandle: `register`, `cancelAll`, and
- * `finalize` apply their state/channel effects synchronously with no awaits
- * between a check and its effect. Their returned promises then await every
- * backend disposal using all-settled semantics.
+ * It does not own a child's LIFETIME — the coordinator's per-parent registry
+ * does, so a child stays addressable after the turn that spawned it ends. What
+ * the run owns is the FOREGROUND half of the turn: its `finalize` cancels the
+ * foreground children (they are part of the turn) and leaves the background
+ * ones running, and it carries every child's events to the parent's stream
+ * while there is one to carry them to.
+ *
+ * Correctness discipline mirrors ChildHandle: `adopt`, `cancelAll`, and
+ * `finalize` apply their effects in synchronous blocks with no awaits between a
+ * check and its effect. `finalize` publishes one stable promise before invoking
+ * callbacks so re-entrant lifecycle barriers join the same teardown, but it
+ * never waits for a detached child's driver settlement.
  */
 export class SwarmRun {
   readonly runId: string;
@@ -71,13 +113,14 @@ export class SwarmRun {
   readonly startedAt = Date.now();
 
   private readonly caps: SwarmCaps;
-  private readonly handles = new Map<string, WorkerHandle>();
+  private readonly handles = new Map<string, ChildHandle>();
   /** Insertion order for stable snapshots. */
   private readonly order: string[] = [];
   private readonly closedController = new AbortController();
   private readonly wallClockTimer: ReturnType<typeof setTimeout>;
   private readonly orchestratorAbort?: () => void;
   private readonly onWorkerTerminal?: (run: SwarmRun) => void;
+  private readonly onWorkerFinished?: (spec: FinishedWorkerSpec) => void | Promise<void>;
 
   private finalizedAt?: number;
   private finalizationPromise?: Promise<AgentEvent[]>;
@@ -91,13 +134,21 @@ export class SwarmRun {
     this.caps = opts.caps;
     this.orchestratorAbort = opts.orchestratorAbort;
     this.onWorkerTerminal = opts.onWorkerTerminal;
+    this.onWorkerFinished = opts.onWorkerFinished;
 
     const timer = setTimeout(() => this.onWallClock(), this.caps.maxRunSeconds * 1000);
     if (typeof timer === 'object' && 'unref' in timer) timer.unref();
     this.wallClockTimer = timer;
   }
 
-  /** Fires on finalize or wall-clock expiry. Consumed by tool settlement. */
+  /**
+   * Fires on finalize or wall-clock expiry. Consumed by tool settlement.
+   *
+   * The wall clock here bounds the ORCHESTRATOR's turn. Each child carries the
+   * same number as its OWN deadline (see `ChildHandle`), because a detached
+   * background child outlives this run and a run-scoped clock would either kill
+   * it when the turn ended or never fire for it at all.
+   */
   get closed(): AbortSignal {
     return this.closedController.signal;
   }
@@ -120,53 +171,48 @@ export class SwarmRun {
     return n;
   }
 
-  getHandle(workerId: string): WorkerHandle | undefined {
+  getHandle(workerId: string): ChildHandle | undefined {
     return this.handles.get(workerId);
   }
 
   /**
-   * Synchronously registers and starts a worker. The worker's `backendPromise`
-   * is produced by `makeBackend`, which receives the freshly-built (not yet
-   * started) `WorkerHandle` so the caller can construct handle-dependent extra
-   * tools (e.g. ask_orchestrator) and hand them to the worker factory. The
-   * factory promise MUST NOT be awaited by the caller before this returns — it
-   * is chained into a deferred backend promise the WorkerHandle drives
-   * internally. If `makeBackend` throws synchronously the failure is folded into
-   * the backend promise (a rejection), never an unhandled throw, so the handle
-   * fails cleanly instead of the spawn escaping. worker_spawned + agent_spawned
-   * are emitted by the coordinator around this call synchronously.
+   * Index a child under this run, synchronously and before it starts. The
+   * coordinator owns construction (the handle needs the driver, the parent
+   * channel lookup and the cross-turn registry) and calls `start()` itself once
+   * the driver has the child's spec — so `adopt` never runs anything, it only
+   * makes the child visible to `wait_workers`, the panel snapshot and
+   * `finalize`'s cancel sweep.
    */
-  register(
-    handleOpts: Omit<
-      WorkerHandleOptions,
-      'emit' | 'onTerminal' | 'maxSteers' | 'backendPromise'
-    > & {
-      maxSteers?: number;
-    },
-    makeBackend: (handle: WorkerHandle) => Promise<WorkerBackend>,
-  ): WorkerHandle {
-    const { promise: backendPromise, resolve: resolveBackend } =
-      Promise.withResolvers<WorkerBackend>();
-    const handle = new WorkerHandle({
-      ...handleOpts,
-      backendPromise,
-      maxSteers: handleOpts.maxSteers ?? this.caps.maxSteersPerWorker,
-      emit: (event) => this.channel.push(event),
-      onTerminal: () => this.onWorkerTerminal?.(this),
-    });
+  adopt(handle: ChildHandle): void {
+    // A RESUME builds a second handle over the SAME child conversation and
+    // re-adopts it, so the id must not be appended twice: `order` drives every
+    // snapshot and the cancel sweep, and a duplicate would list the child twice
+    // and cancel it twice.
+    if (!this.handles.has(handle.workerId)) this.order.push(handle.workerId);
     this.handles.set(handle.workerId, handle);
-    this.order.push(handle.workerId);
-    // Chain the factory promise into the deferred. A synchronous throw from
-    // makeBackend (or a rejected promise) becomes a rejected backendPromise,
-    // which WorkerHandle.runSegment catches → finalizeFailed. Never an unhandled
-    // rejection and never a throw out of register().
-    try {
-      resolveBackend(makeBackend(handle));
-    } catch (err) {
-      resolveBackend(Promise.reject(err instanceof Error ? err : new Error(String(err))));
-    }
-    handle.start();
-    return handle;
+  }
+
+  /**
+   * Un-adopt a child whose registration failed. `adopt` has already put it in
+   * `handles`/`order`, so without this the phantom stays in the run: the
+   * coordinator's `terminalizePhantom` emits the terminal pair for it and the
+   * run's later `cancelAll` emits a SECOND for the same id, on top of a
+   * phantom row in every `snapshot()`.
+   */
+  forget(workerId: string): void {
+    this.handles.delete(workerId);
+    const index = this.order.indexOf(workerId);
+    if (index >= 0) this.order.splice(index, 1);
+  }
+
+  /** Fires `onWorkerTerminal`; the coordinator wires this to a child's terminal. */
+  noteTerminal(): void {
+    this.onWorkerTerminal?.(this);
+  }
+
+  /** Fires `onWorkerFinished`; the coordinator wires this to a child's terminal. */
+  noteFinished(spec: FinishedWorkerSpec): void {
+    this.onWorkerFinished?.(spec);
   }
 
   /** Snapshot of every worker's status (tool-facing check/wait). */
@@ -178,7 +224,7 @@ export class SwarmRun {
     question?: string;
   }> {
     return this.order.map((id) => {
-      const h = this.handles.get(id) as WorkerHandle;
+      const h = this.handles.get(id) as ChildHandle;
       return {
         workerId: h.workerId,
         role: h.role,
@@ -190,7 +236,7 @@ export class SwarmRun {
   }
 
   snapshot(): RunSnapshot {
-    const workers = this.order.map((id) => (this.handles.get(id) as WorkerHandle).snapshot());
+    const workers = this.order.map((id) => (this.handles.get(id) as ChildHandle).snapshot());
     return {
       ...this.summary(),
       workers,
@@ -211,28 +257,37 @@ export class SwarmRun {
   }
 
   /**
-   * Cancel every non-terminal worker synchronously, then await all backend
-   * disposal attempts before settling.
+   * Cancel this turn's FOREGROUND workers synchronously (their
+   * `subagent_finished` is pushed to the channel first).
+   *
+   * A `background: true` child is deliberately left alone: since Task C4 it is
+   * DETACHED from the turn that spawned it (design §5.2 — "you will be notified
+   * when it completes"), so the end of that turn is not the end of the child.
+   * Its own wall clock, an explicit `cancelChild`, and a delete of its
+   * conversation are what stop it.
    */
-  cancelAll(reason: string): Promise<void> {
-    const settlements: Promise<void>[] = [];
+  cancelAll(reason: string): void {
     for (const id of this.order) {
-      const h = this.handles.get(id) as WorkerHandle;
-      if (!TERMINAL.has(h.status)) settlements.push(h.cancel(reason));
+      const h = this.handles.get(id) as ChildHandle;
+      if (h.background) continue;
+      if (!TERMINAL.has(h.status)) h.cancel(reason);
     }
-    return settleAll(settlements);
   }
 
   /**
-   * Finalize the run. The state transition is synchronous and idempotent; the
-   * returned promise resolves only after every worker backend disposal settles.
-   * Order: cancel non-terminal workers (their worker_done{cancelled} lands in
-   * the channel first), abort the orchestrator, fire `closed`, close the
-   * channel, stop the wall-clock timer.
+   * Finalize the run. Its state transition is synchronous and idempotent, and
+   * it never awaits child-driver settlement. The stable returned promise lets
+   * re-entrant shutdown and cancellation callers observe a synchronous abort
+   * failure without starting a second teardown.
+   *
+   * Order: cancel non-terminal workers (their `subagent_finished{cancelled}`
+   * lands in the channel first), abort the orchestrator, fire `closed`, close
+   * the channel, stop the wall-clock timer.
    *
    * Event-log out-of-band append and ring-buffer snapshotting are owned by the
-   * coordinator (which knows the eventLog + messageId) — this method returns the
-   * terminal worker_done events it produced so the coordinator can log them.
+   * coordinator (which knows the eventLog + messageId) — this method returns
+   * the terminal `subagent_finished` events it produced so the coordinator can
+   * log them.
    */
   finalize(reason: string): Promise<AgentEvent[]> {
     if (this.finalizationPromise) return this.finalizationPromise;
@@ -245,23 +300,25 @@ export class SwarmRun {
     try {
       this.finalizedAt = Date.now();
 
-      // Workers still live at entry are the only ones whose worker_done has not
-      // already ridden the live channel — already-terminal workers emitted theirs
-      // at completion time. Snapshot before cancelAll terminalizes them so the
-      // returned events cover exactly what THIS call produced (no double-logging).
+      // Workers still live at entry are the only ones whose `subagent_finished`
+      // has not already ridden the live channel. Background children detach and
+      // therefore are deliberately excluded from this turn's cancellation set.
       const cancelledHere = new Set(
-        this.order.filter((id) => !TERMINAL.has((this.handles.get(id) as WorkerHandle).status)),
+        this.order.filter((id) => {
+          const handle = this.handles.get(id) as ChildHandle;
+          return !handle.background && !TERMINAL.has(handle.status);
+        }),
       );
 
-      // 1) Cancel non-terminal workers; worker_done{cancelled} lands in the channel first.
-      const cancellations = this.cancelAll(reason);
+      // 1) Cancel foreground children. Background children detach.
+      this.cancelAll(reason);
 
       // 2) Abort the orchestrator (cooperative).
-      let abortSettlement = Promise.resolve();
+      let abortError: unknown;
       try {
         this.orchestratorAbort?.();
       } catch (error) {
-        abortSettlement = Promise.reject(error);
+        abortError = error;
       }
 
       // 3) Fire `closed` for in-flight tool settlement, then close the channel.
@@ -271,21 +328,11 @@ export class SwarmRun {
       // 4) Stop the wall-clock timer.
       clearTimeout(this.wallClockTimer);
 
-      // Record ONLY the worker_done events this call produced (cancellations) for
-      // optional out-of-band logging — events from earlier terminal transitions
-      // already reached the consumer via the live channel.
+      // Record only the terminal events this finalization produced; earlier
+      // terminal transitions already reached the live consumer.
       this.finalizationEvents = this.terminalDoneEvents(cancelledHere);
-
-      // `cancelAll` covers the non-terminal handles. `dispose` also includes
-      // workers that completed before finalization, whose warm backend must still
-      // be released. Repeated promises are harmless and backend.stop remains
-      // exactly-once inside WorkerHandle.
-      const disposals = this.order.map((id) => (this.handles.get(id) as WorkerHandle).dispose());
-      const events = this.finalizationEvents;
-      void settleAll([cancellations, abortSettlement, ...disposals]).then(
-        () => finalization.resolve(events),
-        (error: unknown) => finalization.reject(error),
-      );
+      if (abortError === undefined) finalization.resolve(this.finalizationEvents);
+      else finalization.reject(abortError);
     } catch (error) {
       finalization.reject(error);
     }
@@ -299,19 +346,30 @@ export class SwarmRun {
 
   private terminalDoneEvents(only: ReadonlySet<string>): AgentEvent[] {
     const events: AgentEvent[] = [];
+    // Only reached for handles `cancelAll` just terminalized, so both stamps
+    // are set; the fallback keeps the event well-formed rather than trusting it.
+    const nowIso = new Date().toISOString();
     for (const id of this.order) {
       if (!only.has(id)) continue;
-      const h = this.handles.get(id) as WorkerHandle;
+      const h = this.handles.get(id) as ChildHandle;
       if (!TERMINAL.has(h.status)) continue;
-      const status = h.status as 'done' | 'failed' | 'cancelled';
+      // `subagent_finished`, not the retired `worker_done` mirror: this return
+      // value is the OUT-OF-BAND event-log append on a consumer-gone finalize
+      // (`coordinator.ts` logs it), so dropping it rather than reshaping it
+      // would cost a child cancelled on a closed socket its persisted terminal
+      // row entirely. The five-case status now reaches every client unflattened.
       events.push({
-        type: 'worker_done',
-        workerId: h.workerId,
-        runId: this.runId,
-        role: h.role,
-        status,
+        type: 'subagent_finished',
+        subagentId: h.subagentId,
+        ...(h.name !== undefined ? { name: h.name } : {}),
+        subagentType: h.subagentType,
+        description: h.description,
+        status: h.status as TerminalChildStatus,
         report: h.report ?? '',
         usage: h.usage,
+        toolCallCount: h.toolCallCount,
+        startedAt: h.startedAtIso ?? nowIso,
+        endedAt: h.endedAtIso ?? nowIso,
       });
     }
     return events;
@@ -325,12 +383,4 @@ export class SwarmRun {
     // still observe a cleanup failure after every worker backend is disposed.
     void this.finalize(`run exceeded ${this.caps.maxRunSeconds}s wall clock`).catch(() => {});
   }
-}
-
-async function settleAll(promises: Iterable<Promise<unknown>>): Promise<void> {
-  const results = await Promise.allSettled(promises);
-  const failed = results.find(
-    (result): result is PromiseRejectedResult => result.status === 'rejected',
-  );
-  if (failed) throw failed.reason;
 }

@@ -10,6 +10,7 @@ import {
   type ChatSocketProtocol,
   type FrameHandler,
   type GatewayProtocolCloseReason,
+  parseMobileV2ServerFrame,
 } from './chat-socket';
 import { MobileRestClient, type TokenSource } from './rest';
 
@@ -616,6 +617,32 @@ describe('ChatSocket', () => {
   });
 
   describe('v2 handshake and frame boundary', () => {
+    it('accepts origin metadata on an accepted run frame', () => {
+      const accepted = VALID_POST_HANDSHAKE_V2_FRAMES[2];
+
+      expect(
+        parseMobileV2ServerFrame({
+          ...accepted,
+          origin: 'parent',
+          kind: 'subagent',
+          requestId: 'resume-01',
+        }),
+      ).toMatchObject({ origin: 'parent', kind: 'subagent', requestId: 'resume-01' });
+    });
+
+    it.each([
+      ['null origin', { origin: null }],
+      ['unknown kind', { kind: 'background' }],
+      ['empty request id', { requestId: '' }],
+      ['overlong request id', { requestId: '🧪'.repeat(257) }],
+    ])('rejects accepted metadata with %s', (_label, metadata) => {
+      const accepted = VALID_POST_HANDSHAKE_V2_FRAMES[2];
+
+      expect(() => parseMobileV2ServerFrame({ ...accepted, ...metadata })).toThrow(
+        'ChatSocket: invalid v2 server frame',
+      );
+    });
+
     it('sends the exact hello on open and resolves connect only after a schema-valid acknowledgement', async () => {
       const { chat, sockets, frames } = setup(
         ['ticket-v2'],

@@ -147,7 +147,7 @@ async function createV2Conversation(
   return (await response.json()) as MobileV2ConversationSummary;
 }
 
-function testUuid(value: number): string {
+function testUuid(value: number): ReturnType<typeof randomUUID> {
   return `00000000-0000-4000-8000-${value.toString().padStart(12, '0')}`;
 }
 
@@ -993,7 +993,7 @@ describe('mobile test harness', () => {
         expectedRevision: queued[2].input.revision,
       });
       await secondClient.waitFor(
-        (frame) => frame.type === 'input_removed' && frame.inputId === removed.inputId,
+        (frame) => frame.type === 'input_removed' && frame.input.inputId === removed.input.inputId,
         { afterV2Seq: secondBeforeRemove },
       );
       const converged = await harness.bootstrapV2(conversation.id);

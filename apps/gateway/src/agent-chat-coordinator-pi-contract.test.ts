@@ -5,10 +5,13 @@ import { AgentRegistry } from './agent-registry.js';
 
 describe('AgentChatCoordinator real Pi backend contract', () => {
   it('routes legacy and typed steering through distinct public Pi capabilities', async () => {
-    const backend = new PiAgentBackend({
-      model: 'anthropic/claude-sonnet-4-20250514',
-      systemPrompt: 'test',
-    });
+    const backend = new PiAgentBackend(
+      {
+        model: 'anthropic/claude-sonnet-4-20250514',
+        systemPrompt: 'test',
+      },
+      {},
+    );
     vi.spyOn(backend, 'start').mockResolvedValue();
     vi.spyOn(backend, 'stop').mockResolvedValue();
     vi.spyOn(backend, 'run').mockImplementation(async function* () {});

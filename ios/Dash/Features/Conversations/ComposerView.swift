@@ -62,6 +62,21 @@ enum ComposerKeyContract {
 struct ComposerView: View {
   @Environment(ChatFeature.self) private var feature
 
+  /// Monotonic counter bumped by `ChatView` when ⌘L
+  /// (`KeyboardCommand.focusComposer`) fires. A counter rather than a `Bool`
+  /// so repeated ⌘L presses each land: the value always changes, so
+  /// `onChange` always runs, even if the field is already focused and the
+  /// user has since tapped elsewhere.
+  var focusRequest: Int = 0
+
+  /// iPad goal Phase B, Task 8 review fix: shares `ChatView`'s own
+  /// `isDropTargeted` state rather than owning a second copy, so the ONE
+  /// dashed highlight overlay `ChatView` draws lights up whichever
+  /// `.dropDestination` below actually claims the drag. See this file's own
+  /// `.dropDestination` below for why the composer needs its own, separate
+  /// from `ChatView`'s.
+  var isDropTargeted: Binding<Bool> = .constant(false)
+
   @State private var selectedItems: [PhotosPickerItem] = []
   @State private var pickerError: String?
   // Input sources (Phase 4 Task 4, audit #19): the paperclip is now a menu
@@ -153,10 +168,36 @@ struct ComposerView: View {
         draftStatus
       }
     }
-    .frame(maxWidth: 760)
+    .frame(maxWidth: DashTheme.Layout.readableWidth)
     .padding(.horizontal)
     .padding(.vertical, 10)
     .background(.bar)
+    // iPad goal Phase B, Task 8 review fix: a drag released over the
+    // composer's own `TextField` never reaches `ChatView`'s outer
+    // `.dropDestination` (confirmed by `IPadUITests
+    // .testDroppingAnImageAttachesIt`, retargeted to each drop location with
+    // everything else held constant: failed 3/3 isolated reruns dropping on
+    // `chat.composer`, passed 3/3 dropping on `chat.transcript`). What isn't
+    // isolated is WHY: it's equally consistent with the `TextField`'s own
+    // built-in drop interaction claiming the session first, or with
+    // `ChatView`'s destination simply never having had a hit-testable
+    // region over the composer's screen area at all — that destination is
+    // applied before `ChatView` appends the composer via `.safeAreaInset`,
+    // regardless of what view ends up sitting there (review fix round 1,
+    // Minor 2 — an earlier version of this comment asserted the
+    // `TextField`-claims-it mechanism as fact, which was never actually
+    // tested). Either way the fix is the same: this is the SAME "attach the
+    // handler locally, everywhere it needs to work" call `ChatCommandActions`
+    // 's keyboard shortcuts already made (see `ChatView`'s own comment on
+    // that), applied to drag and drop instead of ⌘-shortcuts — this
+    // destination handles the composer's own surface directly, through the
+    // exact same `addSelections` entry point `ChatView`'s destination uses.
+    .dropDestination(for: DroppedImage.self) { items, _ in
+      let selections = DroppedImage.selections(from: items)
+      guard selections.isEmpty == false else { return false }
+      Task { await feature.addSelections(selections) }
+      return true
+    } isTargeted: { isDropTargeted.wrappedValue = $0 }
     .onChange(of: selectedItems) { _, items in
       guard items.isEmpty == false else { return }
       Task { await load(items) }
@@ -188,9 +229,20 @@ struct ComposerView: View {
       guard allowed else { return }
       attemptAutoFocus()
     }
+    // The cached transcript has landed, so `isFreshConversation` can finally
+    // be answered truthfully — retry the one-shot auto-focus that was
+    // correctly declined while `messages` was empty-because-unloaded.
     .onChange(of: feature.hasLoadedCache) { _, loaded in
       guard loaded else { return }
       attemptAutoFocus()
+    }
+    // ⌘L. Unlike `attemptAutoFocus()` this is NOT one-shot and is NOT gated
+    // on `isFreshConversation`: the user asked for the field explicitly, so
+    // honour it every time in any conversation. `focusRequest`'s initial 0
+    // never fires `onChange`, so simply opening a chat still can't steal
+    // focus.
+    .onChange(of: focusRequest) { _, _ in
+      isDraftFocused = true
     }
   }
 
@@ -228,6 +280,11 @@ struct ComposerView: View {
             Task { await feature.removeAttachment(id: attachment.id) }
           }
           .accessibilityLabel("Attached image \(index + 1)")
+          // iPad goal Phase B, Task 8 (forwarded from Task 7): lets a UI
+          // test assert a specific attachment landed in the composer after
+          // a drag-and-drop, the same way `MessageImageView`'s
+          // `chat.message.image.<n>` identifies a specific transcript image.
+          .accessibilityIdentifier("chat.attachment.\(index)")
         }
       }
       .padding(.vertical, 2)

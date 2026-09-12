@@ -168,6 +168,20 @@ struct PersistenceStoreTests {
     #expect(try await store.messages(gatewayID: "gw", conversationID: "c") == [expected])
   }
 
+  @Test("message origin round trips through the v1 cache")
+  func messageOriginRoundTrip() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [summary(id: "c", title: "Conversation")],
+      gatewayID: "gw"
+    )
+    let expected = message(id: "m-origin", origin: MessageOrigin.parent.rawValue)
+
+    try await store.mergeMessages([expected], gatewayID: "gw", conversationID: "c")
+
+    #expect(try await store.messages(gatewayID: "gw", conversationID: "c") == [expected])
+  }
+
   @Test("tombstone stays versioned while purging conversation content idempotently")
   func tombstonePurge() async throws {
     let store = try PersistenceStore.inMemory()
@@ -1923,6 +1937,98 @@ struct PersistenceStoreTests {
     )
   }
 
+  @Test("v2 child bootstrap retains every conversation-summary field through the cache")
+  func v2ChildSummaryProjectionRoundTrip() async throws {
+    let store = try PersistenceStore.inMemory()
+    let child = try MobileV2FixtureLoader.decode(
+      MobileV2ConversationSummary.self,
+      "conversation-summary-subagent.json"
+    )
+    let bootstrap = MobileV2ConversationBootstrap(
+      conversation: child,
+      messages: [],
+      nextCursor: nil,
+      pendingInputs: [],
+      queuePaused: child.queuePaused,
+      queueRevision: child.queueRevision,
+      v2ThroughSeq: child.v2LastSeq
+    )
+    let expected = ConversationSummaryDTO(
+      id: child.id,
+      agentId: child.agentId,
+      agentName: child.agentName,
+      title: child.title,
+      revision: child.revision,
+      status: child.status,
+      activeTurnId: child.activeTurnId,
+      owningIssueId: child.owningIssueId,
+      projectId: child.projectId,
+      lastSeq: child.lastSeq,
+      lastMessagePreview: child.lastMessagePreview,
+      createdAt: child.createdAt,
+      updatedAt: child.updatedAt,
+      deletedAt: child.deletedAt,
+      kind: child.kind.rawValue,
+      parentConversationId: child.parentConversationId,
+      parentTurnId: child.parentTurnId,
+      subagent: child.subagent
+    )
+    let preMetadataCache = ConversationSummaryDTO(
+      id: child.id,
+      agentId: child.agentId,
+      agentName: child.agentName,
+      title: child.title,
+      revision: child.revision - 1,
+      status: child.status,
+      activeTurnId: child.activeTurnId,
+      owningIssueId: child.owningIssueId,
+      projectId: child.projectId,
+      lastSeq: child.lastSeq,
+      lastMessagePreview: child.lastMessagePreview,
+      createdAt: child.createdAt,
+      updatedAt: child.updatedAt.addingTimeInterval(-1),
+      deletedAt: child.deletedAt
+    )
+    try await store.upsertConversations([preMetadataCache], gatewayID: "gw")
+    #expect(
+      try await store.conversation(gatewayID: "gw", id: child.id)?.summary
+        == preMetadataCache
+    )
+
+    let installed = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+
+    #expect(installed.current.projection.anchor.conversation == expected)
+    #expect(
+      try await store.v2Bootstrap(gatewayID: "gw", conversationID: child.id)?.conversation
+        == expected
+    )
+    #expect(try await store.conversation(gatewayID: "gw", id: child.id)?.summary == expected)
+    #expect(try await store.conversations(gatewayID: "gw", limit: 10).map(\.summary) == [expected])
+
+    let updated = ConversationSummaryDTO(
+      id: child.id,
+      agentId: child.agentId,
+      agentName: child.agentName,
+      title: "Updated child",
+      revision: child.revision + 1,
+      status: child.status,
+      activeTurnId: child.activeTurnId,
+      owningIssueId: child.owningIssueId,
+      projectId: child.projectId,
+      lastSeq: child.lastSeq,
+      lastMessagePreview: child.lastMessagePreview,
+      createdAt: child.createdAt,
+      updatedAt: child.updatedAt.addingTimeInterval(1),
+      deletedAt: child.deletedAt,
+      kind: child.kind.rawValue,
+      parentConversationId: child.parentConversationId,
+      parentTurnId: child.parentTurnId,
+      subagent: child.subagent
+    )
+    try await store.upsertConversations([updated], gatewayID: "gw")
+    #expect(try await store.conversation(gatewayID: "gw", id: child.id)?.summary == updated)
+  }
+
   @Test("v2 bootstrap is monotonic and same-watermark compaction is versioned")
   func v2BootstrapMonotonicDispositions() async throws {
     let store = try PersistenceStore.inMemory()
@@ -1974,6 +2080,51 @@ struct PersistenceStoreTests {
       advanced.current.projection.anchor.conversation.title
         == "Future metadata on stale sequence"
     )
+  }
+
+  @Test("v2 message origin participates in exact bootstrap repair and round trips")
+  func v2MessageOriginRoundTripAndEquality() async throws {
+    let store = try PersistenceStore.inMemory()
+    let fixture = try v2BootstrapFixture()
+    let firstMessage = fixture.messages[0]
+    let messageWithOrigin = v2Message(
+      from: firstMessage,
+      origin: MessageOrigin.parent.rawValue
+    )
+    let bootstrap = v2Bootstrap(
+      from: fixture,
+      messages: [messageWithOrigin] + Array(fixture.messages.dropFirst())
+    )
+    let installed = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+    #expect(
+      installed.current.projection.anchor.messages.first?.origin
+        == MessageOrigin.parent.rawValue
+    )
+
+    var conflictingV1 = messageWithOrigin.v1Projection
+    conflictingV1.origin = MessageOrigin.notification.rawValue
+    try await store.mergeMessages(
+      [conflictingV1],
+      gatewayID: "gw",
+      conversationID: bootstrap.conversation.id
+    )
+    #expect(
+      try await store.messages(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ).first?.origin == MessageOrigin.notification.rawValue
+    )
+
+    let repaired = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+    #expect(repaired.disposition == .compacted)
+    #expect(
+      repaired.current.projection.anchor.messages.first?.origin
+        == MessageOrigin.parent.rawValue
+    )
+
+    let unchanged = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+    #expect(unchanged.disposition == .unchanged)
+    #expect(unchanged.current == repaired.current)
   }
 
   @Test("v2 frame commit is compare-and-swap and preserves canonical bytes")
@@ -2272,7 +2423,13 @@ struct PersistenceStoreTests {
     _ = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
     let legacyID = "00000000-0000-4000-8000-000000000093"
     try await store.mergeMessages(
-      [message(id: legacyID, updatedOffset: 1_000)],
+      [
+        message(
+          id: legacyID,
+          updatedOffset: 1_000,
+          origin: MessageOrigin.parent.rawValue
+        )
+      ],
       gatewayID: "gw",
       conversationID: bootstrap.conversation.id
     )
@@ -2310,6 +2467,7 @@ struct PersistenceStoreTests {
     #expect(merged.messages.count == 1)
     #expect(merged.messages[0].updatedAt == instant(1_000))
     #expect(merged.messages[0].content == .user(text: "Message 1", images: nil))
+    #expect(merged.messages[0].origin == MessageOrigin.parent.rawValue)
     #expect(merged.deliveryByMessageID[legacyID]?.kind == .steer)
     #expect(merged.deliveryByMessageID[legacyID]?.segmentIndex == 1)
     #expect(after.projection.anchor.nextCursor == nil)
@@ -3396,7 +3554,8 @@ struct PersistenceStoreTests {
     from source: MobileV2ConversationMessage,
     conversationID: String? = nil,
     id: String? = nil,
-    ordinal: Int? = nil
+    ordinal: Int? = nil,
+    origin: String? = nil
   ) -> MobileV2ConversationMessage {
     MobileV2ConversationMessage(
       id: id ?? source.id,
@@ -3411,7 +3570,8 @@ struct PersistenceStoreTests {
       runId: source.runId,
       segmentIndex: source.segmentIndex,
       deliveryKind: source.deliveryKind,
-      deliveryStatus: source.deliveryStatus
+      deliveryStatus: source.deliveryStatus,
+      origin: origin ?? source.origin
     )
   }
 
@@ -3490,7 +3650,8 @@ struct PersistenceStoreTests {
     id: String,
     ordinal: Int = 1,
     text: String? = nil,
-    updatedOffset: Int? = nil
+    updatedOffset: Int? = nil,
+    origin: String? = nil
   ) -> ConversationMessageDTO {
     let timestamp = updatedOffset ?? ordinal
     return ConversationMessageDTO(
@@ -3502,7 +3663,8 @@ struct PersistenceStoreTests {
       status: .completed,
       content: .user(text: text ?? "Message \(ordinal)", images: nil),
       createdAt: instant(ordinal),
-      updatedAt: instant(timestamp)
+      updatedAt: instant(timestamp),
+      origin: origin
     )
   }
 

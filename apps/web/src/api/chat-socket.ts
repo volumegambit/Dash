@@ -71,6 +71,8 @@ const IMAGE_MEDIA_TYPES: ReadonlySet<string> = new Set([
   'image/gif',
   'image/webp',
 ]);
+const MESSAGE_ORIGINS: ReadonlySet<string> = new Set(['user', 'notification', 'parent']);
+const CONVERSATION_KINDS: ReadonlySet<string> = new Set(['user', 'subagent']);
 const PROTOCOL_CLOSE_REASONS: ReadonlySet<string> = new Set<GatewayProtocolCloseReason>([
   'unsupported_version',
   'unexpected_hello',
@@ -114,6 +116,10 @@ function isUuid(value: unknown): value is string {
 
 function isNonemptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+function isBoundedUnicodeString(value: unknown, maxCodePoints: number): value is string {
+  return typeof value === 'string' && value.length > 0 && [...value].length <= maxCodePoints;
 }
 
 function isNonnegativeSafeInteger(value: unknown): value is number {
@@ -242,21 +248,30 @@ function validateRunBase(record: RecordValue): boolean {
 
 function validateAccepted(record: RecordValue): boolean {
   return (
-    hasExactKeys(record, [
-      'type',
-      'id',
-      'conversationId',
-      'runId',
-      'segmentTurnId',
-      'v2Seq',
-      'userMessageId',
-      'assistantMessageId',
-      'revision',
-    ]) &&
+    hasExactKeys(
+      record,
+      [
+        'type',
+        'id',
+        'conversationId',
+        'runId',
+        'segmentTurnId',
+        'v2Seq',
+        'userMessageId',
+        'assistantMessageId',
+        'revision',
+      ],
+      ['origin', 'kind', 'requestId'],
+    ) &&
     validateRunBase(record) &&
     isUuid(record.userMessageId) &&
     isUuid(record.assistantMessageId) &&
-    isNonnegativeSafeInteger(record.revision)
+    isNonnegativeSafeInteger(record.revision) &&
+    (!hasOwn(record, 'origin') ||
+      (typeof record.origin === 'string' && MESSAGE_ORIGINS.has(record.origin))) &&
+    (!hasOwn(record, 'kind') ||
+      (typeof record.kind === 'string' && CONVERSATION_KINDS.has(record.kind))) &&
+    (!hasOwn(record, 'requestId') || isBoundedUnicodeString(record.requestId, 256))
   );
 }
 

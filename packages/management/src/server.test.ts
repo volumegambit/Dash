@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createManagementApp, startManagementServer } from './server.js';
 import type { InfoResponse, SkillsConfig } from './types.js';
 
+import type { JsonBody } from './json-body.test-helpers.js';
+
 const TEST_TOKEN = 'test-secret-token';
 
 describe('Management Server', () => {
@@ -50,16 +52,23 @@ describe('Management Server', () => {
     return `http://localhost:${port}${path}`;
   }
 
-  function authHeaders(): HeadersInit {
+  function authHeaders(): Record<string, string> {
     return { Authorization: `Bearer ${TEST_TOKEN}` };
   }
+
+  /**
+   * `Response.json()` is typed `Promise<unknown>`, so every body read here is
+   * an error under `tsc --noEmit`. {@link JsonBody} keeps property reads legal
+   * without switching the assertion itself off.
+   */
+  const bodyOf = async (res: Response): Promise<JsonBody> => (await res.json()) as JsonBody;
 
   it('GET /health returns 200 with correct shape (no auth required)', async () => {
     // Health endpoint is public — no token needed
     const res = await fetch(url('/health'));
     expect(res.status).toBe(200);
 
-    const body = await res.json();
+    const body = await bodyOf(res);
     expect(body.status).toBe('healthy');
     expect(typeof body.uptime).toBe('number');
     expect(typeof body.version).toBe('string');
@@ -69,13 +78,14 @@ describe('Management Server', () => {
     const res = await fetch(url('/info'), { headers: authHeaders() });
     expect(res.status).toBe(200);
 
-    const body = await res.json();
+    const body = await bodyOf(res);
     expect(body).toEqual(testInfo);
   });
 
   it('preserves a legacy InfoResponse when optional capability fields are absent', async () => {
     const legacy: InfoResponse = { agents: [] };
     const app = createManagementApp({
+      port: 0,
       token: TEST_TOKEN,
       getInfo: () => legacy,
       onShutdown: async () => {},
@@ -94,7 +104,7 @@ describe('Management Server', () => {
     });
     expect(res.status).toBe(200);
 
-    const body = await res.json();
+    const body = await bodyOf(res);
     expect(body).toEqual({ success: true });
     expect(onShutdown).toHaveBeenCalledOnce();
   });
@@ -103,7 +113,7 @@ describe('Management Server', () => {
     const res = await fetch(url('/info'));
     expect(res.status).toBe(401);
 
-    const body = await res.json();
+    const body = await bodyOf(res);
     expect(body.error).toBe('Unauthorized');
   });
 
@@ -129,6 +139,7 @@ describe('Management Server', () => {
       description: 'Explore ideas before building',
       location: '/tmp/skills/brainstorming/SKILL.md',
       editable: true,
+      source: 'managed' as const,
     };
     let storedContent = '---\nname: brainstorming\n---\n\n# Brainstorm';
     let storedConfig: SkillsConfig = { paths: ['/tmp/skills'], urls: [] };
@@ -158,6 +169,7 @@ describe('Management Server', () => {
             content,
             location: `/tmp/skills/${name}/SKILL.md`,
             editable: true,
+            source: 'managed' as const,
           }),
           getConfig: (_agentName) => storedConfig,
           updateConfig: async (_agentName, config) => {
@@ -336,6 +348,7 @@ describe('Management Server', () => {
             content,
             location: `/tmp/skills/${name}/SKILL.md`,
             editable: true,
+            source: 'managed' as const,
           }),
           getConfig: () => ({ paths: [], urls: [] }),
           updateConfig: async () => {},
@@ -375,6 +388,7 @@ describe('Management Server', () => {
             content,
             location: `/tmp/skills/${name}/SKILL.md`,
             editable: true,
+            source: 'managed' as const,
           }),
           getConfig: () => ({ paths: [], urls: [] }),
           updateConfig: async (agentName) => {

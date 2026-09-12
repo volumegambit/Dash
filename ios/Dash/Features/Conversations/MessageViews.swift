@@ -1,5 +1,7 @@
+import CoreTransferable
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// Turn ids whose assistant reply failed (chat-ux Phase 2, Task 4 / audit
 /// #5's message actions). "Failed" is only ever recorded on the
@@ -24,6 +26,93 @@ func userMessageID(forTurnID turnID: String, in messages: [ChatMessageState]) ->
   messages.first { $0.role == .user && $0.turnID == turnID }?.id
 }
 
+/// Shown on a notification row when there is no text to summarize yet. That is
+/// the LIVE path: an `accepted` frame carries `origin` but not the message
+/// text, so the row exists before its content does (the text lands with the
+/// next canonical refresh).
+let notificationRowFallbackLabel = "Background task update"
+
+/// A `.user` row the USER did not write (sub-agents design 8.5): the gateway
+/// started this turn to wake the orchestrator with a background sub-agent's
+/// result, and the row's text is the `[SYSTEM NOTIFICATION - NOT USER INPUT]`
+/// block it was fed. `nil` origin is UNKNOWN — a replayed turn or an older
+/// gateway — and stays a normal bubble.
+///
+/// Narrowed in D5 from `origin != .user` to exactly `.notification`. That
+/// widening was safe only while `origin == .parent` was unreachable, which
+/// stopped being true the moment `loadSubagentTranscript` made child
+/// transcripts openable — and it collapsed the orchestrator's own instruction
+/// to the generic bell label, throwing away the text the child is working
+/// from. `.parent` now has `isOrchestratorRow`/`OrchestratorRowView`, and both
+/// predicates feed `isSystemAuthoredRow`, which is what keeps Retry/Edit off
+/// BOTH of them. Narrowing one without the other would have handed the user a
+/// Retry button on words the orchestrator wrote.
+func isNotificationRow(_ message: ChatMessageState) -> Bool {
+  message.role == .user && message.origin == .notification
+}
+
+/// `origin: 'parent'`: an orchestrator message inside a CHILD's transcript —
+/// the brief that kicked the child off, or a follow-up typed into it through
+/// `POST /subagents/{id}/resume` (sub-agents design 8.5). Web's twin is
+/// `isOrchestratorRow` in `apps/web/src/ui/blocks/OriginRows.tsx`.
+func isOrchestratorRow(_ message: ChatMessageState) -> Bool {
+  message.role == .user && message.origin == .parent
+}
+
+/// Either row the user did not type.
+///
+/// This is the predicate that gates message ACTIONS, and it must stay a union
+/// of both: a `.notification` row's text is the
+/// `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the gateway wrote, and a
+/// `.parent` row's text is the orchestrator's instruction to its child.
+/// Offering Retry or Edit & Resend on either would submit somebody else's
+/// words as the user's own — `ChatFeature.resendFromMessage` refuses both for
+/// the same reason.
+func isSystemAuthoredRow(_ message: ChatMessageState) -> Bool {
+  isNotificationRow(message) || isOrchestratorRow(message)
+}
+
+/// Exact muted attribution shown before an orchestrator message's own text.
+/// Byte-identical to web's `ORCHESTRATOR_ROW_LABEL`.
+let orchestratorRowLabel = "from orchestrator"
+
+/// Every `<open>…<close>` body in `text`, in document order.
+private func taggedValues(in text: String, open: String, close: String) -> [String] {
+  var values: [String] = []
+  var cursor = text.startIndex
+  while let start = text.range(of: open, range: cursor..<text.endIndex) {
+    guard let end = text.range(of: close, range: start.upperBound..<text.endIndex) else { break }
+    let value = String(text[start.upperBound..<end.lowerBound])
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    if value.isEmpty == false { values.append(value) }
+    cursor = end.upperBound
+  }
+  return values
+}
+
+private func unescapeAttribute(_ value: String) -> String {
+  value
+    .replacingOccurrences(of: "&quot;", with: "\"")
+    .replacingOccurrences(of: "&lt;", with: "<")
+    .replacingOccurrences(of: "&gt;", with: ">")
+    .replacingOccurrences(of: "&amp;", with: "&")
+}
+
+/// One muted line for a notification row. Every notification queued for a
+/// conversation rides ONE turn in creation order (design 7.3, coalescing), so
+/// a turn carrying several is summarized as several summaries. Mirrors
+/// `apps/web/src/ui/notification-row.ts`.
+func notificationRowLabel(_ text: String) -> String {
+  let summaries = taggedValues(in: text, open: "<summary>", close: "</summary>")
+  if summaries.isEmpty == false { return summaries.joined(separator: " · ") }
+
+  let senders = taggedValues(in: text, open: "<subagent-message from=\"", close: "\">")
+    .map(unescapeAttribute)
+  if senders.isEmpty == false { return "Message from \(senders.joined(separator: ", "))" }
+
+  return notificationRowFallbackLabel
+}
+
 struct MessageListView: View {
   let messages: [ChatMessageState]
   /// When set, the FIRST row reports its frame in this named coordinate
@@ -32,9 +121,33 @@ struct MessageListView: View {
   /// viewport before a page prepends above it.
   let firstRowFrameCoordinateSpace: String?
   let isAnsweringEnabled: Bool
+  /// Scroll anchor (iPad goal Phase A, Task 4 review fix, Important 1):
+  /// tags THIS view's stack — the one that actually holds
+  /// `ForEach(messages)` — as the enclosing `ScrollView`'s scroll-target
+  /// layout, so `ChatView`'s `.scrollPosition(id:anchor:)` binding resolves
+  /// real row identities. NOTE (merge with main, 2026-09-07): that identity
+  /// is now `ChatMessageState.rowID`, not `.id` — main re-keyed the `ForEach`
+  /// so the gateway ack rewriting `id` stops removing and re-inserting the
+  /// row — so everything `scrollPosition` reports and everything
+  /// `scrollTo` matches is a `rowID`. `ChatView.anchorBinding` and
+  /// `ChatScrollRestoration.decide` were repointed to match. It previously
+  /// sat on `ChatView`'s OUTER stack, whose direct arranged children are only
+  /// `olderMessagesControl` / this whole view as one opaque box / the bottom
+  /// sentinel; `scrollTargetLayout()` does not descend into a nested
+  /// `LazyVStack` inside a custom `View` struct. Measured consequence (see
+  /// the task-4 report): with the tag on the outer stack the RESTORE
+  /// direction still worked — `.scrollPosition(id:)` will scroll to any
+  /// `.id()`-tagged view in the scroll view — but the TRACKING direction was
+  /// dead, so `scrollAnchorMessageID` stayed `nil` forever and there was
+  /// never anything to restore.
+  /// Opt-in (default `false`) rather than unconditional because it is only
+  /// meaningful inside a `ScrollView` that reads it; `ChatView`'s transcript
+  /// is the one place that does.
+  let isScrollTarget: Bool
   let onAnswer: (String, String) -> Void
   let onRetry: (String) -> Void
   let onEditAndResend: (String) -> Void
+  let subagentInteraction: SubagentInteraction
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -42,16 +155,20 @@ struct MessageListView: View {
     messages: [ChatMessageState],
     firstRowFrameCoordinateSpace: String? = nil,
     isAnsweringEnabled: Bool = true,
+    isScrollTarget: Bool = false,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     onRetry: @escaping (String) -> Void = { _ in },
-    onEditAndResend: @escaping (String) -> Void = { _ in }
+    onEditAndResend: @escaping (String) -> Void = { _ in },
+    subagentInteraction: SubagentInteraction = .inert
   ) {
     self.messages = messages
     self.firstRowFrameCoordinateSpace = firstRowFrameCoordinateSpace
     self.isAnsweringEnabled = isAnsweringEnabled
+    self.isScrollTarget = isScrollTarget
     self.onAnswer = onAnswer
     self.onRetry = onRetry
     self.onEditAndResend = onEditAndResend
+    self.subagentInteraction = subagentInteraction
   }
 
   var body: some View {
@@ -77,11 +194,11 @@ struct MessageListView: View {
           message: message,
           isAnsweringEnabled: isAnsweringEnabled,
           isFailedTurn: message.role == .user && failedTurns.contains(message.turnID),
-          retryTargetID: message.role == .assistant && message.status == .failed
-            ? userMessageID(forTurnID: message.turnID, in: messages) : nil,
+          retryTargetID: retryTargetID(for: message, in: messages),
           onAnswer: onAnswer,
           onRetry: onRetry,
-          onEditAndResend: onEditAndResend
+          onEditAndResend: onEditAndResend,
+          subagentInteraction: subagentInteraction
         )
         // Entrance animation (chat-ux Phase 3 Task 4, audit #18): a fresh
         // row (new `ChatMessageState.rowID`, `ForEach`'s identity) fades+rises
@@ -104,6 +221,7 @@ struct MessageListView: View {
         .background(firstRowFrameReporter(for: message))
       }
     }
+    .modifier(ScrollTargetLayoutIfNeeded(isEnabled: isScrollTarget))
     // `messageEntranceSignature(for:)` (review fix, chat-ux Phase 3 Task 4,
     // audit #18) — NOT `messages` itself (would animate on every streamed
     // token mutating the LAST message's own properties) and NOT
@@ -120,6 +238,18 @@ struct MessageListView: View {
   }
 }
 
+/// The user message a failed assistant row's inline Retry should resend, or
+/// `nil` when there is nothing to offer. A notification row is never a retry
+/// target (sub-agents design 8.5): resending it would submit the
+/// `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the gateway wrote as if the
+/// user had typed it — `ChatFeature.resendFromMessage` refuses it too.
+func retryTargetID(for message: ChatMessageState, in messages: [ChatMessageState]) -> String? {
+  guard message.role == .assistant, message.status == .failed else { return nil }
+  guard let targetID = userMessageID(forTurnID: message.turnID, in: messages) else { return nil }
+  guard let target = messages.first(where: { $0.id == targetID }) else { return nil }
+  return isSystemAuthoredRow(target) ? nil : targetID
+}
+
 extension MessageListView {
   @ViewBuilder
   fileprivate func firstRowFrameReporter(for message: ChatMessageState) -> some View {
@@ -130,6 +260,25 @@ extension MessageListView {
           value: proxy.frame(in: .named(space))
         )
       }
+    }
+  }
+}
+
+/// Applies `scrollTargetLayout()` only when the caller is inside a
+/// `ScrollView` that uses `.scrollPosition(id:)` (iPad goal Phase A, Task 4
+/// review fix, Important 1). A `ViewModifier` rather than an inline `if` in
+/// the `ViewBuilder` so the stack's view identity — and therefore the
+/// `ForEach` rows' `@State`/transition bookkeeping — is unaffected by the
+/// flag.
+private struct ScrollTargetLayoutIfNeeded: ViewModifier {
+  let isEnabled: Bool
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if isEnabled {
+      content.scrollTargetLayout()
+    } else {
+      content
     }
   }
 }
@@ -172,6 +321,23 @@ func messageEntranceSignature(for messages: [ChatMessageState]) -> String? {
   messages.last?.rowID
 }
 
+extension View {
+  /// Applies `.draggable` only `when` the payload is worth offering — used
+  /// so an image-only user message (empty `text`) doesn't advertise an
+  /// empty-string drag payload, matching `userContextMenuItems`'s existing
+  /// `if !user.text.isEmpty` gate on Copy/Share (review fix round 1, Minor
+  /// 1). Plain `if`/`else` rather than a ternary since `.draggable` isn't
+  /// itself optional-payload-aware.
+  @ViewBuilder
+  func draggable(_ payload: String, when condition: Bool) -> some View {
+    if condition {
+      draggable(payload)
+    } else {
+      self
+    }
+  }
+}
+
 struct ChatMessageView: View {
   let message: ChatMessageState
   let isAnsweringEnabled: Bool
@@ -185,6 +351,7 @@ struct ChatMessageView: View {
   let onAnswer: (String, String) -> Void
   let onRetry: (String) -> Void
   let onEditAndResend: (String) -> Void
+  let subagentInteraction: SubagentInteraction
 
   init(
     message: ChatMessageState,
@@ -193,7 +360,8 @@ struct ChatMessageView: View {
     retryTargetID: String? = nil,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     onRetry: @escaping (String) -> Void = { _ in },
-    onEditAndResend: @escaping (String) -> Void = { _ in }
+    onEditAndResend: @escaping (String) -> Void = { _ in },
+    subagentInteraction: SubagentInteraction = .inert
   ) {
     self.message = message
     self.isAnsweringEnabled = isAnsweringEnabled
@@ -202,11 +370,47 @@ struct ChatMessageView: View {
     self.onAnswer = onAnswer
     self.onRetry = onRetry
     self.onEditAndResend = onEditAndResend
+    self.subagentInteraction = subagentInteraction
   }
 
   var body: some View {
+    // A notice is bookkeeping, not conversation: it renders as a single quiet
+    // chip regardless of the role it was stored under (the gateway's message
+    // table allows only 'user' and 'assistant', so notices arrive as
+    // 'assistant').
+    if let notice = message.notice {
+      return AnyView(
+        HStack {
+          NoticeChipView(notice: notice)
+          Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("chat.notice.\(message.id)")
+      )
+    }
+
+    return AnyView(bubble)
+  }
+
+  private var bubble: some View {
     HStack(alignment: .top, spacing: 0) {
       switch message.role {
+      case .user where isOrchestratorRow(message):
+        // The orchestrator's own words inside a child's transcript (8.5).
+        // Muted, leading-aligned, KEEPS its text — that text is the
+        // instruction the child is working from — and, like the notification
+        // row, carries no context menu: `isSystemAuthoredRow` is what makes
+        // Retry and Edit & Resend unavailable on it.
+        OrchestratorRowView(message: message)
+
+      case .user where isNotificationRow(message):
+        // A row the user did not write (sub-agents design 8.5): the gateway
+        // started this turn to wake the orchestrator with a background
+        // child's result. Compact, muted, leading-aligned — no bubble, no
+        // context menu, since Retry/Edit would resend the
+        // `[SYSTEM NOTIFICATION - NOT USER INPUT]` block as user input.
+        NotificationRowView(message: message)
+
       case .user:
         // User keeps the bubble: right-aligned, accent-tinted background,
         // rounded corners, held off the leading edge by a min-width spacer.
@@ -215,6 +419,17 @@ struct ChatMessageView: View {
           UserMessageView(message: user)
             .padding(12)
             .background(DashTheme.accent.opacity(DashTheme.Opacity.fillEmphasis), in: RoundedRectangle(cornerRadius: DashTheme.Radius.large))
+            // Drag out (iPad goal Phase B, Task 8; review fix round 1,
+            // Important 1): co-located with `.contextMenu` on this SAME
+            // view, matching the assistant case below. This used to live
+            // inside `UserMessageView`'s own body, on an inner `VStack` one
+            // level removed from the `.contextMenu` applied here — see
+            // `task-8-report.md`'s "Fix round 1" section for why that was a
+            // risk and how it was verified. Gated on non-empty text (Minor
+            // 1), mirroring `userContextMenuItems`'s own Copy/Share gate two
+            // lines below, so an image-only message doesn't offer an
+            // empty-string drag payload.
+            .draggable(user.text, when: !user.text.isEmpty)
             .contextMenu { userContextMenuItems(user) }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(message.accessibilityStatusLabel)
@@ -235,7 +450,8 @@ struct ChatMessageView: View {
               status: message.status,
               isAnsweringEnabled: isAnsweringEnabled,
               onAnswer: onAnswer,
-              exposesResponseToAccessibility: message.exposesAssistantTextToAccessibility
+              exposesResponseToAccessibility: message.exposesAssistantTextToAccessibility,
+              subagentInteraction: subagentInteraction
             )
 
             // Inline Retry (chat-ux Phase 2, Task 4 / audit #5): shown
@@ -249,6 +465,11 @@ struct ChatMessageView: View {
           }
           .padding(.vertical, 12)
           .frame(maxWidth: .infinity, alignment: .leading)
+          // Drag out (iPad goal Phase B, Task 8): the same flattened plain
+          // text the Copy/Share context menu items below use
+          // (`markdownPlainTextAccessibilityLabel`), not the raw markdown —
+          // one flattener shared by both affordances, per the task brief.
+          .draggable(markdownPlainTextAccessibilityLabel(for: assistant.text))
           .contextMenu { assistantContextMenuItems(assistant) }
           .accessibilityElement(children: .contain)
           .accessibilityLabel(message.accessibilityStatusLabel)
@@ -328,6 +549,7 @@ private struct InlineRetryButton: View {
         .font(.footnote.weight(.semibold))
     }
     .buttonStyle(.bordered)
+    .hoverEffect(.lift)
     .tint(.red)
     .frame(minHeight: 44)
     .accessibilityLabel("Retry sending this message")
@@ -361,6 +583,52 @@ extension ChatMessageState {
   }
 }
 
+struct NotificationRowView: View {
+  let message: ChatMessageState
+
+  var body: some View {
+    Label(
+      notificationRowLabel(message.user?.text ?? ""),
+      systemImage: "bell"
+    )
+    .font(.footnote)
+    .foregroundStyle(.secondary)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("chat.notification.\(message.id)")
+  }
+}
+
+/// §8.5's muted "from orchestrator" row. Deliberately beside
+/// `NotificationRowView` rather than in `SubagentViews.swift`: both are
+/// `role: .user` rows `ChatMessageView` selects between, they share
+/// `isSystemAuthoredRow`, and moving one away from the switch that renders it
+/// is how the two drift apart. Web keeps its twins together for the same
+/// reason (`OriginRows.tsx`).
+struct OrchestratorRowView: View {
+  let message: ChatMessageState
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 6) {
+      Image(systemName: "arrow.down.to.line")
+        .font(.footnote)
+        .accessibilityHidden(true)
+      Text(orchestratorRowLabel)
+        .font(.footnote.weight(.medium))
+      // The text is KEPT, not summarized: unlike a notification row (whose
+      // body is a machine-written envelope), this is the instruction the child
+      // is acting on, and it is the most useful line in the transcript.
+      Text(message.user?.text ?? "")
+        .font(.footnote)
+      Spacer(minLength: 0)
+    }
+    .foregroundStyle(.secondary)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("chat.orchestrator.\(message.id)")
+  }
+}
+
 private struct UserMessageView: View {
   let message: UserMessageProjection
   // Phase 4 Task 4 (audit #19): the tapped thumbnail, presented full screen.
@@ -386,6 +654,11 @@ private struct UserMessageView: View {
         .scrollIndicators(.hidden)
       }
     }
+    // Drag out (iPad goal Phase B, Task 8): lets the whole bubble's text be
+    // dragged into another app (Notes, Mail, another window) or dropped
+    // back into this app's own composer. Applied by the CALLER
+    // (`ChatMessageView.body`'s `.user` case), co-located with
+    // `.contextMenu`, not here — review fix round 1, Important 1.
     .fullScreenCover(item: $viewerImage) { item in
       ImageViewerView(image: item.image) { viewerImage = nil }
     }
@@ -415,9 +688,24 @@ private struct MessageImageView: View {
             .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
         }
         .buttonStyle(.plain)
+        .hoverEffect(.lift)
+        // Drag out (iPad goal Phase B, Task 8): drop targets like the
+        // composer, Files, or another app get the decoded image bytes for
+        // this message's own `mediaType`, not a re-derived guess.
+        .draggable(DraggableMessageImage(image))
         .accessibilityLabel("Attached image \(index + 1)")
         .accessibilityHint("Opens full screen")
-        .accessibilityIdentifier("chat.image.\(index)")
+        // Renamed from `chat.image.<n>` (Task 7 handoff): the identifier
+        // stays on this `Button`, not the inner `Image` — a SwiftUI `Button`
+        // always vends ONE accessibility element of trait `.button` for its
+        // label, so moving the identifier onto the `Image` would not make
+        // `XCUIApplication.images` (which matches by `XCUIElementType`, not
+        // by identifier prefix) start seeing it as an image. The UI test
+        // queries this identifier through the type-agnostic
+        // `app.descendants(matching: .any)`, the same pattern the test
+        // already uses for its target-side `chat.attachment.0` assertion —
+        // see `IPadUITests.testDroppingAnImageAttachesIt`.
+        .accessibilityIdentifier("chat.message.image.\(index)")
       } else {
         Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
           .labelStyle(.iconOnly)
@@ -428,5 +716,60 @@ private struct MessageImageView: View {
     }
     .background(Color.secondary.opacity(DashTheme.Opacity.fillSubtle))
     .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
+  }
+}
+
+/// A transcript image, offered as a drag payload out of the chat (iPad goal
+/// Phase B, Task 8) — the drag-source counterpart to `DroppedImage`
+/// (`DroppedImage.swift`), which is the drop-destination side. Base64-decodes
+/// `MessageImage.data` once at construction, mirroring
+/// `RecoveryAttachmentTransfer`'s `.exportingCondition`-per-type pattern
+/// (`ConversationListView.swift`) rather than re-deriving the type from raw
+/// bytes: `MessageImage.mediaType` is already the ground truth for this
+/// message, same four types as the rest of the image-attachment contract.
+struct DraggableMessageImage: Transferable, Sendable {
+  let data: Data
+  let mediaType: ImageMediaType
+
+  init(_ image: MessageImage) {
+    data = Data(base64Encoded: image.data) ?? Data()
+    mediaType = image.mediaType
+  }
+
+  static var transferRepresentation: some TransferRepresentation {
+    DataRepresentation(exportedContentType: .jpeg) { $0.data }
+      .exportingCondition { $0.mediaType == .jpeg }
+    DataRepresentation(exportedContentType: .png) { $0.data }
+      .exportingCondition { $0.mediaType == .png }
+    DataRepresentation(exportedContentType: .gif) { $0.data }
+      .exportingCondition { $0.mediaType == .gif }
+    DataRepresentation(exportedContentType: .webP) { $0.data }
+      .exportingCondition { $0.mediaType == .webp }
+  }
+}
+
+/// The chip a `notice` message renders as — a skill the agent learned, or a
+/// memory it saved, after the turn had already finished.
+struct NoticeChipView: View {
+  let notice: NoticeProjection
+
+  private var systemImage: String {
+    switch notice.kind {
+    case .skillLearned: return "graduationcap"
+    case .memorySaved: return "brain"
+    case .unknown: return "sparkles"
+    }
+  }
+
+  var body: some View {
+    Label(notice.text, systemImage: systemImage)
+      .font(.footnote)
+      .foregroundStyle(.secondary)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .overlay(
+        Capsule().stroke(Color.secondary.opacity(DashTheme.Opacity.fillEmphasis))
+      )
+      .accessibilityIdentifier("chat.notice.chip")
   }
 }

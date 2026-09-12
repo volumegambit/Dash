@@ -1,74 +1,83 @@
 import type { AgentEvent } from '@dash/agent';
 import type { MobileAgentEvent } from '@dash/mobile-contract';
-import type { RunSnapshot } from '@dash/swarm';
-import type { EventLogEntry, EventLogPayload, EventLogStore } from './event-log-store.js';
+import type { ConversationService } from './conversation-service.js';
+import type { EventLogStore } from './event-log-store.js';
 
 /**
- * Boot-time repair of swarm turns a previous gateway process died in the
- * middle of.
+ * Boot-time SUB-AGENT recovery — design §7.4 and §7.5.
  *
- * When the gateway is killed mid-swarm-run, nothing gets to write the
- * conversation's terminal state: the workers' `worker_done` events are never
- * appended (SwarmCoordinator.finalizeTurn never ran) and the stream never logs
- * its `done`/`error` marker. The durable event log then ends with
- * `worker_spawned` events that hang forever — MC's replay renders permanently
- * spinning worker cards and a spinning wait_workers tool block, and the swarm
- * panel (fed by the coordinator's in-memory ring buffer) knows nothing about
- * the run at all.
+ * A child is a real conversation now, so the GENERIC `recoverInterruptedTurns`
+ * already terminalizes a child's own log, flips its conversation to
+ * `interrupted` and (this task) flips its `subagent_status` with it. What that
+ * generic pass cannot do is either of the two parent-facing jobs left over,
+ * and this module is exactly those two and nothing else:
  *
- * This scan runs once at boot, BEFORE any server accepts traffic (so no live
- * turn can exist). For every conversation whose log tail — the entries after
- * its last `done`/`error` marker — contains dangling workers (spawned, no
- * terminal event), it:
+ *  1. {@link recoverInterruptedSubagentTails} — for every `subagent_started`
+ *     in an interrupted PARENT's tail with no matching `subagent_finished`,
+ *     append a synthesized `subagent_finished { status: 'interrupted' }` so
+ *     replay terminalizes the agent row instead of spinning for ever, and
+ *     queue the parent a notification about it.
+ *  2. {@link queueInterruptedSubagentNotifications} — for every child ROW the
+ *     generic pass just marked `interrupted`, queue that same notification.
+ *     This is the case (1) cannot see: a DETACHED background child dies with
+ *     its parent idle, so the parent has no interrupted tail at all.
  *
- *   1. appends a synthesized `worker_done{cancelled}` per dangling worker,
- *   2. appends one terminal `{type:'error'}` stream marker, and
- *   3. rebuilds a finalized RunSnapshot from the tail for the panel history.
+ * What used to live here and is deliberately gone: the whole `worker_*` family
+ * (retired in D8 — the mirrors were additive, and the dangling scan has always
+ * been driven off `subagent_started`, so a pre-D8 tail is repaired the same
+ * way), the synthesized `{type:'error'}` stream marker (the generic recovery
+ * appends exactly one, and a second would be a duplicate), and the rebuilt
+ * `RunSnapshot` pushed into the coordinator's ring buffer (the panel reads
+ * child conversations now — see `swarm-management.ts`).
  *
- * Deliberately-cancelled turns are untouched: a user cancel never logs a
- * stream marker either, but `cancelTurn` DID append every worker's terminal
- * event out-of-band, so those turns have no dangling workers. Interrupted
- * non-swarm turns are also untouched — MC already renders their unresolved
- * tool calls as interrupted, and stamping errors onto every historical
- * cancel/drop would be wrong.
+ * ORDER MATTERS and is fixed by `recoverGatewayTurns`: (1) runs BEFORE the
+ * generic pass because an event appended after that pass's terminal marker
+ * would leave the log non-terminal again — the conversation would come back
+ * "interrupted" on every subsequent boot, for ever. (2) runs AFTER it, because
+ * the generic pass is what sets `subagent_status = 'interrupted'` in the first
+ * place.
  *
- * Idempotent: step 2 makes the conversation's newest entry terminal, so the
- * next boot's `listInterrupted` no longer returns it.
+ * Neither step may break boot: every conversation, and every child inside one,
+ * is repaired inside its own try/catch. One bad row costs that row another
+ * boot, never the gateway.
  */
 
-type WorkerSpawnedEvent = Extract<AgentEvent, { type: 'worker_spawned' }> & MobileAgentEvent;
-type WorkerDoneEvent = Extract<AgentEvent, { type: 'worker_done' }> & MobileAgentEvent;
+/** The report a child that was killed by a restart carries. */
+export const INTERRUPTED_CHILD_REPORT =
+  'The gateway restarted while this agent was running. Its transcript is intact and it can be ' +
+  'resumed with send_message.';
 
-function isWorkerSpawnedEvent(event: MobileAgentEvent): event is WorkerSpawnedEvent {
+type SubagentStartedEvent = Extract<AgentEvent, { type: 'subagent_started' }> & MobileAgentEvent;
+type SubagentFinishedEvent = Extract<AgentEvent, { type: 'subagent_finished' }> & MobileAgentEvent;
+
+function isSubagentStarted(event: MobileAgentEvent): event is SubagentStartedEvent {
   return (
-    event.type === 'worker_spawned' &&
-    typeof event.workerId === 'string' &&
-    typeof event.runId === 'string' &&
-    typeof event.role === 'string' &&
-    typeof event.brief === 'string' &&
-    typeof event.model === 'string'
+    event.type === 'subagent_started' &&
+    typeof event.subagentId === 'string' &&
+    typeof event.subagentType === 'string' &&
+    typeof event.description === 'string' &&
+    typeof event.startedAt === 'string'
   );
 }
 
-function isWorkerDoneEvent(event: MobileAgentEvent): event is WorkerDoneEvent {
-  return (
-    event.type === 'worker_done' &&
-    typeof event.workerId === 'string' &&
-    typeof event.runId === 'string' &&
-    typeof event.role === 'string' &&
-    (event.status === 'done' || event.status === 'failed' || event.status === 'cancelled') &&
-    typeof event.report === 'string'
-  );
+function isSubagentFinished(event: MobileAgentEvent): event is SubagentFinishedEvent {
+  return event.type === 'subagent_finished' && typeof event.subagentId === 'string';
 }
 
-const CANCELLED_WORKER_REPORT = 'Gateway restarted while this worker was running.';
-const TURN_ERROR =
-  'Gateway restarted while this swarm run was in progress — remaining workers were cancelled.';
-const TURN_ERROR_PAYLOAD = { type: 'error', error: TURN_ERROR } satisfies EventLogPayload;
+/** The slice of the conversation service both steps need. */
+export type SubagentRecoveryConversations = Pick<
+  ConversationService,
+  | 'listInterruptedSubagents'
+  | 'updateSubagent'
+  | 'enqueueNotification'
+  | 'peekNotifications'
+  | 'get'
+>;
 
-export interface SwarmLogRecoveryOptions {
+export interface SubagentTailRecoveryOptions {
   eventLog: EventLogStore;
-  /** Active canonical outer runs. Their worker terminals must use the dual journal. */
+  conversations: SubagentRecoveryConversations;
+  /** Active canonical outer runs. Their child terminals must use the dual journal. */
   canonicalRuns?: ReadonlyArray<{
     agentId: string;
     conversationId: string;
@@ -80,35 +89,117 @@ export interface SwarmLogRecoveryOptions {
     outerRunId: string,
     event: AgentEvent,
   ) => unknown | null;
-  /** Push a reconstructed finalized snapshot into the panel history. */
-  restoreRun?: (snapshot: RunSnapshot) => void;
-  /** Boot logger; recovery is chatty only about what it changed or skipped on error. */
+  /** Boot logger; recovery is chatty only about what it changed or skipped. */
   log?: (message: string) => void;
 }
 
-export interface SwarmLogRecoveryResult {
+/** A parent that now holds at least one queued notification. */
+export interface PendingDeliveryTarget {
+  agentId: string;
+  conversationId: string;
+}
+
+export interface SubagentTailRecoveryResult {
+  /** Parents whose tail carried at least one dangling child. */
   conversationsRepaired: number;
-  workersCancelled: number;
+  /** Synthesized `subagent_finished` events appended. */
+  childrenTerminalized: number;
+  /** Notifications actually queued (a duplicate or a failure queues none). */
+  notificationsQueued: number;
+  /**
+   * The parents something was queued for. §7.5 says the notification is
+   * DELIVERED once the hub is up, and boot recovery runs long before that —
+   * so the callers are handed the list to drive `deliverPending` with later.
+   * Without it an idle parent sits on the queue until the user happens to
+   * type again, because the only other trigger is its own `finishTurn`.
+   */
+  pendingDelivery: PendingDeliveryTarget[];
+  /** Canonical runs whose synthesized child events reached both journals. */
   canonicalConversationsRepaired: string[];
+  /** Canonical runs left quarantined because the dual append failed. */
   failedCanonicalConversationIds: string[];
 }
 
-export function recoverInterruptedSwarmTurns(
-  options: SwarmLogRecoveryOptions,
-): SwarmLogRecoveryResult {
-  const { eventLog, restoreRun, log } = options;
+/** Backwards-compatible v2 recovery names retained by the startup orchestrator. */
+export type SwarmLogRecoveryOptions = SubagentTailRecoveryOptions;
+export type SwarmLogRecoveryResult = SubagentTailRecoveryResult;
+
+export interface SubagentChildRecoveryOptions {
+  conversations: SubagentRecoveryConversations;
+  log?: (message: string) => void;
+}
+
+export interface SubagentChildRecoveryResult {
+  childrenNotified: number;
+  /** See {@link SubagentTailRecoveryResult.pendingDelivery}. */
+  pendingDelivery: PendingDeliveryTarget[];
+}
+
+/** The `subagent_finished` payload shape the coordinator enqueues on a terminal child. */
+function notificationPayload(event: SubagentFinishedEvent): Record<string, unknown> {
+  return {
+    subagentId: event.subagentId,
+    ...(event.name !== undefined ? { name: event.name } : {}),
+    subagentType: event.subagentType,
+    description: event.description,
+    status: event.status,
+    report: event.report,
+    toolCallCount: event.toolCallCount,
+    startedAt: event.startedAt,
+    endedAt: event.endedAt,
+    ...(event.usage ? { usage: event.usage } : {}),
+  };
+}
+
+/**
+ * Queue one `subagent_finished` notification, unless the parent already holds
+ * one for this child.
+ *
+ * The dedup is a peek rather than bookkeeping between the two steps because
+ * BOTH of them can reach the same child — a foreground background-less child
+ * dies with its parent's turn open, so it is both a dangling `subagent_started`
+ * in the tail and an `interrupted` row — and a parent woken twice about one
+ * child reads as two separate failures.
+ */
+function queueOnce(
+  conversations: SubagentRecoveryConversations,
+  parentConversationId: string,
+  payload: Record<string, unknown>,
+): boolean {
+  const already = conversations
+    .peekNotifications(parentConversationId)
+    .some(
+      (pending) =>
+        pending.kind === 'subagent_finished' && pending.payload.subagentId === payload.subagentId,
+    );
+  if (already) return false;
+  conversations.enqueueNotification({
+    conversationId: parentConversationId,
+    kind: 'subagent_finished',
+    payload,
+  });
+  return true;
+}
+
+/**
+ * Step 1 (parent side). See the module comment for why this runs BEFORE
+ * `recoverInterruptedTurns`.
+ */
+export function recoverInterruptedSubagentTails(
+  options: SubagentTailRecoveryOptions,
+): SubagentTailRecoveryResult {
+  const { eventLog, conversations, log } = options;
   let conversationsRepaired = 0;
-  let workersCancelled = 0;
   const canonicalConversationsRepaired: string[] = [];
   const failedCanonicalConversationIds: string[] = [];
   const canonicalRuns = new Map(
     (options.canonicalRuns ?? []).map((run) => [`${run.agentId}\u0000${run.conversationId}`, run]),
   );
+  let childrenTerminalized = 0;
+  let notificationsQueued = 0;
+  const pendingDelivery = new Map<string, PendingDeliveryTarget>();
 
   for (const conv of eventLog.listInterrupted()) {
-    // A failure in one conversation must never break boot or the rest of
-    // the scan — log it and move on; that conversation stays interrupted
-    // and gets another chance on the next boot.
     try {
       const canonical = canonicalRuns.get(`${conv.agentId}\u0000${conv.conversationId}`);
       const wholeTail = eventLog.readSince(conv.agentId, conv.conversationId, conv.lastTerminalSeq);
@@ -116,36 +207,40 @@ export function recoverInterruptedSwarmTurns(
         ? wholeTail.filter((entry) => entry.msgId === canonical.outerRunId)
         : wholeTail;
 
-      // Group the tail's swarm events. Spawn order is preserved by seq order.
-      const spawns = new Map<string, { event: WorkerSpawnedEvent; timestamp: string }>();
-      const terminals = new Map<string, WorkerDoneEvent>();
+      const started = new Map<string, SubagentStartedEvent>();
+      const finished = new Set<string>();
       for (const entry of tail) {
         if (entry.payload.type !== 'event') continue;
         const event = entry.payload.event;
-        if (isWorkerSpawnedEvent(event)) {
-          spawns.set(event.workerId, { event, timestamp: entry.timestamp });
-        } else if (isWorkerDoneEvent(event)) {
-          terminals.set(event.workerId, event);
-        }
+        if (isSubagentStarted(event)) started.set(event.subagentId, event);
+        else if (isSubagentFinished(event)) finished.add(event.subagentId);
       }
-      if (spawns.size === 0) continue; // interrupted, but not a swarm turn
 
-      const dangling = [...spawns.values()].filter(({ event }) => !terminals.has(event.workerId));
+      const dangling = [...started.values()].filter((event) => !finished.has(event.subagentId));
+      if (dangling.length === 0) continue;
 
-      if (canonical) {
-        if (!options.appendCurrentRunEvent) {
-          throw new Error('Canonical swarm recovery requires appendCurrentRunEvent');
-        }
-        for (const { event } of dangling) {
-          const synthesized: WorkerDoneEvent = {
-            type: 'worker_done',
-            workerId: event.workerId,
-            runId: event.runId,
-            role: event.role,
-            status: 'cancelled',
-            report: CANCELLED_WORKER_REPORT,
-            usage: { inputTokens: 0, outputTokens: 0 },
-          };
+      // The dead process cannot have written anything after its last entry, so
+      // that timestamp is the latest defensible end time for its children.
+      const endedAt = tail[tail.length - 1].timestamp;
+
+      for (const event of dangling) {
+        const synthesized: SubagentFinishedEvent = {
+          type: 'subagent_finished',
+          subagentId: event.subagentId,
+          ...(event.name !== undefined ? { name: event.name } : {}),
+          subagentType: event.subagentType,
+          description: event.description,
+          status: 'interrupted',
+          report: INTERRUPTED_CHILD_REPORT,
+          toolCallCount: 0,
+          startedAt: event.startedAt,
+          endedAt,
+        };
+
+        if (canonical) {
+          if (!options.appendCurrentRunEvent) {
+            throw new Error('Canonical sub-agent recovery requires appendCurrentRunEvent');
+          }
           const persisted = options.appendCurrentRunEvent(
             conv.agentId,
             conv.conversationId,
@@ -153,56 +248,38 @@ export function recoverInterruptedSwarmTurns(
             synthesized,
           );
           if (persisted === null) {
-            throw new Error(`Canonical journal rejected worker ${event.workerId}`);
+            throw new Error(`Canonical journal rejected child ${event.subagentId}`);
           }
-          terminals.set(event.workerId, synthesized);
-          workersCancelled++;
+        } else {
+          eventLog.append(conv.agentId, conv.conversationId, conv.lastMsgId, {
+            type: 'event',
+            event: synthesized,
+          });
         }
+        childrenTerminalized++;
 
-        restoreRun?.(buildSnapshot(conv.agentId, conv.conversationId, tail, spawns, terminals));
-        conversationsRepaired++;
-        canonicalConversationsRepaired.push(conv.conversationId);
-        log?.(
-          `[swarm-recovery] repaired ${dangling.length} canonical worker(s) in conversation ${conv.conversationId} (agent ${conv.agentId}, outer run ${canonical.outerRunId})`,
-        );
-        continue;
+        // Per-CHILD containment: a parent whose queue is full must not cost the
+        // other children of the same parent their notification.
+        try {
+          if (queueOnce(conversations, conv.conversationId, notificationPayload(synthesized))) {
+            notificationsQueued++;
+            pendingDelivery.set(conv.conversationId, {
+              agentId: conv.agentId,
+              conversationId: conv.conversationId,
+            });
+          }
+        } catch (err) {
+          log?.(
+            `[subagent-recovery] could not queue the interrupted notification for ${event.subagentId} on conversation ${conv.conversationId}: ${describe(err)}`,
+          );
+        }
       }
-
-      if (dangling.length === 0) continue; // every worker already terminal (e.g. user cancel)
-
-      // 1) Synthesize a terminal event per dangling worker, keyed to the
-      //    interrupted message so replay consumers correlate them.
-      for (const { event } of dangling) {
-        const synthesized: WorkerDoneEvent = {
-          type: 'worker_done',
-          workerId: event.workerId,
-          runId: event.runId,
-          role: event.role,
-          status: 'cancelled',
-          report: CANCELLED_WORKER_REPORT,
-          usage: { inputTokens: 0, outputTokens: 0 },
-        };
-        eventLog.append(conv.agentId, conv.conversationId, conv.lastMsgId, {
-          type: 'event',
-          event: synthesized,
-        });
-        terminals.set(event.workerId, synthesized);
-      }
-
-      // 2) One terminal stream marker: the turn ended in an error, not
-      //    silence. MC's reconcile fires its error path off this.
-      eventLog.append(conv.agentId, conv.conversationId, conv.lastMsgId, TURN_ERROR_PAYLOAD);
-
-      // 3) Rebuild the run for the panel. Timestamps come from the log
-      //    itself: the run started at its first spawn and can't have
-      //    outlived the last thing the dead process wrote.
-      const runId = [...spawns.values()][0].event.runId;
-      restoreRun?.(buildSnapshot(conv.agentId, conv.conversationId, tail, spawns, terminals));
 
       conversationsRepaired++;
-      workersCancelled += dangling.length;
+      if (canonical) canonicalConversationsRepaired.push(conv.conversationId);
       log?.(
-        `[swarm-recovery] terminalized ${dangling.length} dangling worker(s) in conversation ${conv.conversationId} (agent ${conv.agentId}, run ${runId})`,
+        `[subagent-recovery] terminalized ${dangling.length} interrupted child(ren) in ` +
+          `conversation ${conv.conversationId} (agent ${conv.agentId})`,
       );
     } catch (err) {
       const canonical = canonicalRuns.has(`${conv.agentId}\u0000${conv.conversationId}`);
@@ -210,50 +287,78 @@ export function recoverInterruptedSwarmTurns(
         failedCanonicalConversationIds.push(conv.conversationId);
       }
       log?.(
-        `[swarm-recovery] failed to repair conversation ${conv.conversationId} (agent ${conv.agentId}): ${err instanceof Error ? err.message : String(err)}`,
+        `[subagent-recovery] failed to repair conversation ${conv.conversationId} ` +
+          `(agent ${conv.agentId}): ${describe(err)}`,
       );
     }
   }
 
   return {
     conversationsRepaired,
-    workersCancelled,
+    childrenTerminalized,
+    notificationsQueued,
+    pendingDelivery: [...pendingDelivery.values()],
     canonicalConversationsRepaired,
     failedCanonicalConversationIds,
   };
 }
 
-function buildSnapshot(
-  agentId: string,
-  conversationId: string,
-  tail: EventLogEntry[],
-  spawns: Map<string, { event: WorkerSpawnedEvent; timestamp: string }>,
-  terminals: Map<string, WorkerDoneEvent>,
-): RunSnapshot {
-  const ordered = [...spawns.values()];
-  const runId = ordered[0].event.runId;
-  const startedAt = Date.parse(ordered[0].timestamp);
-  const endedAt = Date.parse(tail.at(-1)?.timestamp ?? ordered[0].timestamp);
-  return {
-    runId,
-    agentId,
-    conversationId,
-    startedAt,
-    endedAt,
-    finalized: true,
-    workerCount: ordered.length,
-    activeCount: 0,
-    workers: ordered.map(({ event }) => {
-      const terminal = terminals.get(event.workerId) as WorkerDoneEvent;
-      return {
-        workerId: event.workerId,
-        role: event.role,
-        status: terminal.status,
-        brief: event.brief,
-        model: event.model,
-        report: terminal.report,
-        usage: terminal.usage ?? { inputTokens: 0, outputTokens: 0 },
-      };
-    }),
-  };
+/**
+ * Step 2 (child side). See the module comment for why this runs AFTER
+ * `recoverInterruptedTurns`.
+ *
+ * Idempotent across boots on `subagent.endedAt`: an interrupted child that has
+ * one has already been finalized by a previous boot (or by the process that
+ * interrupted it), so it is skipped. The stamp is written AFTER the enqueue, so
+ * a queue that refused leaves the child unstamped and it is retried next boot.
+ */
+export function queueInterruptedSubagentNotifications(
+  options: SubagentChildRecoveryOptions,
+): SubagentChildRecoveryResult {
+  const { conversations, log } = options;
+  let childrenNotified = 0;
+  const pendingDelivery = new Map<string, PendingDeliveryTarget>();
+
+  for (const child of conversations.listInterruptedSubagents()) {
+    try {
+      const info = child.subagent;
+      if (!info || info.endedAt) continue;
+      const parentConversationId = child.parentConversationId;
+      if (!parentConversationId) continue;
+
+      const endedAt = new Date().toISOString();
+      const queued = queueOnce(conversations, parentConversationId, {
+        subagentId: child.id,
+        ...(info.name !== undefined ? { name: info.name } : {}),
+        subagentType: info.type,
+        description: info.description,
+        status: 'interrupted',
+        report: info.report ?? INTERRUPTED_CHILD_REPORT,
+        toolCallCount: info.toolCallCount,
+        startedAt: info.startedAt,
+        endedAt,
+        ...(info.usage ? { usage: info.usage } : {}),
+      });
+      conversations.updateSubagent(child.id, { info: { endedAt } });
+      if (queued) {
+        childrenNotified++;
+        pendingDelivery.set(parentConversationId, {
+          agentId: child.agentId,
+          conversationId: parentConversationId,
+        });
+      }
+    } catch (err) {
+      log?.(
+        `[subagent-recovery] failed to queue the interrupted notification for child ${child.id}: ${describe(err)}`,
+      );
+    }
+  }
+
+  return { childrenNotified, pendingDelivery: [...pendingDelivery.values()] };
 }
+
+function describe(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export const recoverInterruptedSwarmTurns = recoverInterruptedSubagentTails;
