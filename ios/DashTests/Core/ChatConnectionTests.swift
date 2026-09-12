@@ -108,7 +108,7 @@ struct ChatConnectionTests {
       images: []
     )
 
-    guard case let .message(_, _, _, _, _, sent, _, _, _) = await task.sentFrames.first else {
+    guard case let .message(_, _, _, _, _, sent, _, _, _, _) = await task.sentFrames.first else {
       Issue.record("expected a message frame")
       return
     }

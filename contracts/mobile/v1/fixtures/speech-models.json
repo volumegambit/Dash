@@ -1,0 +1,15 @@
+{
+  "models": [
+    {
+      "id": "openai/whisper-large-v3",
+      "name": "Whisper Large v3",
+      "kind": "transcription"
+    },
+    {
+      "id": "minimax/speech-2.8-turbo",
+      "name": "MiniMax: Speech 2.8 Turbo",
+      "kind": "speech",
+      "voices": ["English_expressive_narrator", "English_radiant_girl"]
+    }
+  ]
+}

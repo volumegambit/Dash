@@ -382,6 +382,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
           ? frame.images.map((image) => ({ type: 'image' as const, ...image }))
           : undefined,
         location: toClientLocation(frame.location),
+        modality: frame.modality,
         messageId: frame.id,
         signal: live.controller.signal,
       });

@@ -1,0 +1,51 @@
+export type {
+  AudioFormat,
+  SpeechCapabilities,
+  SpeechModel,
+  SpeechModelKind,
+  SpeechProvider,
+  SynthesisStream,
+  SynthesizeOptions,
+  Transcription,
+  TranscribeOptions,
+} from './types.js';
+export { SpeechError, httpStatusFor } from './errors.js';
+export type { SpeechErrorCode } from './errors.js';
+export {
+  DEFAULT_SPEECH_CONFIG,
+  mergeSpeechConfig,
+  validateSpeechConfigPatch,
+} from './config.js';
+export type { SpeechConfig, SpeechConfigPatch, ValidationResult } from './config.js';
+export {
+  PCM16_MODELS,
+  PCM_ONLY_MODELS,
+  parsePcmContentType,
+  pcmFormatFor,
+  speechRequestFormat,
+} from './pcm-formats.js';
+export type { Pcm16Format } from './pcm-formats.js';
+export { wavFromPcm16 } from './wav.js';
+export { createOpenRouterSpeechProvider } from './providers/openrouter.js';
+export type { OpenRouterSpeechProviderOptions } from './providers/openrouter.js';
+export { createSpeechService } from './service.js';
+export type {
+  SpeechProviderReason,
+  SpeechProviderStatus,
+  SpeechService,
+  SpeechServiceOptions,
+} from './service.js';
+export { VoiceActivityDetector } from './vad.js';
+export type { VadEvent, VadOptions } from './vad.js';
+export { speakable, SentenceChunker } from './chunker.js';
+export type { SentenceChunkerOptions } from './chunker.js';
+export { VoiceSession } from './session.js';
+export type {
+  TurnDriver,
+  VoiceServerFrame,
+  VoiceSessionOptions,
+  VoiceState,
+  VoiceStopReason,
+} from './session.js';
+export { SpokenRenderer } from './spoken-renderer.js';
+export type { SpeechItem, SpokenRendererOptions } from './spoken-renderer.js';

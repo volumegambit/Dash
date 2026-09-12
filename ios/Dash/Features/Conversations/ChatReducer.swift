@@ -940,6 +940,11 @@ enum ChatReducer {
       assistant.isThinkingCollapsed = true
       assistant.pendingQuestion = nil
       rows[index].assistant = assistant
+
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      // Never reached: `ChatFeature.consume` returns for a voice frame before
+      // any sub-agent folding runs, and a voice session has no child rows.
+      break
     }
   }
 
@@ -1057,6 +1062,11 @@ enum ChatReducer {
       state.errorBanner = error
       finishTurn(id, state: &state)
       return shouldAnnounce ? [.announceFinalResponse("Response failed: \(error)")] : []
+
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      // Never reached: `ChatFeature.consume` returns for a voice frame before
+      // `consumeFrame`/`apply` run.
+      return []
     }
   }
 
@@ -1696,6 +1706,9 @@ enum ChatReducer {
     case let .event(_, _, seq, _): seq
     case let .done(_, _, seq, _): seq
     case let .error(_, _, seq, _, _, _, _): seq
+    // Voice frames never reach the reducer (`ChatFeature.consume` returns
+    // before `consumeFrame` for one) and carry no resumable-hub `seq` anyway.
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: nil
     }
   }
 
@@ -1705,6 +1718,7 @@ enum ChatReducer {
     case let .event(_, conversationID, _, _): conversationID
     case let .done(_, conversationID, _, _): conversationID
     case let .error(_, conversationID, _, _, _, _, _): conversationID
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: nil
     }
   }
 
@@ -1725,6 +1739,11 @@ enum ChatReducer {
     case let .event(id, _, _, _): id
     case let .done(id, _, _, _): id
     case let .error(id, _, _, _, _, _, _): id
+    case let .voiceState(id, _, _): id
+    case let .voiceTranscript(id, _, _, _): id
+    case let .voiceSpeech(id, _, _, _, _, _): id
+    case let .voiceError(id, _, _): id
+    case let .voiceStopped(id, _): id
     }
   }
 
@@ -1825,6 +1844,10 @@ enum ChatReducer {
       state.errorBanner = "The message outcome is unknown. Refresh the conversation."
     case let .server(error, _):
       state.errorBanner = error.error
+    case let .speech(_, message, _):
+      // Reachable once dictation lives in the composer (A8): a speech failure
+      // is a banner, never a composer BLOCK — the user can always still type.
+      state.errorBanner = message
     }
     return []
   }

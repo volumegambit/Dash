@@ -1317,15 +1317,163 @@ struct AppModelTests {
   private func dependencies(
     profile: ConnectionProfileSnapshot?,
     engine: FakeAppSyncEngine,
-    accountFeatureFactory: AccountFeatureFactory = .unavailable
+    accountFeatureFactory: AccountFeatureFactory = .unavailable,
+    verifyProfile: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Set<
+      MobileCapability
+    > = { _ in [] },
+    fetchCapabilities: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Set<
+      MobileCapability
+    > = { _ in [] }
   ) -> AppDependencies {
     let clock = TestAppClock(now: Date(timeIntervalSince1970: 100))
     return AppDependencies(
       clock: clock,
       loadProfile: { profile },
       makeSyncEngine: { _ in engine },
+      verifyProfile: verifyProfile,
+      fetchCapabilities: fetchCapabilities,
       accountFeatureFactory: accountFeatureFactory
     )
+  }
+
+  // MARK: - Gateway capabilities
+  //
+  // `GatewayProfileVerifier` used to CHECK the health capabilities and then
+  // throw them away, so nothing outside that one call could ask what the
+  // gateway can do. Speech is the first optional capability, and the whole
+  // point of `speech-v1` is that a feature appears only when the gateway on
+  // the other end really has a provider — which means the set has to outlive
+  // verification.
+
+  @Test("a successful verify retains the gateway's capabilities")
+  func verifiedCapabilitiesAreRetained() async throws {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    // Straight from the canonical fixture, so this test moves with the
+    // contract instead of asserting a hand-written list.
+    let health = try FixtureLoader.decode(HealthResponse.self, "health-capabilities.json")
+    let model = AppModel(
+      dependencies: dependencies(
+        profile: profile,
+        engine: engine,
+        verifyProfile: { _ in Set(health.capabilities) }
+      )
+    )
+
+    await model.start()
+    // Activation still does not verify, and this dependency answers with an
+    // empty set, so nothing arrives to change the "unknown means absent"
+    // starting point.
+    await model.waitForCapabilityProbe()
+    #expect(model.gatewayCapabilities.isEmpty)
+    #expect(model.speechAvailable == false)
+
+    try await model.reconnect()
+
+    #expect(model.gatewayCapabilities == [.conversationSyncV1, .chatResumeV1, .speechV1])
+    #expect(model.speechAvailable)
+  }
+
+  @Test("activation reads the gateway's capabilities without waiting for a verify")
+  func launchCapabilitiesArriveFromHealth() async throws {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let health = try FixtureLoader.decode(HealthResponse.self, "health-capabilities.json")
+    let model = AppModel(
+      dependencies: dependencies(
+        profile: profile,
+        engine: engine,
+        fetchCapabilities: { _ in Set(health.capabilities) }
+      )
+    )
+
+    await model.start()
+    // The probe is deliberately off activation's critical path, so `start()`
+    // returning is NOT the moment the answer lands.
+    await model.waitForCapabilityProbe()
+
+    // The mic in the composer depends on this: before it, `speech-v1` was
+    // unknowable until the user happened to trigger a reconnect, so a cold
+    // launch showed no mic on a gateway that has speech.
+    #expect(model.gatewayCapabilities == [.conversationSyncV1, .chatResumeV1, .speechV1])
+    #expect(model.speechAvailable)
+  }
+
+  @Test("a failed health call leaves the retained capabilities alone")
+  func failedCapabilityProbeChangesNothing() async throws {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let health = try FixtureLoader.decode(HealthResponse.self, "health-capabilities.json")
+    let model = AppModel(
+      dependencies: dependencies(
+        profile: profile,
+        engine: engine,
+        verifyProfile: { _ in Set(health.capabilities) },
+        fetchCapabilities: { _ in throw GatewayError.gatewayOffline }
+      )
+    )
+
+    await model.start()
+    await model.waitForCapabilityProbe()
+    #expect(model.gatewayCapabilities.isEmpty)
+
+    // And a later verify still decides: a probe that could not ask must not
+    // leave the set permanently poisoned either way.
+    try await model.reconnect()
+    #expect(model.speechAvailable)
+  }
+
+  @Test("speechAvailable follows the latest verify, in both directions")
+  func speechAvailabilityFollowsTheLatestVerify() async throws {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let health = try FixtureLoader.decode(HealthResponse.self, "health-capabilities.json")
+    let stub = CapabilityVerifyStub([
+      Set(health.capabilities),
+      // The same gateway after its speech credential was removed: `/health`
+      // stops advertising `speech-v1`, so the mic has to disappear again.
+      [.conversationSyncV1, .chatResumeV1],
+    ])
+    let model = AppModel(
+      dependencies: dependencies(
+        profile: profile,
+        engine: engine,
+        verifyProfile: { _ in await stub.next() }
+      )
+    )
+    await model.start()
+
+    try await model.reconnect()
+    #expect(model.speechAvailable)
+
+    try await model.reconnect()
+
+    #expect(model.speechAvailable == false)
+    #expect(model.gatewayCapabilities == [.conversationSyncV1, .chatResumeV1])
+  }
+
+  @Test("disconnecting empties the retained capabilities")
+  func disconnectClearsCapabilities() async throws {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let health = try FixtureLoader.decode(HealthResponse.self, "health-capabilities.json")
+    let model = AppModel(
+      dependencies: dependencies(
+        profile: profile,
+        engine: engine,
+        verifyProfile: { _ in Set(health.capabilities) }
+      )
+    )
+    await model.start()
+    try await model.reconnect()
+    #expect(model.speechAvailable)
+
+    try await model.disconnectAndForget()
+
+    // Capabilities describe ONE gateway. Carrying them past a disconnect would
+    // offer speech on the next gateway paired, before anything verified it.
+    #expect(model.gatewayCapabilities.isEmpty)
+    #expect(model.speechAvailable == false)
   }
 
   private func connectionProfile() -> ConnectionProfileSnapshot {
@@ -1745,5 +1893,19 @@ private actor AppModelConversationService: ConversationListServicing {
 
   func shutdown() {
     shutdownCallCount += 1
+  }
+}
+
+/// Hands out one capability set per `verify`, so a test can watch the value
+/// change between two reconnects.
+private actor CapabilityVerifyStub {
+  private var results: [Set<MobileCapability>]
+
+  init(_ results: [Set<MobileCapability>]) {
+    self.results = results
+  }
+
+  func next() -> Set<MobileCapability> {
+    results.isEmpty ? [] : results.removeFirst()
   }
 }

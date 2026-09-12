@@ -3,6 +3,47 @@ enum StreamingBehavior: String, Codable, Hashable, Sendable {
   case followUp
 }
 
+/// The hands-free voice session's state machine (`@dash/speech`'s
+/// `VoiceSession`). Decodes leniently: a state this build has never heard of
+/// reads as `.unknown` rather than failing the whole `voice_state` frame,
+/// mirroring `SkillSource`'s `init(from:)`.
+enum VoiceState: String, Codable, Hashable, Sendable {
+  case listening
+  case transcribing
+  case thinking
+  case speaking
+  case muted
+  case stopped
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = VoiceState(rawValue: raw) ?? .unknown
+  }
+}
+
+/// Why a `voice_stopped` frame was sent. Decodes leniently, like `VoiceState`.
+enum VoiceStopReason: String, Codable, Hashable, Sendable {
+  case client
+  case socket
+  case provider
+  case replaced
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = VoiceStopReason(rawValue: raw) ?? .unknown
+  }
+}
+
+/// Set only for a turn spoken through the Phase B voice session — never for a
+/// dictated turn, which merely fills the text composer. `DashAgent.chat`
+/// appends the `<voice>` spoken-mode prompt block when this is `.voice`.
+enum Modality: String, Codable, Hashable, Sendable {
+  case text
+  case voice
+}
+
 enum MobileWSClientFrame: Codable, Hashable, Sendable {
   case message(
     id: String,
@@ -13,7 +54,8 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
     location: ClientLocation?,
     images: [MessageImage]?,
     resumable: Bool?,
-    streamingBehavior: StreamingBehavior?
+    streamingBehavior: StreamingBehavior?,
+    modality: Modality?
   )
   case resume(id: String, agentId: String, conversationId: String, sinceSeq: Int)
   case answer(id: String, questionId: String, answer: String)
@@ -24,6 +66,22 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
   /// merely open.
   case subscribe(id: String, agentId: String, conversationId: String)
   case unsubscribe(id: String, agentId: String, conversationId: String)
+  /// Starts the hands-free voice session on `conversationId`. `id` is the
+  /// client-generated session id every `voice_*` frame in both directions
+  /// carries; a second `voice_start` from this socket replaces the first.
+  case voiceStart(id: String, agentId: String, conversationId: String)
+  /// One capture chunk from the microphone. `pcm` is standard base64 PCM16 at
+  /// 16 kHz mono; the gateway caps the DECODED size at 16384 bytes. `seq` is
+  /// advisory only.
+  case voiceAudio(id: String, seq: Int, pcm: String)
+  case voiceMute(id: String, muted: Bool)
+  case voiceStop(id: String)
+  /// Every `voice_speech` up to and including `seq` has finished PLAYING on
+  /// this device. The gateway holds the session in `speaking` until it
+  /// arrives (or an 8s safety timer fires), because leaving `speaking` is
+  /// what makes this client flush playback — without it the reply's last
+  /// sentence was cut off.
+  case voicePlayed(id: String, seq: Int)
 
   private enum CodingKeys: String, CodingKey {
     case type
@@ -36,9 +94,13 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
     case images
     case resumable
     case streamingBehavior
+    case modality
     case sinceSeq
     case questionId
     case answer
+    case seq
+    case pcm
+    case muted
   }
 
   static func newTurn(
@@ -58,7 +120,10 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
       location: location,
       images: images,
       resumable: true,
-      streamingBehavior: nil
+      streamingBehavior: nil,
+      // A dictated turn never carries modality — only the Phase B voice
+      // session sets it.
+      modality: nil
     )
   }
 
@@ -79,7 +144,8 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
         streamingBehavior: try container.decodeIfPresent(
           StreamingBehavior.self,
           forKey: .streamingBehavior
-        )
+        ),
+        modality: try container.decodeIfPresent(Modality.self, forKey: .modality)
       )
     case "resume":
       self = .resume(
@@ -108,6 +174,30 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
         agentId: try container.decode(String.self, forKey: .agentId),
         conversationId: try container.decode(String.self, forKey: .conversationId)
       )
+    case "voice_start":
+      self = .voiceStart(
+        id: try container.decode(String.self, forKey: .id),
+        agentId: try container.decode(String.self, forKey: .agentId),
+        conversationId: try container.decode(String.self, forKey: .conversationId)
+      )
+    case "voice_audio":
+      self = .voiceAudio(
+        id: try container.decode(String.self, forKey: .id),
+        seq: try container.decode(Int.self, forKey: .seq),
+        pcm: try container.decode(String.self, forKey: .pcm)
+      )
+    case "voice_mute":
+      self = .voiceMute(
+        id: try container.decode(String.self, forKey: .id),
+        muted: try container.decode(Bool.self, forKey: .muted)
+      )
+    case "voice_stop":
+      self = .voiceStop(id: try container.decode(String.self, forKey: .id))
+    case "voice_played":
+      self = .voicePlayed(
+        id: try container.decode(String.self, forKey: .id),
+        seq: try container.decode(Int.self, forKey: .seq)
+      )
     default:
       throw DecodingError.dataCorruptedError(
         forKey: .type,
@@ -129,7 +219,8 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
       location,
       images,
       resumable,
-      streamingBehavior
+      streamingBehavior,
+      modality
     ):
       try container.encode("message", forKey: .type)
       try container.encode(id, forKey: .id)
@@ -141,6 +232,7 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
       try container.encodeIfPresent(images, forKey: .images)
       try container.encodeIfPresent(resumable, forKey: .resumable)
       try container.encodeIfPresent(streamingBehavior, forKey: .streamingBehavior)
+      try container.encodeIfPresent(modality, forKey: .modality)
     case let .resume(id, agentId, conversationId, sinceSeq):
       try container.encode("resume", forKey: .type)
       try container.encode(id, forKey: .id)
@@ -165,6 +257,27 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
       try container.encode(id, forKey: .id)
       try container.encode(agentId, forKey: .agentId)
       try container.encode(conversationId, forKey: .conversationId)
+    case let .voiceStart(id, agentId, conversationId):
+      try container.encode("voice_start", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(agentId, forKey: .agentId)
+      try container.encode(conversationId, forKey: .conversationId)
+    case let .voiceAudio(id, seq, pcm):
+      try container.encode("voice_audio", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(seq, forKey: .seq)
+      try container.encode(pcm, forKey: .pcm)
+    case let .voiceMute(id, muted):
+      try container.encode("voice_mute", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(muted, forKey: .muted)
+    case let .voiceStop(id):
+      try container.encode("voice_stop", forKey: .type)
+      try container.encode(id, forKey: .id)
+    case let .voicePlayed(id, seq):
+      try container.encode("voice_played", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(seq, forKey: .seq)
     }
   }
 }
@@ -211,6 +324,17 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
     retryable: Bool?,
     activeTurnId: String?
   )
+  /// `turnId` is set once a turn is running and cleared once the session
+  /// settles back to `.listening`.
+  case voiceState(id: String, state: VoiceState, turnId: String?)
+  /// `turnId` is set on the transcript that STARTS a turn — always emitted
+  /// before that turn's `.accepted`.
+  case voiceTranscript(id: String, text: String, final: Bool, turnId: String?)
+  /// `seq` is a per-chunk counter, independent of the resumable chat hub's
+  /// `seq` on the other frames. `audio` is base64 of the chunk's raw bytes.
+  case voiceSpeech(id: String, seq: Int, audio: String, format: String, sampleRate: Int?, text: String)
+  case voiceError(id: String, code: String, error: String)
+  case voiceStopped(id: String, reason: VoiceStopReason)
 
   private enum CodingKeys: String, CodingKey {
     case type
@@ -229,6 +353,14 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
     case code
     case retryable
     case activeTurnId
+    case state
+    case turnId
+    case text
+    case final
+    case audio
+    case format
+    case sampleRate
+    case reason
   }
 
   init(from decoder: Decoder) throws {
@@ -277,6 +409,39 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
         code: try container.decodeIfPresent(String.self, forKey: .code),
         retryable: try container.decodeIfPresent(Bool.self, forKey: .retryable),
         activeTurnId: try container.decodeIfPresent(String.self, forKey: .activeTurnId)
+      )
+    case "voice_state":
+      self = .voiceState(
+        id: try container.decode(String.self, forKey: .id),
+        state: try container.decode(VoiceState.self, forKey: .state),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "voice_transcript":
+      self = .voiceTranscript(
+        id: try container.decode(String.self, forKey: .id),
+        text: try container.decode(String.self, forKey: .text),
+        final: try container.decode(Bool.self, forKey: .final),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "voice_speech":
+      self = .voiceSpeech(
+        id: try container.decode(String.self, forKey: .id),
+        seq: try container.decode(Int.self, forKey: .seq),
+        audio: try container.decode(String.self, forKey: .audio),
+        format: try container.decode(String.self, forKey: .format),
+        sampleRate: try container.decodeIfPresent(Int.self, forKey: .sampleRate),
+        text: try container.decode(String.self, forKey: .text)
+      )
+    case "voice_error":
+      self = .voiceError(
+        id: try container.decode(String.self, forKey: .id),
+        code: try container.decode(String.self, forKey: .code),
+        error: try container.decode(String.self, forKey: .error)
+      )
+    case "voice_stopped":
+      self = .voiceStopped(
+        id: try container.decode(String.self, forKey: .id),
+        reason: try container.decode(VoiceStopReason.self, forKey: .reason)
       )
     default:
       throw DecodingError.dataCorruptedError(
@@ -332,12 +497,46 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
       try container.encodeIfPresent(code, forKey: .code)
       try container.encodeIfPresent(retryable, forKey: .retryable)
       try container.encodeIfPresent(activeTurnId, forKey: .activeTurnId)
+    case let .voiceState(id, state, turnId):
+      try container.encode("voice_state", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(state, forKey: .state)
+      try container.encodeIfPresent(turnId, forKey: .turnId)
+    case let .voiceTranscript(id, text, final, turnId):
+      try container.encode("voice_transcript", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(text, forKey: .text)
+      try container.encode(final, forKey: .final)
+      try container.encodeIfPresent(turnId, forKey: .turnId)
+    case let .voiceSpeech(id, seq, audio, format, sampleRate, text):
+      try container.encode("voice_speech", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(seq, forKey: .seq)
+      try container.encode(audio, forKey: .audio)
+      try container.encode(format, forKey: .format)
+      try container.encodeIfPresent(sampleRate, forKey: .sampleRate)
+      try container.encode(text, forKey: .text)
+    case let .voiceError(id, code, error):
+      try container.encode("voice_error", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(code, forKey: .code)
+      try container.encode(error, forKey: .error)
+    case let .voiceStopped(id, reason):
+      try container.encode("voice_stopped", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(reason, forKey: .reason)
     }
   }
 }
 
 enum ContractValidationError: Error, Equatable, Sendable {
   case requiredCapableField(String)
+  /// Voice frames bypass turn/capability validation entirely —
+  /// `ChatConnection.receiveLoop` yields them straight through as `.frame`,
+  /// since they are keyed by voice session id rather than a chat turn id.
+  /// Reaching `CapableServerFrame.validating` with one would mean that bypass
+  /// regressed.
+  case unexpectedVoiceFrame(id: String)
 }
 
 enum CapableServerFrame: Hashable, Sendable {
@@ -409,6 +608,12 @@ enum CapableServerFrame: Hashable, Sendable {
         retryable: retryable,
         activeTurnId: activeTurnId
       )
+    case let .voiceState(id, _, _),
+      let .voiceTranscript(id, _, _, _),
+      let .voiceSpeech(id, _, _, _, _, _),
+      let .voiceError(id, _, _),
+      let .voiceStopped(id, _):
+      throw ContractValidationError.unexpectedVoiceFrame(id: id)
     }
   }
 }

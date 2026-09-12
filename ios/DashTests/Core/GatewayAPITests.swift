@@ -113,6 +113,225 @@ struct GatewayAPITests {
     #expect(requests[1].httpBody == nil)
   }
 
+  @Test("speech methods pin their paths, the kind query, and the audio Accept header")
+  func speechRequestShapes() async throws {
+    try URLProtocolStub.enqueue(status: 200, fixture: "speech-config.json")
+    try URLProtocolStub.enqueue(status: 200, fixture: "speech-config.json")
+    try URLProtocolStub.enqueue(status: 200, fixture: "speech-models.json")
+    try URLProtocolStub.enqueue(status: 200, fixture: "speech-transcription.json")
+    let mpeg = Data([0xFF, 0xFB, 0x90, 0x00])
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: mpeg,
+      headers: ["Content-Type": "audio/mpeg"]
+    )
+    let api = makeAPI()
+
+    let config = try await api.speechConfig()
+    _ = try await api.patchSpeechConfig(SpeechConfigPatchDTO(tts: SpeechTtsPatchDTO(voice: "nova")))
+    let models = try await api.speechModels(kind: .transcription)
+    let transcript = try await api.transcribe(
+      TranscriptionRequestDTO(audio: "AAAA", format: .wav, language: "en")
+    )
+    let audio = try await api.synthesize(text: "Ship the speech routes.")
+
+    #expect(config.config.tts.voice == "English_expressive_narrator")
+    #expect(models.map(\.id) == ["openai/whisper-large-v3", "minimax/speech-2.8-turbo"])
+    #expect(transcript.text == "Ship the speech routes.")
+    // Raw bytes, byte for byte — `send` would have tried to JSON-decode these.
+    #expect(audio == mpeg)
+
+    let requests = URLProtocolStub.requests
+    #expect(requests.map(\.httpMethod) == ["GET", "PATCH", "GET", "POST", "POST"])
+    #expect(try encodedPath(requests[0]) == "/mobile/v1/speech/config")
+    #expect(try encodedPath(requests[1]) == "/mobile/v1/speech/config")
+    #expect(try encodedPath(requests[2]) == "/mobile/v1/speech/models")
+    #expect(try encodedPath(requests[3]) == "/mobile/v1/speech/transcriptions")
+    #expect(try encodedPath(requests[4]) == "/mobile/v1/speech/speech")
+    // `kind` is required by the route and carries no default.
+    #expect(try queryNames(requests[2]) == ["kind"])
+    #expect(try queryValues(requests[2]) == ["transcription"])
+    #expect(requests[0].url?.query == nil)
+
+    // Every speech call is authenticated; only `/health` is not.
+    for request in requests {
+      #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer management-test-token")
+    }
+    for index in 0..<4 {
+      #expect(requests[index].value(forHTTPHeaderField: "Accept") == "application/json")
+    }
+    // The one operation whose success body is not JSON. Both media types are
+    // requested: `audio/mpeg` normally, `audio/wav` for a PCM-only model.
+    #expect(requests[4].value(forHTTPHeaderField: "Accept") == "audio/mpeg, audio/wav")
+    #expect(requests[4].value(forHTTPHeaderField: "Content-Type") == "application/json")
+    #expect(try stringBody(requests[4]) == ["text": "Ship the speech routes."])
+    #expect(try stringBody(requests[3]) == ["audio": "AAAA", "format": "wav", "language": "en"])
+    #expect(requests[2].httpBody == nil)
+  }
+
+  /// A failing synthesis answers JSON on the SAME request that asked for
+  /// `audio/mpeg`, so `sendData` must still map a non-2xx to an error instead
+  /// of handing the error body back as if it were audio.
+  @Test("a failed synthesis maps to a gateway error, not to error-page bytes")
+  func synthesisErrorsAreMapped() async throws {
+    URLProtocolStub.enqueue(
+      status: 413,
+      data: Data(#"{"code":"too_long","error":"text is too long","retryable":false}"#.utf8)
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.synthesize(text: "over the limit") }
+
+    guard case let .speech(code, message, _)? = error else {
+      Issue.record("expected .speech, got \(String(describing: error))")
+      return
+    }
+    #expect(code == "too_long")
+    #expect(message == "text is too long")
+  }
+
+  // MARK: - Speech error scope
+  //
+  // `mapHTTPError` reads the STATUS before the body, which is safe on every
+  // other route because the gateway owns both. `/speech/*` does not: the
+  // statuses come from `httpStatusFor` in `@dash/speech` and describe the
+  // PROVIDER's failure, so a provider's rejected key arrives as 401 and a
+  // provider outage as 502 — the two statuses `mapHTTPError` reads as "re-pair
+  // this device" and "your gateway is offline".
+
+  @Test("a provider's rejected key is a speech error, never a re-pair prompt")
+  func speechUnauthorizedDoesNotAskForRepair() async throws {
+    URLProtocolStub.enqueue(
+      status: 401,
+      data: Data(
+        #"{"code":"unauthorized","error":"openrouter rejected the API key","retryable":false}"#
+          .utf8
+      )
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.speechConfig() }
+
+    // `.unauthorized` would have become `repairRequired` in
+    // `AppModel.handleFeatureGatewayError` — telling the user to re-pair a
+    // phone whose pairing is fine, because a credential ON THE GATEWAY expired.
+    #expect(error != .unauthorized)
+    guard case let .speech(code, message, retryable)? = error else {
+      Issue.record("expected .speech, got \(String(describing: error))")
+      return
+    }
+    #expect(code == "unauthorized")
+    #expect(message == "openrouter rejected the API key")
+    #expect(retryable == false)
+  }
+
+  /// The case the LAN-profile test could not reach: `mapHTTPError` turns a 502
+  /// into `.gatewayOffline` ONLY on a relay profile.
+  @Test("a provider outage on relay is a speech error, not a gateway-offline banner")
+  func speechProviderFailureOnRelayIsNotGatewayOffline() async throws {
+    URLProtocolStub.enqueue(
+      status: 502,
+      data: Data(#"{"code":"provider","error":"openrouter returned 500","retryable":false}"#.utf8)
+    )
+    let api = makeAPI(relay: true)
+
+    let error = await gatewayError {
+      try await api.transcribe(TranscriptionRequestDTO(audio: "AAAA", format: .wav))
+    }
+
+    #expect(error != .gatewayOffline)
+    guard case let .speech(code, _, _)? = error else {
+      Issue.record("expected .speech, got \(String(describing: error))")
+      return
+    }
+    #expect(code == "provider")
+  }
+
+  @Test("an over-long synthesis surfaces its speech code and retryability")
+  func speechTooLongCarriesItsCode() async throws {
+    URLProtocolStub.enqueue(
+      status: 413,
+      data: Data(
+        #"{"code":"too_long","error":"text must be at most 4000 characters","retryable":false}"#
+          .utf8
+      )
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.synthesize(text: "over the limit") }
+
+    guard case let .speech(code, _, retryable)? = error else {
+      Issue.record("expected .speech, got \(String(describing: error))")
+      return
+    }
+    #expect(code == "too_long")
+    #expect(retryable == false)
+  }
+
+  @Test("a retryable speech failure keeps its retryable flag")
+  func speechNetworkFailureIsRetryable() async throws {
+    URLProtocolStub.enqueue(
+      status: 502,
+      data: Data(#"{"code":"network","error":"connection reset","retryable":true}"#.utf8)
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.speechModels(kind: .speech) }
+
+    guard case let .speech(_, _, retryable)? = error else {
+      Issue.record("expected .speech, got \(String(describing: error))")
+      return
+    }
+    #expect(retryable)
+  }
+
+  /// The other half of the scope: a `.gateway` request is byte-for-byte
+  /// unaffected, including one carrying the very same body.
+  @Test("a gateway-scoped 401 still maps to unauthorized")
+  func gatewayScopedUnauthorizedIsUnchanged() async throws {
+    URLProtocolStub.enqueue(
+      status: 401,
+      data: Data(#"{"code":"unauthorized","error":"bad token","retryable":false}"#.utf8)
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.listAgents() }
+
+    #expect(error == .unauthorized)
+  }
+
+  @Test("a speech failure with an undecodable body falls back to the old mapping")
+  func undecodableSpeechBodyFallsThrough() async throws {
+    // Not JSON at all — e.g. a proxy's HTML error page. There is no code to
+    // trust, so the status-first mapping is still the best available answer.
+    URLProtocolStub.enqueue(status: 503, data: Data("<html>gateway down</html>".utf8))
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.speechConfig() }
+
+    guard case let .server(body, status)? = error else {
+      Issue.record("expected .server, got \(String(describing: error))")
+      return
+    }
+    #expect(status == 503)
+    #expect(body.code == "http_503")
+  }
+
+  /// A code outside the speech vocabulary on a speech route is still the
+  /// gateway speaking, not the provider.
+  @Test("a non-speech code on a speech route keeps its gateway meaning")
+  func nonSpeechCodeOnSpeechRouteFallsThrough() async throws {
+    URLProtocolStub.enqueue(
+      status: 400,
+      data: Data(#"{"code":"validation_failed","error":"kind is required","retryable":false}"#.utf8)
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.speechModels(kind: .transcription) }
+
+    #expect(error == .validation("kind is required"))
+  }
+
   @Test("relay auth is present on HTTP")
   func relayHeaders() async throws {
     try URLProtocolStub.enqueue(status: 200, fixture: "agents-list.json")

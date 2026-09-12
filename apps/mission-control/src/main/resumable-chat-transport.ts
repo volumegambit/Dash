@@ -147,6 +147,15 @@ const API_ERROR_CODES = new Set<MobileApiErrorCode>([
   'rate_limited',
   'gateway_offline',
   'capability_required',
+  // `SpeechErrorCode` (`packages/speech/src/errors.ts`), reachable on `/speech/*`
+  // and on the WebSocket `error` frame's `code`: those handlers reuse this
+  // envelope and pass the provider-level code through untranslated.
+  'too_large',
+  'too_long',
+  'provider',
+  'network',
+  'unavailable',
+  'invalid',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {

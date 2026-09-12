@@ -262,6 +262,83 @@ actor GatewayAPI {
     )
   }
 
+  // MARK: - Speech
+  //
+  // Gated on `MobileCapability.speechV1` (`AppModel.speechAvailable`): the
+  // gateway mounts `/speech/*` and advertises the capability only while a
+  // provider can really transcribe and speak, so calling these without
+  // checking is how a UI ends up offering a mic that 404s.
+
+  func speechConfig() async throws -> SpeechConfigResponseDTO {
+    try await transport.send(
+      GatewayRequest(
+        method: .get,
+        path: mobilePath("speech", "config"),
+        errorScope: .speech
+      )
+    )
+  }
+
+  /// Returns the MERGED configuration, so a caller never needs a follow-up
+  /// read to learn what it now has.
+  func patchSpeechConfig(_ patch: SpeechConfigPatchDTO) async throws -> SpeechConfigResponseDTO {
+    try await transport.send(
+      GatewayRequest(
+        method: .patch,
+        path: mobilePath("speech", "config"),
+        errorScope: .speech
+      ),
+      body: patch
+    )
+  }
+
+  /// `kind` is required by the route and has no default; omitting it is a 400.
+  func speechModels(kind: SpeechModelKind) async throws -> [SpeechModelDTO] {
+    let response: SpeechModelListDTO = try await transport.send(
+      GatewayRequest(
+        method: .get,
+        path: mobilePath("speech", "models"),
+        query: [URLQueryItem(name: "kind", value: kind.rawValue)],
+        errorScope: .speech
+      )
+    )
+    return response.models
+  }
+
+  func transcribe(_ request: TranscriptionRequestDTO) async throws -> TranscriptionResponseDTO {
+    try await transport.send(
+      GatewayRequest(
+        method: .post,
+        path: mobilePath("speech", "transcriptions"),
+        errorScope: .speech
+      ),
+      body: request
+    )
+  }
+
+  /// The audio bytes, whole: `audio/mpeg` normally, or `audio/wav` for a
+  /// PCM-only model that cannot produce MP3. `sendData` rather than `send`
+  /// because this is the only operation in the namespace whose success body
+  /// is not JSON; a failure on the same request still comes back as a JSON
+  /// `MobileApiError` and is mapped by `HTTPTransport` before the bytes are
+  /// returned.
+  ///
+  /// No `resourceID`/`requestID` on the descriptor: synthesis creates nothing
+  /// server-side, so a timeout has no outcome to reconcile — `POST` still
+  /// classifies as `mutationOutcomeUnknown` with both fields nil, which is the
+  /// honest answer, and a caller may simply ask again.
+  func synthesize(text: String) async throws -> Data {
+    try await transport.sendData(
+      GatewayRequest(
+        method: .post,
+        path: mobilePath("speech", "speech"),
+        errorScope: .speech
+      ),
+      body: SynthesisRequestDTO(text: text),
+      accept: "audio/mpeg, audio/wav"
+    )
+  }
+
   private func validate(limit: Int) throws {
     guard (1...100).contains(limit) else {
       throw GatewayError.validation("limit must be between 1 and 100")

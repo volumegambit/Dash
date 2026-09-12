@@ -128,6 +128,12 @@
       "valid": true
     },
     {
+      "file": "chat-send-voice.json",
+      "document": "chat-ws",
+      "schema": "ChatSend",
+      "valid": true
+    },
+    {
       "file": "chat-resume.json",
       "document": "chat-ws",
       "schema": "ChatResume",
@@ -191,6 +197,66 @@
       "file": "chat-error.json",
       "document": "chat-ws",
       "schema": "ChatError",
+      "valid": true
+    },
+    {
+      "file": "voice-start.json",
+      "document": "chat-ws",
+      "schema": "VoiceStart",
+      "valid": true
+    },
+    {
+      "file": "voice-audio.json",
+      "document": "chat-ws",
+      "schema": "VoiceAudio",
+      "valid": true
+    },
+    {
+      "file": "voice-mute.json",
+      "document": "chat-ws",
+      "schema": "VoiceMute",
+      "valid": true
+    },
+    {
+      "file": "voice-stop.json",
+      "document": "chat-ws",
+      "schema": "VoiceStop",
+      "valid": true
+    },
+    {
+      "file": "voice-played.json",
+      "document": "chat-ws",
+      "schema": "VoicePlayed",
+      "valid": true
+    },
+    {
+      "file": "voice-state.json",
+      "document": "chat-ws",
+      "schema": "VoiceState",
+      "valid": true
+    },
+    {
+      "file": "voice-transcript.json",
+      "document": "chat-ws",
+      "schema": "VoiceTranscript",
+      "valid": true
+    },
+    {
+      "file": "voice-speech.json",
+      "document": "chat-ws",
+      "schema": "VoiceSpeech",
+      "valid": true
+    },
+    {
+      "file": "voice-error.json",
+      "document": "chat-ws",
+      "schema": "VoiceError",
+      "valid": true
+    },
+    {
+      "file": "voice-stopped.json",
+      "document": "chat-ws",
+      "schema": "VoiceStopped",
       "valid": true
     },
     {
@@ -503,6 +569,12 @@
       "valid": false
     },
     {
+      "file": "invalid/voice-audio-missing-pcm.json",
+      "document": "chat-ws",
+      "schema": "VoiceAudio",
+      "valid": false
+    },
+    {
       "file": "invalid/structured-error-missing-code.json",
       "document": "openapi",
       "schema": "MobileApiError",
@@ -536,6 +608,48 @@
       "file": "subagents-list.json",
       "document": "openapi",
       "schema": "SubagentListResponse",
+      "valid": true
+    },
+    {
+      "file": "speech-config.json",
+      "document": "openapi",
+      "schema": "SpeechConfigResponse",
+      "valid": true
+    },
+    {
+      "file": "speech-config-patch.json",
+      "document": "openapi",
+      "schema": "SpeechConfigPatch",
+      "valid": true
+    },
+    {
+      "file": "speech-config-patch-clear-language.json",
+      "document": "openapi",
+      "schema": "SpeechConfigPatch",
+      "valid": true
+    },
+    {
+      "file": "speech-models.json",
+      "document": "openapi",
+      "schema": "SpeechModelList",
+      "valid": true
+    },
+    {
+      "file": "speech-transcription-request.json",
+      "document": "openapi",
+      "schema": "TranscriptionRequest",
+      "valid": true
+    },
+    {
+      "file": "speech-transcription.json",
+      "document": "openapi",
+      "schema": "TranscriptionResponse",
+      "valid": true
+    },
+    {
+      "file": "speech-synthesis-request.json",
+      "document": "openapi",
+      "schema": "SynthesisRequest",
       "valid": true
     }
   ]

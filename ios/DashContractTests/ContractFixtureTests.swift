@@ -32,13 +32,88 @@ struct ContractFixtureTests {
   func restFixtures() throws {
     let health = try FixtureLoader.decode(HealthResponse.self, "health-capabilities.json")
     #expect(health.apiVersion == 1)
-    #expect(Set(health.capabilities) == [.conversationSyncV1, .chatResumeV1])
+    #expect(Set(health.capabilities) == [.conversationSyncV1, .chatResumeV1, .speechV1])
 
     let identity = try FixtureLoader.decode(GatewayIdentityDTO.self, "identity.json")
     #expect(identity.gatewayId.isEmpty == false)
 
     let page = try FixtureLoader.decode(ConversationPageDTO.self, "conversations-page.json")
     #expect(page.items.isEmpty == false)
+  }
+
+  @Test("the speech fixtures decode into the DTOs GatewayAPI returns")
+  func speechFixtures() throws {
+    let config = try FixtureLoader.decode(
+      SpeechConfigResponseDTO.self,
+      "speech-config.json"
+    )
+    #expect(config.config.stt.model == "openai/whisper-large-v3")
+    #expect(config.config.stt.language == "en")
+    #expect(config.config.tts.voice == "English_expressive_narrator")
+    #expect(config.config.tts.speed == 1)
+    // Explicit JSON null, not an omission: "no realtime provider" is a value.
+    #expect(config.config.realtime.provider == nil)
+    #expect(config.providers.map(\.id) == ["openrouter", "realtime"])
+    #expect(config.providers[0].available)
+    #expect(config.providers[0].reason == nil)
+    #expect(config.providers[1].available == false)
+    #expect(config.providers[1].reason == .noProviderOffersRealtime)
+    #expect(config.providers[1].capabilities.realtime)
+
+    let patch = try FixtureLoader.decode(SpeechConfigPatchDTO.self, "speech-config-patch.json")
+    #expect(patch.stt?.model == "openai/whisper-large-v3")
+    #expect(patch.stt?.provider == nil)
+    #expect(patch.tts?.voice == "nova")
+    #expect(patch.tts?.speed == 1.25)
+    #expect(patch.realtime?.provider == nil)
+    // A language the patch SETS decodes as a value, not as "clear".
+    #expect(patch.stt?.language == "en")
+
+    // "Auto": `stt.language` is absent when the provider auto-detects, so
+    // clearing it has to travel as an explicit JSON null. An encoder that
+    // dropped the key would send "leave it alone".
+    let clearLanguage = try FixtureLoader.decode(
+      SpeechConfigPatchDTO.self,
+      "speech-config-patch-clear-language.json"
+    )
+    #expect(clearLanguage.stt?.language == .null)
+    #expect(clearLanguage.stt?.model == nil)
+    #expect(clearLanguage.tts == nil)
+    let reencoded = String(
+      decoding: try ContractCoding.encoder().encode(clearLanguage),
+      as: UTF8.self
+    )
+    #expect(reencoded.contains("\"language\":null"), "re-encoded as \(reencoded)")
+
+    let models = try FixtureLoader.decode(SpeechModelListDTO.self, "speech-models.json")
+    #expect(models.models.map(\.kind) == [.transcription, .speech])
+    #expect(models.models[0].voices == nil)
+    #expect(models.models[1].voices == ["English_expressive_narrator", "English_radiant_girl"])
+
+    let request = try FixtureLoader.decode(
+      TranscriptionRequestDTO.self,
+      "speech-transcription-request.json"
+    )
+    #expect(request.format == .wav)
+    #expect(request.language == "en")
+    // The fixture must be REAL base64: the gateway rejects anything whose
+    // length is not a multiple of 4 or that carries an out-of-alphabet byte,
+    // so a fixture that only looks like base64 would pass this decode and
+    // fail against a live gateway.
+    #expect(Data(base64Encoded: request.audio) != nil)
+
+    let transcription = try FixtureLoader.decode(
+      TranscriptionResponseDTO.self,
+      "speech-transcription.json"
+    )
+    #expect(transcription.text == "Ship the speech routes.")
+    #expect(transcription.durationSeconds == 2.5)
+
+    let synthesis = try FixtureLoader.decode(
+      SynthesisRequestDTO.self,
+      "speech-synthesis-request.json"
+    )
+    #expect(synthesis.text == "Ship the speech routes.")
   }
 
   @Test("the memory list fixture decodes with bare ISO dates and grouped types")
@@ -249,9 +324,110 @@ struct ContractFixtureTests {
     // Proves the hand-written Codable actually carries `location` rather than
     // silently dropping it on re-encode, which is what an unknown key does.
     try expectRoundTrip(MobileWSClientFrame.self, "chat-send-with-location.json")
+    // Same proof for `modality`: an unmodelled key decodes silently but
+    // vanishes on re-encode, so only a real round-trip catches a dropped field.
+    try expectRoundTrip(MobileWSClientFrame.self, "chat-send-voice.json")
     try expectRoundTrip(MobileWSClientFrame.self, "chat-resume.json")
     try expectRoundTrip(MobileWSClientFrame.self, "chat-answer.json")
     try expectRoundTrip(MobileWSClientFrame.self, "chat-cancel.json")
+  }
+
+  /// Task B7: the hands-free voice frames moved into the contract alongside
+  /// the rest of the chat wire protocol. Round-trips every fixture (proving
+  /// no field is silently dropped on re-encode, the same proof
+  /// `requestRoundTrips` runs for `chat-send-voice.json`'s `modality`) and
+  /// asserts the decoded values for the five server frames.
+  @Test("hands-free voice frames round-trip through the wire types")
+  func voiceFramesRoundTrip() throws {
+    try expectRoundTrip(MobileWSClientFrame.self, "voice-start.json")
+    try expectRoundTrip(MobileWSClientFrame.self, "voice-audio.json")
+    try expectRoundTrip(MobileWSClientFrame.self, "voice-mute.json")
+    try expectRoundTrip(MobileWSClientFrame.self, "voice-stop.json")
+
+    let state = try FixtureLoader.decode(MobileWSServerFrame.self, "voice-state.json")
+    guard case let .voiceState(stateID, voiceState, stateTurnID) = state else {
+      Issue.record("expected a voice_state frame")
+      return
+    }
+    #expect(stateID.isEmpty == false)
+    #expect(voiceState == .thinking)
+    #expect(stateTurnID != nil)
+
+    let transcript = try FixtureLoader.decode(MobileWSServerFrame.self, "voice-transcript.json")
+    guard case let .voiceTranscript(_, text, final, transcriptTurnID) = transcript else {
+      Issue.record("expected a voice_transcript frame")
+      return
+    }
+    #expect(text.isEmpty == false)
+    #expect(final == true)
+    // Carries `turnId`: the transcript that STARTS a turn, always emitted
+    // before that turn's `accepted`.
+    #expect(transcriptTurnID != nil)
+
+    let speech = try FixtureLoader.decode(MobileWSServerFrame.self, "voice-speech.json")
+    guard case let .voiceSpeech(_, seq, audio, format, sampleRate, speechText) = speech else {
+      Issue.record("expected a voice_speech frame")
+      return
+    }
+    #expect(seq == 3)
+    #expect(Data(base64Encoded: audio) != nil)
+    #expect(format == "pcm16")
+    #expect(sampleRate == 24000)
+    #expect(speechText.isEmpty == false)
+
+    let error = try FixtureLoader.decode(MobileWSServerFrame.self, "voice-error.json")
+    guard case let .voiceError(_, code, errorMessage) = error else {
+      Issue.record("expected a voice_error frame")
+      return
+    }
+    #expect(code == "provider")
+    #expect(errorMessage.isEmpty == false)
+
+    let stopped = try FixtureLoader.decode(MobileWSServerFrame.self, "voice-stopped.json")
+    guard case let .voiceStopped(_, reason) = stopped else {
+      Issue.record("expected a voice_stopped frame")
+      return
+    }
+    #expect(reason == .client)
+
+    for file in [
+      "voice-state.json", "voice-transcript.json", "voice-speech.json", "voice-error.json",
+      "voice-stopped.json",
+    ] {
+      try expectRoundTrip(MobileWSServerFrame.self, file)
+    }
+  }
+
+  /// `VoiceState`/`VoiceStopReason` decode leniently, mirroring `SkillSource`:
+  /// a value this build has never heard of reads as `.unknown` rather than
+  /// throwing and failing the whole frame (`ChatConnection` maps a
+  /// `DecodingError` to `GatewayError.updateRequired`, tearing the socket
+  /// down for every conversation, not just the voice session).
+  @Test("an unknown voice state or stop reason degrades leniently rather than failing the frame")
+  func voiceEnumsDegradeLeniently() throws {
+    let futureState = Data(#"{"type":"voice_state","id":"v1","state":"levitating"}"#.utf8)
+    guard
+      case let .voiceState(_, state, _) = try ContractCoding.decoder().decode(
+        MobileWSServerFrame.self,
+        from: futureState
+      )
+    else {
+      Issue.record("expected a voice_state frame")
+      return
+    }
+    #expect(state == .unknown)
+
+    let futureReason = Data(#"{"type":"voice_stopped","id":"v1","reason":"solar_flare"}"#.utf8)
+    guard
+      case let .voiceStopped(_, reason) = try ContractCoding.decoder().decode(
+        MobileWSServerFrame.self,
+        from: futureReason
+      )
+    else {
+      Issue.record("expected a voice_stopped frame")
+      return
+    }
+    #expect(reason == .unknown)
   }
 
   @Test("conversation patch construction preserves omitted, value, and null")
@@ -291,7 +467,7 @@ struct ContractFixtureTests {
       text: "Hello",
       images: nil
     )
-    guard case let .message(_, _, channelId, _, _, _, _, resumable, streamingBehavior) = frame
+    guard case let .message(_, _, channelId, _, _, _, _, resumable, streamingBehavior, _) = frame
 else {
       Issue.record("expected message frame")
       return
@@ -703,6 +879,18 @@ else {
       try decodeIfValid(SubagentListResponseDTO.self, fixture)
     case ("json", "openapi", "ReplayPage"):
       try decodeIfValid(ReplayPageDTO.self, fixture)
+    case ("json", "openapi", "SpeechConfigResponse"):
+      try decodeIfValid(SpeechConfigResponseDTO.self, fixture)
+    case ("json", "openapi", "SpeechConfigPatch"):
+      try decodeIfValid(SpeechConfigPatchDTO.self, fixture)
+    case ("json", "openapi", "SpeechModelList"):
+      try decodeIfValid(SpeechModelListDTO.self, fixture)
+    case ("json", "openapi", "TranscriptionRequest"):
+      try decodeIfValid(TranscriptionRequestDTO.self, fixture)
+    case ("json", "openapi", "TranscriptionResponse"):
+      try decodeIfValid(TranscriptionResponseDTO.self, fixture)
+    case ("json", "openapi", "SynthesisRequest"):
+      try decodeIfValid(SynthesisRequestDTO.self, fixture)
     case ("json", "openapi", "MobileApiError"),
       ("json", "openapi", "RevisionConflictError"),
       ("json", "openapi", "ConversationBusyError"):
@@ -712,12 +900,22 @@ else {
       ("json", "chat-ws", "ChatAnswer"),
       ("json", "chat-ws", "ChatCancel"),
       ("json", "chat-ws", "ChatSubscribe"),
-      ("json", "chat-ws", "ChatUnsubscribe"):
+      ("json", "chat-ws", "ChatUnsubscribe"),
+      ("json", "chat-ws", "VoiceStart"),
+      ("json", "chat-ws", "VoiceAudio"),
+      ("json", "chat-ws", "VoiceMute"),
+      ("json", "chat-ws", "VoiceStop"),
+      ("json", "chat-ws", "VoicePlayed"):
       try decodeIfValid(MobileWSClientFrame.self, fixture)
     case ("json", "chat-ws", "ChatAccepted"),
       ("json", "chat-ws", "ChatEvent"),
       ("json", "chat-ws", "ChatDone"),
-      ("json", "chat-ws", "ChatError"):
+      ("json", "chat-ws", "ChatError"),
+      ("json", "chat-ws", "VoiceState"),
+      ("json", "chat-ws", "VoiceTranscript"),
+      ("json", "chat-ws", "VoiceSpeech"),
+      ("json", "chat-ws", "VoiceError"),
+      ("json", "chat-ws", "VoiceStopped"):
       if fixture.valid {
         _ = try FixtureLoader.decode(MobileWSServerFrame.self, fixture.file)
       } else {

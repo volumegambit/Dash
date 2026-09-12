@@ -175,8 +175,19 @@ async function mintWsTicket(harness: RunningMobileTestHarness): Promise<string> 
   return ticket;
 }
 
-function turnFrames(inbox: FrameInbox, turnId: string): MobileWsServerFrame[] {
-  return inbox.frames.filter((frame) => frame.id === turnId);
+/**
+ * `MobileWsServerFrame` was widened (Task B7) to include the hands-free
+ * `voice_*` server frames, which do not carry the resumable chat hub's `seq`.
+ * None of these ordinary-turn tests drive a voice session, so `turnFrames`
+ * narrows to the frame shapes an ordinary ChatSend/resume turn can actually
+ * produce, keeping `.seq` available without an `undefined` branch.
+ */
+type ChatTurnFrame = Exclude<MobileWsServerFrame, { type: `voice_${string}` }>;
+
+function turnFrames(inbox: FrameInbox, turnId: string): ChatTurnFrame[] {
+  return inbox.frames.filter(
+    (frame): frame is ChatTurnFrame => frame.id === turnId && !frame.type.startsWith('voice_'),
+  );
 }
 
 function settlesWithin<T>(promise: Promise<T>, timeoutMs = 1000): Promise<T> {

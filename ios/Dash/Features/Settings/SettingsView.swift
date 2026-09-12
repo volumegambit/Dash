@@ -5,6 +5,9 @@ struct SettingsView: View {
   @Environment(SettingsFeature.self) private var feature
   @Environment(AppModel.self) private var appModel
   @State private var showForgetConfirmation = false
+  #if DEBUG
+    @State private var showsSpeechSettings = false
+  #endif
   @State private var approveDeviceViewModel: ApproveDeviceViewModel?
   @State private var didCopyPublicKey = false
 
@@ -102,6 +105,34 @@ struct SettingsView: View {
       }
 
       Section {
+        // Gated on the LIVE gateway's capabilities, not on the profile: a
+        // gateway gains and loses `speech-v1` with its provider credentials
+        // (see `AppModel.gatewayCapabilities`), so the row appears and
+        // disappears with the capability rather than being permanently
+        // decided at pairing time.
+        if appModel.speechAvailable {
+          NavigationLink {
+            SpeechSettingsHost()
+          } label: {
+            Label("Speech", systemImage: "waveform")
+          }
+          .frame(minHeight: 44)
+          .accessibilityIdentifier("settings.speech")
+        }
+      } header: {
+        Text("Speech")
+      } footer: {
+        Text(
+          appModel.speechAvailable
+            ? "Dictation, read aloud, and the voice your agent speaks with."
+            : "Update your gateway to use speech."
+        )
+        .accessibilityIdentifier(
+          appModel.speechAvailable ? "settings.speech.description" : "settings.speech.unavailable"
+        )
+      }
+
+      Section {
         Button("Approve a device") {
           approveDeviceViewModel = appModel.makeApproveDeviceViewModel()
         }
@@ -164,6 +195,20 @@ struct SettingsView: View {
     }
     .accessibilityIdentifier("settings.list")
     .navigationTitle("Settings")
+    // Debug-only deep link: `simctl` has no tap, so a pushed detail view is
+    // unreachable from a capture run without one. The UI tests tap the row
+    // like a person does. See `UITestLaunchOptions.opensSpeechSettings`.
+    #if DEBUG
+      .navigationDestination(isPresented: $showsSpeechSettings) { SpeechSettingsHost() }
+      // Keyed on the capability, not a bare `.task`: `speech-v1` arrives from
+      // an async `/health` probe (`adoptCapabilities`), so a once-on-appear
+      // task can run before the row exists and leave the capture script
+      // writing a Settings screenshot under the name `settings-speech`.
+      .task(id: appModel.speechAvailable) {
+        guard UITestLaunchOptions.opensSpeechSettings, appModel.speechAvailable else { return }
+        showsSpeechSettings = true
+      }
+    #endif
     .alert("Settings update failed", isPresented: errorPresented) {
       Button("OK") { feature.error = nil }
     } message: {

@@ -30,12 +30,32 @@ final class AppModel {
   var conversationListFeature: ConversationListFeature?
   var agentsFeature: AgentsFeature?
   var settingsFeature: SettingsFeature?
+  /// Settings › Speech, built the first time the screen is opened
+  /// (`prepareSpeechSettings()`) rather than with the profile: it owns a
+  /// `GatewayAPI` of its own, and most sessions never open it. Retired with
+  /// the profile, like every other feature here.
+  private(set) var speechSettingsFeature: SpeechSettingsFeature?
   private(set) var chatHostGeneration: UInt64 = 0
+  /// What the CURRENTLY connected gateway last said it can do.
+  ///
+  /// In memory only, and deliberately so: a capability is a property of the
+  /// live gateway, not of the stored profile, and `speech-v1` in particular
+  /// appears and disappears with that gateway's provider credentials.
+  /// Persisting it would let a stale "yes" outlive the credential it described
+  /// and offer a feature that then fails. Replaced wholesale on every
+  /// successful verify, and emptied when the engine is detached (disconnect,
+  /// or a switch to another gateway) so nothing is inherited across gateways.
+  private(set) var gatewayCapabilities: Set<MobileCapability> = []
 
   var route: AppRoute {
     guard selectedProfile != nil else { return .connect }
     return .paired(tab: selectedTab)
   }
+
+  /// The single gate every speech surface reads. False until a verify has
+  /// actually landed — an unverified gateway is one whose capabilities are
+  /// unknown, and unknown must read as absent.
+  var speechAvailable: Bool { gatewayCapabilities.contains(.speechV1) }
 
   /// Multi-window (design §3.2): whether any scene is currently active, from
   /// the set `sceneChanged(id:isActive:)` tracks.
@@ -49,6 +69,7 @@ final class AppModel {
   @ObservationIgnored private var chatRetirementTasks: [String: ChatRetirementRecord] = [:]
   @ObservationIgnored private var transitionEpoch: UInt64 = 0
   @ObservationIgnored private var activeEpoch: UInt64 = 0
+  @ObservationIgnored private var capabilityAdoptionTask: Task<Void, Never>?
   @ObservationIgnored private var activeEngineBootstrapped = false
   @ObservationIgnored private var activeEngineLifecycleStarted = false
   @ObservationIgnored private var activeEngineNeedsForegroundResume = false
@@ -68,6 +89,11 @@ final class AppModel {
   private struct PreparedActivation {
     let engine: any AppSyncing
     let snapshots: AsyncStream<SyncSnapshot>
+    /// The launch-time `/health` read, already in flight. Started during
+    /// preparation so it overlaps activation, ADOPTED in `publish` — a task
+    /// that wrote `gatewayCapabilities` directly would race `publish`'s own
+    /// `gatewayCapabilities = []` and could be wiped a moment after it landed.
+    let capabilityProbe: Task<Set<MobileCapability>, Error>
   }
 
   private struct ChatLifecycleState: Equatable {
@@ -98,6 +124,7 @@ final class AppModel {
     let conversationFeature: ConversationListFeature?
     let agentsFeature: AgentsFeature?
     let settingsFeature: SettingsFeature?
+    let speechSettingsFeature: SpeechSettingsFeature?
     let chatFeatures: [ChatFeature]
     let chatRetirementTasks: [Task<Void, Never>]
   }
@@ -170,6 +197,9 @@ final class AppModel {
       {
         await retiredFeature.shutdown()
       }
+      if let retiredFeature = retired.speechSettingsFeature {
+        await retiredFeature.shutdown()
+      }
       if let retiredFeature = retired.conversationFeature,
         retiredFeature !== conversationListFeature
       {
@@ -223,6 +253,9 @@ final class AppModel {
       if let retiredFeature = retired.settingsFeature,
         retiredFeature !== settingsFeature
       {
+        await retiredFeature.shutdown()
+      }
+      if let retiredFeature = retired.speechSettingsFeature {
         await retiredFeature.shutdown()
       }
       if let retiredFeature = retired.conversationFeature,
@@ -484,6 +517,31 @@ final class AppModel {
     dependencies.accountFeatureFactory.makeApproveDeviceViewModel()
   }
 
+  /// Builds Settings › Speech the first time it is opened, and keeps it for
+  /// the life of the profile — unlike `makeApproveDeviceViewModel` above,
+  /// which is per-tap, this owns a `GatewayAPI` that has to be shut down, so
+  /// exactly one instance may exist at a time.
+  ///
+  /// Idempotent, and re-entrant-safe: the factory suspends (it reads the
+  /// Keychain), so a second call can arrive before the first returns, and a
+  /// profile switch can land in the same window. Both are resolved by
+  /// retiring the loser rather than leaking it.
+  func prepareSpeechSettings() async {
+    guard speechSettingsFeature == nil, let profile = selectedProfile else { return }
+    let epoch = activeEpoch
+    let feature = await dependencies.makeSpeechSettingsFeature(profile)
+    guard let feature else { return }
+    guard
+      activeEpoch == epoch,
+      selectedProfile == profile,
+      speechSettingsFeature == nil
+    else {
+      await feature.shutdown()
+      return
+    }
+    speechSettingsFeature = feature
+  }
+
   private func connectToAccountGateway(_ gateway: GatewayInfoDTO) async throws {
     let feature = dependencies.accountFeatureFactory.makeConnect(
       onGrantMinted: { [weak self] gatewayId, pairingId in
@@ -537,8 +595,11 @@ final class AppModel {
     let epoch = activeEpoch
     markCachedConnection(.connecting)
     do {
-      try await dependencies.verifyProfile(profile)
+      let capabilities = try await dependencies.verifyProfile(profile)
       guard activeEpoch == epoch, sameEngine(syncEngine, engine) else { return }
+      // After the epoch guard: a verify that finished against a gateway this
+      // model has already moved off must not overwrite the current one's set.
+      gatewayCapabilities = capabilities
       await engine.bootstrap()
       guard activeEpoch == epoch, sameEngine(syncEngine, engine) else { return }
     } catch {
@@ -735,6 +796,9 @@ final class AppModel {
     if let feature = retired.settingsFeature {
       await feature.shutdown()
     }
+    if let feature = retired.speechSettingsFeature {
+      await feature.shutdown()
+    }
     if let feature = retired.conversationFeature {
       await feature.shutdown()
     }
@@ -783,13 +847,56 @@ final class AppModel {
       return nil
     }
 
+    // Non-blocking, and deliberately started here rather than awaited:
+    // activation must not wait on the network, but the composer's mic depends
+    // on the answer and cannot wait for the user to trigger a reconnect.
+    let fetchCapabilities = dependencies.fetchCapabilities
+    let capabilityProbe = Task { try await fetchCapabilities(profile) }
+
     let snapshots = await engine.snapshots()
     guard isCurrent(epoch) else {
+      capabilityProbe.cancel()
       await engine.shutdown()
       return nil
     }
 
-    return PreparedActivation(engine: engine, snapshots: snapshots)
+    return PreparedActivation(
+      engine: engine,
+      snapshots: snapshots,
+      capabilityProbe: capabilityProbe
+    )
+  }
+
+  /// Applies the launch-time probe's answer to the gateway that is now live.
+  ///
+  /// Both guards matter: the epoch catches a probe that finished after the
+  /// user moved to another gateway, and a THROWN probe (offline, an expired
+  /// credential) leaves the set untouched rather than emptying it — the
+  /// honest reading of "we could not ask" is "we still do not know", and
+  /// `reconnect()`'s verify remains the authority.
+  private func adoptCapabilities(
+    from probe: Task<Set<MobileCapability>, Error>,
+    engine: any AppSyncing,
+    epoch: UInt64
+  ) {
+    capabilityAdoptionTask?.cancel()
+    capabilityAdoptionTask = Task { [weak self] in
+      let capabilities = try? await probe.value
+      guard
+        let self,
+        let capabilities,
+        self.activeEpoch == epoch,
+        self.sameEngine(self.syncEngine, engine)
+      else { return }
+      self.gatewayCapabilities = capabilities
+    }
+  }
+
+  /// Test seam: awaits the launch-time capability probe, so a test can assert
+  /// on `gatewayCapabilities` without racing it. `start()` returns before the
+  /// probe does, by design.
+  func waitForCapabilityProbe() async {
+    await capabilityAdoptionTask?.value
   }
 
   private func startPreparedEngine(_ engine: any AppSyncing, activeEpoch: UInt64) async {
@@ -871,12 +978,18 @@ final class AppModel {
       conversationFeature: conversationListFeature,
       agentsFeature: agentsFeature,
       settingsFeature: settingsFeature,
+      speechSettingsFeature: speechSettingsFeature,
       chatFeatures: Array(chatFeatures.values),
       chatRetirementTasks: chatRetirementTasks.values.map(\.task)
     )
     retired.conversationFeature?.prepareForShutdown()
     retired.agentsFeature?.prepareForShutdown()
     retired.settingsFeature?.prepareForShutdown()
+    // Unconditionally dropped, in BOTH publish and detach: its `GatewayAPI`
+    // is about to be shut down, and a feature nobody may call must not stay
+    // reachable from the view. The next visit to Settings › Speech builds a
+    // fresh one against the profile that is actually active.
+    speechSettingsFeature = nil
     for feature in retired.chatFeatures {
       feature.prepareForShutdown()
     }
@@ -895,6 +1008,12 @@ final class AppModel {
     activeEngineSuspended = false
     activeEngineSuspensionStarted = false
     selectedProfile = profile
+    // Activation does not verify, so nothing here knows this gateway's
+    // capabilities yet — least of all the previous gateway's. The launch-time
+    // `/health` probe started in `prepareActivation` fills them in when it
+    // answers; `reconnect()`'s verify overwrites them after that.
+    gatewayCapabilities = []
+    adoptCapabilities(from: prepared.capabilityProbe, engine: prepared.engine, epoch: epoch)
     let conversationFeature = dependencies.makeConversationListFeature(profile)
     conversationFeature?.setGatewayErrorHandler { [weak self, weak conversationFeature] error in
       guard
@@ -993,12 +1112,18 @@ final class AppModel {
       conversationFeature: conversationListFeature,
       agentsFeature: agentsFeature,
       settingsFeature: settingsFeature,
+      speechSettingsFeature: speechSettingsFeature,
       chatFeatures: Array(chatFeatures.values),
       chatRetirementTasks: chatRetirementTasks.values.map(\.task)
     )
     retired.conversationFeature?.prepareForShutdown()
     retired.agentsFeature?.prepareForShutdown()
     retired.settingsFeature?.prepareForShutdown()
+    // Unconditionally dropped, in BOTH publish and detach: its `GatewayAPI`
+    // is about to be shut down, and a feature nobody may call must not stay
+    // reachable from the view. The next visit to Settings › Speech builds a
+    // fresh one against the profile that is actually active.
+    speechSettingsFeature = nil
     for feature in retired.chatFeatures {
       feature.prepareForShutdown()
     }
@@ -1008,6 +1133,11 @@ final class AppModel {
     snapshotTask?.cancel()
     snapshotTask = nil
     syncEngine = nil
+    gatewayCapabilities = []
+    // The epoch bump below would already refuse it, but a probe still reading
+    // a detached gateway's `/health` is pure waste.
+    capabilityAdoptionTask?.cancel()
+    capabilityAdoptionTask = nil
     activeEngineBootstrapped = false
     activeEngineLifecycleStarted = false
     activeEngineNeedsForegroundResume = false
@@ -1090,8 +1220,12 @@ final class AppModel {
       state = .updateRequired
     case .transport, .server:
       state = .offline
+    // `.speech` deliberately changes NO connection state. A provider that
+    // cannot transcribe says nothing about whether this gateway is reachable,
+    // and routing it here is exactly how a bad OpenRouter key used to surface
+    // as `repairRequired`. The calling speech feature reports it locally.
     case .notFound, .validation, .revisionConflict, .conversationBusy,
-      .mutationOutcomeUnknown:
+      .mutationOutcomeUnknown, .speech:
       return
     }
     guard activeEpoch == epoch else { return }

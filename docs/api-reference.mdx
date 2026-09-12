@@ -309,6 +309,66 @@ Send `cancel` to stop it. Messages without `resumable: true` retain the legacy c
 behavior and are cancelled when their socket closes. Clients must preserve or safely ignore
 unknown `event` variants so newer gateways remain compatible.
 
+`message` also accepts an optional `modality: 'text' | 'voice'`. The gateway sets this to `'voice'`
+only for the turn that its own hands-free voice session starts on the user's behalf (see
+[Voice frames](#voice-frames) below) — it appends the spoken-mode system prompt for that turn only.
+A dictated message is still ordinary typed text once transcribed: a client sending it as a `message`
+frame must omit `modality` or send `'text'`, never `'voice'`.
+
+### Voice frames
+
+Hands-free voice mode adds ten frames (five client, five server) to the same `/ws/chat` socket
+used for resumable chat, gated on the same `speech-v1` capability as the [Speech](#speech) routes.
+`id` is the client-generated session id and is echoed on every `voice_*` frame in both directions.
+
+**Client frames**
+
+| Type | Required fields | Purpose |
+|------|-----------------|---------|
+| `voice_start` | `id`, `agentId`, `conversationId` | Start a hands-free session on `conversationId` |
+| `voice_audio` | `id`, `seq`, `pcm` | One capture chunk: base64 PCM16, 16 kHz mono, at most 16384 decoded bytes (~512ms) per frame |
+| `voice_mute` | `id`, `muted` | Mute or unmute the microphone; playback is unaffected |
+| `voice_stop` | `id` | End the session from the client |
+| `voice_played` | `id`, `seq` | Every `voice_speech` up to and including `seq` has finished **playing** on the client |
+
+**Server frames**
+
+| Type | Meaning |
+|------|---------|
+| `voice_state` | The session's phase: `listening`, `transcribing`, `thinking`, `speaking`, `muted`, or `stopped`. The gateway never actually sends `stopped` — a session ends with a `voice_stopped { reason }` frame instead |
+| `voice_transcript` | Text recognized from the user's speech. The transcript that starts a turn carries `final: true` and a `turnId`, and is always emitted before that turn's `accepted` |
+| `voice_speech` | One chunk of the agent's spoken reply: `format: 'mp3'` (one clip per sentence) or `format: 'pcm16'` (raw chunks, with `sampleRate` set) |
+| `voice_error` | A provider-level failure. `code` is the narrower `SpeechErrorCode` union: `unauthorized`, `unavailable`, `too_long`, `too_large`, `invalid`, `provider`, `network` |
+| `voice_stopped` | The session ended, with `reason: 'client' \| 'socket' \| 'provider' \| 'replaced'` |
+
+```json
+{"type":"voice_start","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab"}
+```
+
+```json
+{"type":"voice_speech","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","seq":3,"audio":"<base64>","format":"pcm16","sampleRate":24000,"text":"It's sunny and 24 degrees."}
+```
+
+Session rules:
+
+- One voice session per socket. Sending `voice_start` while a session is already open stops the
+  previous one with `voice_stopped { reason: 'replaced' }` before the new session starts.
+- `voice_audio` sent before the gateway's own `voice_state listening` is silently dropped, not
+  rejected — the phone begins streaming the instant it sends `voice_start`, before the gateway has
+  confirmed the speech provider is available.
+- The `voice_transcript` carrying the `turnId` that starts a turn is always emitted before the
+  resumable hub's `accepted` for that turn, so a client can render the optimistic user row before
+  the turn is confirmed.
+- The gateway never sends `voice_state { state: 'stopped' }`, even though `stopped` is a valid
+  enum value on the wire; every session end is a `voice_stopped { reason }` frame instead.
+- `voice_audio.pcm` decodes to at most 16384 bytes (16 KiB) per frame; one byte over answers the
+  ordinary `error` frame with `code: 'validation_failed'`, not `voice_error`.
+- After the last `voice_speech` of a turn the gateway stays in `speaking` until the client sends
+  `voice_played` with a `seq` at least as high as that chunk's, or until an 8-second safety timer
+  fires. Clients that flush playback when the session leaves `speaking` must send it, or every
+  reply's last sentence is cut off. A `voice_played` for audio a barge-in discarded should not be
+  sent; a stale or out-of-order `seq` is ignored.
+
 ## Channels
 
 Connect and manage messaging apps such as Telegram and WhatsApp. Channels are persisted to
@@ -344,6 +404,72 @@ Store provider API keys and messaging tokens in the gateway's encrypted store
 Native clients use `GET /mobile/v1/models`. The model list is fetched from provider APIs and
 cached. Adding or changing a credential refreshes it on the next request. See
 [AI Providers](/ai-providers).
+
+## Speech
+
+Dictation and read-aloud support. Mounted on both the unprefixed administrative surface and
+`/mobile/v1`; native clients use the `/mobile/v1` paths. Hands-free voice mode is a separate,
+WebSocket-based flow on the same `speech-v1` capability — see
+[Voice frames](#voice-frames) under Resumable chat.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/speech/config` | Current speech configuration plus per-provider availability |
+| `PATCH` | `/speech/config` | Merge a partial configuration and return the merged result |
+| `GET` | `/speech/models?kind=transcription\|speech` | Models the configured provider offers for one kind |
+| `POST` | `/speech/transcriptions` | Transcribe one recorded clip |
+| `POST` | `/speech/speech` | Synthesize speech, streamed as `audio/mpeg` (or `audio/wav` for a PCM-only model) |
+
+`GET /health` advertises the `speech-v1` capability only while a speech provider can actually
+transcribe and speak; a gateway without a configured provider omits it, and older clients must
+tolerate capability strings they don't recognize.
+
+`PATCH /speech/config` is a shallow per-section merge: an omitted key keeps its current value, and
+an unknown key anywhere in the body is a `400` rather than a silent drop. `stt.language` is the one
+field where the distinction between omitted and `null` matters — omitting it leaves the language
+alone, while sending `null` clears it back to the provider's own auto-detection:
+
+```bash
+curl -i -X PATCH "$MOBILE_URL/mobile/v1/speech/config" \
+  -H "Authorization: Bearer $MOBILE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"stt": {"language": null}}'
+```
+
+`POST /speech/transcriptions` takes base64 audio inline rather than multipart, so every client
+sends a plain JSON body:
+
+```bash
+curl -i -X POST "$MOBILE_URL/mobile/v1/speech/transcriptions" \
+  -H "Authorization: Bearer $MOBILE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"audio": "<base64>", "format": "m4a"}'
+```
+
+The decoded audio must be at most 8 MiB (`413 too_large`); a clip is expected to be at most 60
+seconds. The gateway also fast-rejects on a `Content-Length` above 12 MB before reading the body at
+all, so an oversized upload is refused without being buffered.
+
+`POST /speech/speech` is the only operation in this namespace whose success body isn't JSON — it
+streams MPEG audio, except for a PCM-only model (currently Google's Gemini TTS), which comes back
+as a complete `audio/wav` file instead of a stream. `text` is capped at 4,000 characters
+(`413 too_long`):
+
+```bash
+curl -i -X POST "$MOBILE_URL/mobile/v1/speech/speech" \
+  -H "Authorization: Bearer $MOBILE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello from Dash."}' \
+  --output reply.mp3
+```
+
+An error raised before the first audio chunk is still a JSON `MobileApiError`, so a client must
+accept `audio/mpeg`, `audio/wav`, and `application/json` on this route.
+
+`/speech/*` reuses the `MobileApiError` envelope but passes the provider-level error code through
+untranslated: `unauthorized` (the provider rejected the API key), `unavailable` (no provider is
+configured — retryable), `too_large` / `too_long` (payload over a limit), `provider` (the provider
+returned an error), `network` (the gateway couldn't reach it), and `invalid` (a malformed request).
 
 ## Events
 

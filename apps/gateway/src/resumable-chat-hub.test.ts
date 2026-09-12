@@ -13,6 +13,20 @@ import {
   createResumableChatHub,
 } from './resumable-chat-hub.js';
 
+/**
+ * `TurnFrameSink.send` is typed against the full `MobileWsServerFrame` union
+ * (widened by Task B7 to include the hands-free `voice_*` server frames), but
+ * the resumable chat hub itself never constructs or forwards one — voice
+ * frames bypass it entirely (`chat-ws.ts`'s `emitVoice`). Narrowed here so the
+ * hub's own frames keep their `seq` field without an `undefined` branch from
+ * a variant this hub can never actually produce.
+ */
+type HubServerFrame = Exclude<MobileWsServerFrame, { type: `voice_${string}` }>;
+
+function isHubServerFrame(frame: MobileWsServerFrame): frame is HubServerFrame {
+  return !frame.type.startsWith('voice_');
+}
+
 interface Deferred<T> {
   promise: Promise<T>;
   resolve(value: T | PromiseLike<T>): void;
@@ -112,15 +126,18 @@ function makeScriptedStream(cleanup: Promise<void> = Promise.resolve()): Scripte
 }
 
 interface TestSink extends TurnFrameSink {
-  frames: MobileWsServerFrame[];
+  frames: HubServerFrame[];
   send: ReturnType<typeof vi.fn>;
 }
 
-function makeSink(onSend?: (frame: MobileWsServerFrame) => void): TestSink {
-  const frames: MobileWsServerFrame[] = [];
+function makeSink(onSend?: (frame: HubServerFrame) => void): TestSink {
+  const frames: HubServerFrame[] = [];
   return {
     frames,
     send: vi.fn((frame: MobileWsServerFrame) => {
+      if (!isHubServerFrame(frame)) {
+        throw new Error(`unexpected voice frame on the resumable chat hub sink: ${frame.type}`);
+      }
       frames.push(frame);
       onSend?.(frame);
     }),
@@ -280,6 +297,30 @@ describe('ResumableChatHub', () => {
     expect(harness.chat).toHaveBeenCalledTimes(1);
     expect(harness.chat.mock.calls[0][0].text).toBe('still here');
     expect(harness.chat.mock.calls[0][0].location).toBeUndefined();
+  });
+
+  it("threads modality: 'voice' through to the chat request", async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+
+    hub.start({ ...sendFrame(conversation), modality: 'voice' }, sink);
+    scripted.finish();
+    await vi.waitFor(() => expect(harness.chat).toHaveBeenCalled());
+
+    expect(harness.chat.mock.calls[0][0].modality).toBe('voice');
+  });
+
+  it('sends no modality when the client did not report one', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+
+    hub.start(sendFrame(conversation), sink);
+    scripted.finish();
+    await vi.waitFor(() => expect(harness.chat).toHaveBeenCalled());
+
+    expect(harness.chat.mock.calls[0][0].modality).toBeUndefined();
   });
 
   async function waitForFrames(sink: TestSink, count: number): Promise<void> {

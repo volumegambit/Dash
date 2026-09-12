@@ -10,6 +10,7 @@ import type { GatewayIdentity, MobileApiError, MobileCapability } from '@dash/mo
 import type { PluginConfigStore } from '@dash/plugins';
 import { heuristicPluginScan, installPluginToDir, realpathContained } from '@dash/plugins';
 import type { ProjectsDb } from '@dash/projects';
+import type { SpeechService } from '@dash/speech';
 import type { SwarmCoordinator } from '@dash/swarm';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -32,6 +33,8 @@ import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
 import type { ResumableChatHub } from './resumable-chat-hub.js';
 import { retireLesson } from './skill-review.js';
+import type { SpeechConfigStore } from './speech-config-store.js';
+import { createSpeechRoutes } from './speech-routes.js';
 import type { SubagentDefinitionRegistry } from './subagent-definitions.js';
 import {
   mountSubagentDefinitionRoutes,
@@ -39,7 +42,44 @@ import {
 } from './subagent-management.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
-const MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
+const BASE_MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
+
+/**
+ * Exact request paths for which the log middleware omits even the
+ * `hasJsonBody` shape flag — both bodies carry raw audio or dictated text.
+ * Full paths (not route-relative) because the check runs before Hono
+ * resolves which sub-app owns the request.
+ */
+const NO_BODY_SHAPE_LOG = new Set([
+  '/speech/transcriptions',
+  '/speech/speech',
+  '/mobile/v1/speech/transcriptions',
+  '/mobile/v1/speech/speech',
+]);
+
+/**
+ * Per-request capability list: the two frozen base capabilities, plus
+ * `'speech-v1'` only when BOTH speech deps are wired (mirrors the mount
+ * guard below — `/speech/*` route absence and capability absence must
+ * agree) AND the service's (30s-cached) `available()` says a provider can
+ * actually transcribe and speak. `/health` is load-bearing for MC's
+ * GatewaySupervisor (see the handler below), so a transient failure reading
+ * provider credentials must not turn into a 500 — it just leaves the
+ * capability off.
+ */
+async function resolveMobileCapabilities(
+  speech?: SpeechService,
+  speechConfigStore?: SpeechConfigStore,
+): Promise<MobileCapability[]> {
+  if (!speech || !speechConfigStore) return BASE_MOBILE_CAPABILITIES;
+  let available: boolean;
+  try {
+    available = await speech.available();
+  } catch {
+    available = false;
+  }
+  return available ? [...BASE_MOBILE_CAPABILITIES, 'speech-v1'] : BASE_MOBILE_CAPABILITIES;
+}
 
 export interface GatewayManagementOptions {
   gateway: DynamicGateway;
@@ -149,6 +189,17 @@ export interface GatewayManagementOptions {
    * running it inline would kill the in-flight response.
    */
   onShutdown?: () => void | Promise<void>;
+  /**
+   * Speech service (`@dash/speech`). When present alongside
+   * `speechConfigStore`, mounts `/speech/*` on both the loopback app and
+   * `/mobile/v1`, and the `'speech-v1'` mobile capability becomes eligible
+   * (still gated on `available()`). Either absent means the other is
+   * ignored: `/speech/*` is never mounted and the capability is never
+   * advertised.
+   */
+  speech?: SpeechService;
+  /** Persistent speech config, backing `GET/PATCH /speech/config`. See `speech`. */
+  speechConfigStore?: SpeechConfigStore;
 }
 
 /** Strip providerApiKeys from agent entries before returning to clients. */
@@ -487,8 +538,16 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     const path = c.req.path;
     const queryKeys = Object.keys(c.req.query()).sort();
     const contentType = c.req.header('Content-Type') ?? '';
+    // Even the boolean "does this request carry a JSON body" shape is
+    // withheld for the two speech bodies: `POST /speech/transcriptions`
+    // carries base64 audio and `POST /speech/speech` carries dictation
+    // text, and both are user data that must never reach the log stream —
+    // not even as a `hasJsonBody: true` breadcrumb pointing at them.
     const hasJsonBody =
-      method !== 'GET' && method !== 'DELETE' && contentType.includes('application/json');
+      !NO_BODY_SHAPE_LOG.has(path) &&
+      method !== 'GET' &&
+      method !== 'DELETE' &&
+      contentType.includes('application/json');
 
     const requestContext: Record<string, unknown> = { method, path };
     if (queryKeys.length > 0) requestContext.queryKeys = queryKeys;
@@ -619,7 +678,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
 
   // --- Health ---
 
-  const healthHandler = (c: Context) => {
+  const healthHandler = async (c: Context) => {
     return c.json({
       status: 'healthy',
       startedAt,
@@ -635,7 +694,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       agents: agentRegistry.list().length,
       channels: channelRegistry.list().length,
       apiVersion: 1,
-      capabilities: MOBILE_CAPABILITIES,
+      capabilities: await resolveMobileCapabilities(options.speech, options.speechConfigStore),
     });
   };
   app.get('/health', healthHandler);
@@ -1497,8 +1556,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     await credentialStore.set(body.key, body.value);
     // If this is a provider API key, invalidate the model store so the
     // next GET /models triggers a fresh fetch with the new credential.
+    // Same reasoning for the speech service's availability + model cache —
+    // a newly-set provider key can flip `available()` and stale model lists.
     if (/^[^:]+-api-key:/.test(body.key)) {
       await options.modelsStore.clear();
+      options.speech?.invalidate();
     }
     // Telegram token rotation: if this credential keys a running
     // Telegram channel, restart its adapter so the grammy Bot captures
@@ -1516,9 +1578,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   app.delete('/credentials/:key', async (c) => {
     const key = decodeURIComponent(c.req.param('key'));
     await credentialStore.delete(key);
-    // Same invalidation as POST: provider key removed → model store stale.
+    // Same invalidation as POST: provider key removed → model store and
+    // speech availability/model cache stale.
     if (/^[^:]+-api-key:/.test(key)) {
       await options.modelsStore.clear();
+      options.speech?.invalidate();
     }
     return c.json({ ok: true });
   });
@@ -1538,6 +1602,20 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     '/models',
     createModelsRoute({ ...modelsOptions, controller: modelsController, strictReadOnly: true }),
   );
+
+  // --- Speech routes ---
+  // Mounted on BOTH namespaces (same pattern as /models above) only when
+  // BOTH deps are wired — either absent means /speech/* is unmatched (404)
+  // and 'speech-v1' is never advertised in /health (see
+  // resolveMobileCapabilities above). Two separate createSpeechRoutes()
+  // instances (rather than one Hono mounted twice) mirror the /models
+  // pattern; both close over the same `speech` and `speechConfigStore`.
+  if (options.speech && options.speechConfigStore) {
+    const speech = options.speech;
+    const speechConfigStore = options.speechConfigStore;
+    app.route('/speech', createSpeechRoutes({ speech, store: speechConfigStore }));
+    mobileV1.route('/speech', createSpeechRoutes({ speech, store: speechConfigStore }));
+  }
 
   // --- Event-log replay ---
   //

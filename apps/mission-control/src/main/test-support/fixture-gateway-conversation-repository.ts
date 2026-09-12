@@ -30,6 +30,16 @@ function fixtureStatus(code: MobileApiError['code']): number {
     rate_limited: 429,
     gateway_offline: 502,
     capability_required: 426,
+    // Unreachable through a conversation repository — the `/speech/*` routes
+    // are the only producers — but the map is exhaustive over the union, so
+    // they are listed with the statuses `httpStatusFor` in `@dash/speech`
+    // really assigns rather than left to widen the return type to `undefined`.
+    too_large: 413,
+    too_long: 413,
+    provider: 502,
+    network: 502,
+    unavailable: 503,
+    invalid: 400,
   }[code];
 }
 

@@ -98,7 +98,7 @@ describe('SettingsStore', () => {
       gatewayConnection: {
         gatewayId: identity.gatewayId,
         apiVersion: 1,
-        capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+        capabilities: ['conversation-sync-v1', 'chat-resume-v1', 'speech-v1'],
       },
     });
     const serialized = await readFile(join(dir, 'settings.json'), 'utf8');

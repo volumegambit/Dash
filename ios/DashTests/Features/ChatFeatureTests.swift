@@ -5955,6 +5955,405 @@ struct ChatFeatureTests {
     #expect(first != third, "a different feature identity must compare unequal")
   }
 
+  // MARK: - Dictation (speech Phase A)
+
+  @Test("a dictated transcript is appended to the draft and persisted")
+  func dictationAppendsToTheDraft() async {
+    let persistence = FakeChatPersistence()
+    let feature = makeFeature(persistence: persistence)
+    await feature.updateDraft("Ask the agent")
+
+    await feature.insertDictation("  about the deploy  ")
+
+    // Appended with ONE separating space, and the transcript's own edges
+    // trimmed: dictation types for the user, it does not replace what they
+    // already wrote.
+    #expect(feature.state.draft == "Ask the agent about the deploy")
+    #expect(feature.dictationInsertTick == 1)
+    #expect(await persistence.savedDrafts.last?.text == "Ask the agent about the deploy")
+  }
+
+  @Test("a dictated transcript into an empty draft adds no leading space")
+  func dictationIntoAnEmptyDraft() async {
+    let feature = makeFeature()
+
+    await feature.insertDictation("ship it")
+
+    #expect(feature.state.draft == "ship it")
+  }
+
+  @Test("an empty transcript never touches the draft")
+  func emptyDictationIsIgnored() async {
+    let feature = makeFeature()
+    await feature.updateDraft("unchanged")
+
+    await feature.insertDictation("   ")
+
+    #expect(feature.state.draft == "unchanged")
+    #expect(feature.dictationInsertTick == 0)
+  }
+
+  @Test("dictation appears and disappears with the gateway's speech capability")
+  func dictationFollowsTheSpeechCapability() async {
+    let feature = makeFeature(makeDictation: { dictationFeature(transcript: "hello") })
+
+    // Absent until something says the gateway can transcribe — the composer
+    // must not offer a mic that 404s.
+    #expect(feature.dictation == nil)
+
+    feature.syncDictation(available: true)
+    let created = feature.dictation
+    #expect(created != nil)
+
+    feature.syncDictation(available: true)
+    #expect(feature.dictation === created, "a second sync must not rebuild the feature")
+
+    feature.syncDictation(available: false)
+    #expect(feature.dictation == nil)
+  }
+
+  @Test("a finished dictation lands in this conversation's draft")
+  func dictationInsertIsWiredToTheDraft() async {
+    let feature = makeFeature(makeDictation: { dictationFeature(transcript: "deploy the gateway") })
+    feature.syncDictation(available: true)
+
+    await feature.dictation?.start()
+    await feature.dictation?.finish()
+
+    #expect(feature.state.draft == "deploy the gateway")
+  }
+
+  @Test("a recording in flight survives the capability going away")
+  func dictationIsNotTornOutMidRecording() async {
+    let feature = makeFeature(makeDictation: { dictationFeature(transcript: "keep me") })
+    feature.syncDictation(available: true)
+    await feature.dictation?.start()
+
+    feature.syncDictation(available: false)
+
+    #expect(feature.dictation != nil, "a gateway losing speech must not eat the user's recording")
+  }
+
+  @Test("a recording that ends is torn down if the capability went away meanwhile")
+  func dictationIsRetiredOnceTheRecordingEnds() async {
+    let feature = makeFeature(makeDictation: { dictationFeature(transcript: "too late") })
+    feature.syncDictation(available: true)
+    await feature.dictation?.start()
+    feature.syncDictation(available: false)
+    #expect(feature.dictation != nil)
+
+    await feature.dictation?.cancel()
+
+    // Deferred, not cancelled: the mic must not outlive the capability by
+    // more than the one recording it was already making.
+    #expect(feature.dictation == nil)
+  }
+
+  @Test("shutting the conversation down ends an active dictation")
+  func shutdownCancelsAnActiveDictation() async {
+    let recorder = FakeAudioRecorder()
+    let feature = makeFeature(
+      makeDictation: { dictationFeature(transcript: "abandoned", recorder: recorder) }
+    )
+    feature.syncDictation(available: true)
+    let dictation = feature.dictation
+    await dictation?.start()
+
+    feature.prepareForShutdown()
+
+    #expect(feature.dictation == nil)
+    // The teardown is a task, so the recorder is stopped a beat later — but
+    // it IS stopped: a recording that outlives its composer leaves the audio
+    // session armed with nothing owning it.
+    await expectEventually("the recorder to be cancelled") {
+      dictation?.state.phase == .idle
+    }
+    #expect(await recorder.cancelCount == 1)
+  }
+
+  @Test("read aloud appears and disappears with the gateway's speech capability")
+  func readAloudFollowsTheSpeechCapability() async {
+    let feature = makeFeature(makeReadAloud: { readAloudFeature() })
+
+    // Absent until something says the gateway can speak — the menu must not
+    // offer a "Read aloud" that 404s.
+    #expect(feature.readAloud == nil)
+
+    feature.syncReadAloud(available: true)
+    let created = feature.readAloud
+    #expect(created != nil)
+
+    feature.syncReadAloud(available: true)
+    #expect(feature.readAloud === created, "a second sync must not rebuild the feature")
+
+    feature.syncReadAloud(available: false)
+    #expect(feature.readAloud == nil)
+  }
+
+  @Test("a read-aloud failure lands in this conversation's error banner")
+  func readAloudFailureShowsInTheBanner() async {
+    let feature = makeFeature(
+      makeReadAloud: {
+        readAloudFeature(
+          result: .failure(
+            GatewayError.speech(code: "unavailable", message: "no key", retryable: false)
+          )
+        )
+      }
+    )
+    feature.syncReadAloud(available: true)
+
+    await feature.readAloud?.toggle(messageID: "m1", text: "hello")
+
+    await expectEventually("the banner") { feature.state.errorBanner != nil }
+    #expect(feature.state.errorBanner == "Speech isn't set up on your gateway yet.")
+
+    // Retiring the feature takes ITS banner with it — a dead sentence about a
+    // capability the gateway no longer advertises is worse than none.
+    feature.syncReadAloud(available: false)
+    #expect(feature.state.errorBanner == nil)
+  }
+
+  @Test("shutting the conversation down stops read aloud")
+  func shutdownStopsReadAloud() async {
+    let player = FakeAudioPlayer()
+    let feature = makeFeature(makeReadAloud: { readAloudFeature(player: player) })
+    feature.syncReadAloud(available: true)
+    let readAloud = feature.readAloud
+    await readAloud?.toggle(messageID: "m1", text: "hello")
+    // Not `speakingMessageID`, which is set before the gateway is even
+    // called — see `ReadAloudFeatureTests.Harness.waitForPlayback`.
+    await expectEventuallyAsync("playback to be underway") { await player.isPlaying }
+
+    feature.prepareForShutdown()
+
+    #expect(feature.readAloud == nil)
+    // The teardown is a task, so the player is stopped a beat later — but it
+    // IS stopped: audio that outlives its transcript keeps the process-wide
+    // session active with nothing owning it.
+    await expectEventuallyAsync("the player to stop") { await player.stopCount == 1 }
+    #expect(readAloud?.speakingMessageID == nil)
+  }
+
+  @MainActor
+  private func readAloudFeature(
+    player: FakeAudioPlayer = FakeAudioPlayer(),
+    result: Result<Data, Error> = .success(Data([0x49, 0x44, 0x33]))
+  ) -> ReadAloudFeature {
+    ReadAloudFeature(
+      synthesizer: FakeSpeechSynthesizer(result: result),
+      player: player,
+      session: FakeSpeechSessionControl(),
+      interruptions: { AsyncStream { _ in } }
+    )
+  }
+
+  @MainActor
+  private func dictationFeature(
+    transcript: String,
+    recorder: FakeAudioRecorder = FakeAudioRecorder()
+  ) -> DictationFeature {
+    DictationFeature(
+      recorder: recorder,
+      permission: FakeSpeechPermission(granted: true),
+      transcriber: FakeSpeechTranscriber(result: .success(transcript)),
+      clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
+      session: FakeSpeechSessionControl(),
+      interruptions: { AsyncStream { _ in } }
+    )
+  }
+
+  @Test("a spoken turn's optimistic row is adopted by the gateway's accepted")
+  func spokenTurnRowIsAdoptedByTheAccepted() async {
+    let chat = FakeChatFeatureTransport()
+    // One id: `startLocalTurn` takes the LOCAL user id only — the turn id
+    // comes from the gateway, in the `voice_transcript` that names it.
+    let feature = makeFeature(chat: chat, ids: ["local-voice"])
+    feature.setConnection(.online)
+    await feature.appear()
+
+    // Exactly what `VoiceModeEffect.startLocalTurn` asks for (Task B9).
+    await feature.startLocalTurn(turnID: "turn-1", text: "what's the weather")
+
+    #expect(feature.userTexts == ["what's the weather"])
+
+    await chat.yield(.frame(accepted(seq: 1)))
+    await eventually { await feature.state.lastAppliedSeq == 1 }
+
+    // One bubble, carrying the spoken words and the gateway's own id — the
+    // `accepted` ADOPTED the optimistic row rather than adding a second, empty
+    // one beside it.
+    #expect(feature.userTexts == ["what's the weather"])
+    #expect(feature.state.messages.filter { $0.role == .user }.map(\.id) == ["user-1"])
+    // And the turn reads as this device's, not as someone else's: a row the
+    // client did not claim blocks the composer with "active on another device".
+    #expect(feature.state.composerBlock == nil)
+    #expect(feature.composerDisabledReason == "A response is in progress")
+    // Nothing was SENT: the gateway is already running this turn.
+    #expect(await chat.calls.compactMap(\.sentPayload).isEmpty)
+  }
+
+  @Test("the same spoken turn id never produces two rows")
+  func spokenTurnRowIsNotDuplicated() async {
+    let feature = makeFeature(ids: ["local-voice", "local-voice-2"])
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.startLocalTurn(turnID: "turn-1", text: "what's the weather")
+    await feature.startLocalTurn(turnID: "turn-1", text: "what's the weather")
+
+    #expect(feature.userTexts == ["what's the weather"])
+  }
+
+  @Test("a socket that drops ends the open voice session")
+  func droppedSocketEndsVoiceMode() async {
+    let chat = FakeChatFeatureTransport()
+    let capture = FakeAudioCapture()
+    let feature = makeFeature(
+      chat: chat,
+      ids: ["voice-session"],
+      makeVoiceMode: { id, agentID, conversationID, transport in
+        VoiceModeFeature(
+          id: id,
+          agentID: agentID,
+          conversationID: conversationID,
+          transport: transport,
+          capture: capture,
+          player: FakeAudioPlayer(),
+          haptics: FakeVoiceHaptics(),
+          permission: FakeSpeechPermission(granted: true),
+          session: FakeSpeechSessionControl(),
+          clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
+          dismissDelay: nil
+        )
+      }
+    )
+    feature.setConnection(.online)
+    await feature.appear()
+    feature.syncVoiceMode(available: true)
+
+    let voice = feature.startVoiceMode()
+    #expect(voice != nil)
+    await voice?.start()
+    await eventually { await capture.isRunning }
+
+    // Even a reconnect the CHAT recovers from transparently is fatal to the
+    // voice session: the gateway keeps its voice slot in the per-connection
+    // closure, so the new socket has no session in it. Nothing on the wire
+    // says so — a muted session sends no audio at all — which is why this
+    // has to come from the transport state.
+    await chat.yield(.state(.reconnecting(attempt: 1)))
+
+    await eventually { await voice?.state.phase.isEnded == true }
+    #expect(voice?.state.phase == .ended(reason: VoiceModeState.connectionLostMessage))
+    // The teardown — stop capture, flush playback, release the route — runs
+    // on its own task, so it lands a beat after the phase does.
+    await eventually { await capture.isRunning == false }
+    // Nothing is pushed down a socket that is already gone.
+    #expect(await chat.calls.contains(.voiceStop(id: "voice-session")) == false)
+  }
+
+  // F12: an oversize or malformed `voice_*` frame is answered with the
+  // ordinary `error` frame carrying the VOICE SESSION id in `id`. That frame
+  // is not a `voice_*` frame, so it used to fall through to the chat-turn
+  // machinery under a borrowed id and never reach the cover.
+  @Test("an error frame carrying the live voice session id reaches the cover")
+  func voiceSessionErrorFrameReachesTheCover() async {
+    let chat = FakeChatFeatureTransport()
+    let capture = FakeAudioCapture()
+    let feature = makeFeature(
+      chat: chat,
+      ids: ["voice-session"],
+      makeVoiceMode: { id, agentID, conversationID, transport in
+        VoiceModeFeature(
+          id: id,
+          agentID: agentID,
+          conversationID: conversationID,
+          transport: transport,
+          capture: capture,
+          player: FakeAudioPlayer(),
+          haptics: FakeVoiceHaptics(),
+          permission: FakeSpeechPermission(granted: true),
+          session: FakeSpeechSessionControl(),
+          clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
+          dismissDelay: nil
+        )
+      }
+    )
+    feature.setConnection(.online)
+    await feature.appear()
+    feature.syncVoiceMode(available: true)
+
+    let voice = feature.startVoiceMode()
+    await voice?.start()
+    await eventually { await capture.isRunning }
+    voice?.receive(.voiceState(id: "voice-session", state: .listening, turnId: nil))
+
+    await chat.yield(
+      .frame(
+        .error(
+          id: "voice-session",
+          conversationId: nil,
+          seq: nil,
+          error: "Invalid message: missing required fields",
+          code: "validation_failed",
+          retryable: false,
+          activeTurnId: nil
+        )
+      )
+    )
+
+    await eventually { await voice?.state.error != nil }
+    #expect(voice?.state.error == "Invalid message: missing required fields")
+    // A mid-session error is not fatal: the cover stays up.
+    #expect(voice?.state.phase.isEnded == false)
+  }
+
+  @Test("a closed voice session is released, not kept alive by its own callbacks")
+  func closedVoiceSessionIsDeallocated() async {
+    let capture = FakeAudioCapture()
+    let feature = makeFeature(
+      ids: ["voice-session"],
+      makeVoiceMode: { id, agentID, conversationID, transport in
+        VoiceModeFeature(
+          id: id,
+          agentID: agentID,
+          conversationID: conversationID,
+          transport: transport,
+          capture: capture,
+          player: FakeAudioPlayer(),
+          haptics: FakeVoiceHaptics(),
+          permission: FakeSpeechPermission(granted: true),
+          session: FakeSpeechSessionControl(),
+          clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
+          dismissDelay: nil
+        )
+      }
+    )
+    feature.setConnection(.online)
+    await feature.appear()
+    feature.syncVoiceMode(available: true)
+
+    weak var released: VoiceModeFeature?
+    do {
+      let voice = feature.startVoiceMode()
+      released = voice
+      await voice?.start()
+      await eventually { await capture.isRunning }
+      await feature.stopVoiceMode()
+    }
+
+    // The session owns an `AVAudioEngine` and an `AVAudioPlayerNode`; a
+    // callback stored ON it that captured it back would keep both alive for
+    // the whole life of the chat screen, once per closed session.
+    for _ in 0..<500 where released != nil {
+      await Task.yield()
+      try? await Task.sleep(for: .milliseconds(1))
+    }
+    #expect(released == nil)
+    #expect(feature.voiceMode == nil)
+  }
+
   private func makeFeature(
     conversation: ConversationSummaryDTO = summary(),
     persistence: FakeChatPersistence = FakeChatPersistence(),
@@ -5962,7 +6361,10 @@ struct ChatFeatureTests {
     chat: FakeChatFeatureTransport = FakeChatFeatureTransport(),
     announcer: FakeChatAccessibilityAnnouncer = FakeChatAccessibilityAnnouncer(),
     recoveryChanges: any ConversationRecoveryChangeSignaling = ConversationRecoveryChangeSignal(),
-    ids: [String] = ["turn-1", "local-1"]
+    ids: [String] = ["turn-1", "local-1"],
+    makeDictation: @escaping @MainActor @Sendable () -> DictationFeature? = { nil },
+    makeReadAloud: @escaping @MainActor @Sendable () -> ReadAloudFeature? = { nil },
+    makeVoiceMode: @escaping ChatVoiceModeFactory = { _, _, _, _ in nil }
   ) -> ChatFeature {
     let source = SequentialUUIDSource(ids: ids)
     return ChatFeature(
@@ -5977,7 +6379,10 @@ struct ChatFeatureTests {
         UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
       }),
       recoveryChanges: recoveryChanges,
-      makeID: { source.next() }
+      makeID: { source.next() },
+      makeDictation: makeDictation,
+      makeReadAloud: makeReadAloud,
+      makeVoiceMode: makeVoiceMode
     )
   }
 
@@ -6853,6 +7258,26 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
     calls.append(.unsubscribe(agentID: agentID, conversationID: conversationID))
   }
 
+  func voiceStart(id: String, agentID: String, conversationID: String) async throws {
+    calls.append(.voiceStart(id: id, agentID: agentID, conversationID: conversationID))
+  }
+
+  func voiceAudio(id: String, seq: Int, pcm: Data) async throws {
+    calls.append(.voiceAudio(id: id, seq: seq, pcm: pcm))
+  }
+
+  func voiceMute(id: String, muted: Bool) async throws {
+    calls.append(.voiceMute(id: id, muted: muted))
+  }
+
+  func voiceStop(id: String) async throws {
+    calls.append(.voiceStop(id: id))
+  }
+
+  func voicePlayed(id: String, seq: Int) async throws {
+    calls.append(.voicePlayed(id: id, seq: seq))
+  }
+
   func suspendForDetachment() async {
     calls.append(.suspendForDetachment)
     // What `ChatConnection.suspend()` really does (`ChatConnection.swift:249-257`):
@@ -6904,6 +7329,11 @@ private enum FakeChatTransportCall: Equatable, Sendable {
   case cancel(turnID: String)
   case subscribe(agentID: String, conversationID: String)
   case unsubscribe(agentID: String, conversationID: String)
+  case voiceStart(id: String, agentID: String, conversationID: String)
+  case voiceAudio(id: String, seq: Int, pcm: Data)
+  case voiceMute(id: String, muted: Bool)
+  case voiceStop(id: String)
+  case voicePlayed(id: String, seq: Int)
   case suspendForDetachment
   case resetAfterTerminalFailure
   case shutdown
@@ -7221,5 +7651,17 @@ struct ComposerDraftStatusPresentationTests {
     let label = ComposerDraftStatusPresentation.label(for: .failed)
     #expect(label?.text == "Draft couldn't be saved")
     #expect(label?.systemImage == "exclamationmark.circle")
+  }
+}
+
+@MainActor
+extension ChatFeature {
+  /// The user bubbles' text, in order. Voice mode's whole optimistic-row
+  /// question is "how many bubbles, saying what".
+  var userTexts: [String] {
+    state.messages.compactMap { message in
+      guard message.role == .user else { return nil }
+      return message.user?.text
+    }
   }
 }

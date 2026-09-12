@@ -248,7 +248,22 @@ struct AppDependencies: Sendable {
   let clock: any AppClock
   let loadProfile: @Sendable () async throws -> ConnectionProfileSnapshot?
   let makeSyncEngine: @Sendable (ConnectionProfileSnapshot) async throws -> any AppSyncing
-  let verifyProfile: @Sendable (ConnectionProfileSnapshot) async throws -> Void
+  /// Verifies the profile is still the gateway it was paired with, and hands
+  /// back the capabilities that gateway currently advertises — `AppModel`
+  /// retains them (`gatewayCapabilities`) so an optional capability such as
+  /// `speech-v1` is knowable outside this one call.
+  let verifyProfile: @Sendable (ConnectionProfileSnapshot) async throws -> Set<MobileCapability>
+  /// The same question as `verifyProfile`'s answer, asked WITHOUT the
+  /// identity round trip: just `GET /mobile/v1/health`.
+  ///
+  /// Activation does not verify (verification is `reconnect()`'s job), so on a
+  /// cold launch nothing knew this gateway's capabilities until the user
+  /// happened to trigger a reconnect — and `speech-v1` gates a button in the
+  /// composer, which is on screen long before that. `AppModel` runs this once
+  /// per activation, off the critical path; a failure leaves the retained set
+  /// exactly as it was.
+  let fetchCapabilities:
+    @Sendable (ConnectionProfileSnapshot) async throws -> Set<MobileCapability>
   let rememberProfile: @MainActor @Sendable (ConnectionProfileSnapshot) -> Void
   let deleteProfileSecrets: @Sendable (ConnectionProfileSnapshot) async throws -> Void
   let clearProfileData: @Sendable (ConnectionProfileSnapshot) async throws -> Void
@@ -261,6 +276,14 @@ struct AppDependencies: Sendable {
       ConnectionProfileSnapshot,
       ConversationSummaryDTO
     ) async -> ChatFeature?
+  /// Settings › Speech, built on demand — `AppModel` calls this the first
+  /// time the screen is opened and retires it with the profile. Like
+  /// `makeDictation`/`makeReadAloud`, everything it needs is built INSIDE the
+  /// closure: most gateways never open this screen, and a `GatewayAPI` (with
+  /// its own `URLSession`) allocated per activation for a screen nobody
+  /// visits is a leak with no owner.
+  let makeSpeechSettingsFeature:
+    @MainActor @Sendable (ConnectionProfileSnapshot) async -> SpeechSettingsFeature?
   let pairingFeatureFactory: PairingFeatureFactory
   let accountFeatureFactory: AccountFeatureFactory
 
@@ -270,7 +293,12 @@ struct AppDependencies: Sendable {
     makeSyncEngine: @escaping @Sendable (
       ConnectionProfileSnapshot
     ) async throws -> any AppSyncing,
-    verifyProfile: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Void = { _ in },
+    verifyProfile: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Set<
+      MobileCapability
+    > = { _ in [] },
+    fetchCapabilities: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Set<
+      MobileCapability
+    > = { _ in [] },
     rememberProfile: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) -> Void = { _ in },
     deleteProfileSecrets: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Void = {
       _ in
@@ -291,6 +319,9 @@ struct AppDependencies: Sendable {
       ConnectionProfileSnapshot,
       ConversationSummaryDTO
     ) async -> ChatFeature? = { _, _ in nil },
+    makeSpeechSettingsFeature: @escaping @MainActor @Sendable (
+      ConnectionProfileSnapshot
+    ) async -> SpeechSettingsFeature? = { _ in nil },
     pairingFeatureFactory: PairingFeatureFactory = .unavailable,
     accountFeatureFactory: AccountFeatureFactory = .unavailable
   ) {
@@ -298,6 +329,7 @@ struct AppDependencies: Sendable {
     self.loadProfile = loadProfile
     self.makeSyncEngine = makeSyncEngine
     self.verifyProfile = verifyProfile
+    self.fetchCapabilities = fetchCapabilities
     self.rememberProfile = rememberProfile
     self.deleteProfileSecrets = deleteProfileSecrets
     self.clearProfileData = clearProfileData
@@ -305,6 +337,7 @@ struct AppDependencies: Sendable {
     self.makeConversationListFeature = makeConversationListFeature
     self.makeAgentsFeature = makeAgentsFeature
     self.makeChatFeature = makeChatFeature
+    self.makeSpeechSettingsFeature = makeSpeechSettingsFeature
     self.pairingFeatureFactory = pairingFeatureFactory
     self.accountFeatureFactory = accountFeatureFactory
   }
@@ -427,7 +460,25 @@ struct AppDependencies: Sendable {
         guard let secrets = try await keychain.load(for: profile.id) else {
           throw AppDependencyError.missingSecrets(profileID: profile.id)
         }
-        try await profileVerifier.verify(profile: profile, secrets: secrets)
+        return try await profileVerifier.verify(profile: profile, secrets: secrets)
+      },
+      fetchCapabilities: { profile in
+        guard let secrets = try await keychain.load(for: profile.id) else {
+          throw AppDependencyError.missingSecrets(profileID: profile.id)
+        }
+        let endpoint = ConnectionEndpoint(profile: profile.profile, secrets: secrets)
+        let api = makeAPI(makeCancellableTransport(endpoint, secrets))
+        do {
+          let health = try await api.health()
+          // Its own `URLSession`, like `GatewayProfileVerifier`'s: shut down
+          // on both paths or the session outlives the one call it was made
+          // for.
+          await api.shutdown()
+          return Set(health.capabilities)
+        } catch {
+          await api.shutdown()
+          throw error
+        }
       },
       rememberProfile: { profile in
         UserDefaults.standard.set(profile.gatewayID, forKey: activeGatewayKey)
@@ -514,7 +565,55 @@ struct AppDependencies: Sendable {
           persistence: persistence,
           synchronizer: synchronizer,
           transport: LiveChatFeatureTransport(makeConnection: { makeChat(endpoint) }),
-          clock: clock
+          clock: clock,
+          // Whether the mic is OFFERED is `AppModel.speechAvailable`'s call,
+          // read by `ComposerView` — this closure cannot see the app model,
+          // and the capability can arrive after the conversation is already
+          // open. Everything here is therefore built INSIDE the closure: a
+          // `GatewayAPI` carries its own `URLSession` (with a pinned-trust
+          // delegate on a LAN profile), and allocating one per opened
+          // conversation for a feature most gateways do not have is a leak
+          // with no owner. `onRetire` closes it when the feature is dropped.
+          makeDictation: {
+            let speechAPI = makeAPI(makeCancellableTransport(endpoint, secrets))
+            return DictationFeature(
+              recorder: AudioRecorderService(clock: clock),
+              permission: SystemSpeechPermission(),
+              transcriber: speechAPI,
+              clock: clock,
+              onRetire: { await speechAPI.shutdown() }
+            )
+          },
+          // Deliberately a SECOND lazy `GatewayAPI`, built the same way and
+          // retired the same way, rather than sharing dictation's: the two
+          // features are created and dropped independently (the mic follows a
+          // recording in flight, playback does not), so one shared session
+          // would be owned by whichever happened to be retired last. Folding
+          // them into one speech-scoped session with a refcount is a
+          // consolidation deferred out of A9.
+          makeReadAloud: {
+            let speechAPI = makeAPI(makeCancellableTransport(endpoint, secrets))
+            return ReadAloudFeature(
+              synthesizer: speechAPI,
+              player: AudioPlaybackService(),
+              onRetire: { await speechAPI.shutdown() }
+            )
+          }
+        )
+      },
+      // ONE `GatewayAPI` for the whole screen, unlike A9's deliberate pair:
+      // dictation and read aloud are created and dropped independently, but
+      // the config reads, the patches and the voice preview all live and die
+      // with this one screen, so a single session has exactly one owner.
+      makeSpeechSettingsFeature: { profile in
+        guard let secrets = try? await keychain.load(for: profile.id) else { return nil }
+        let endpoint = ConnectionEndpoint(profile: profile.profile, secrets: secrets)
+        let speechAPI = makeAPI(makeCancellableTransport(endpoint, secrets))
+        return SpeechSettingsFeature(
+          api: speechAPI,
+          synthesizer: speechAPI,
+          player: AudioPlaybackService(),
+          onRetire: { await speechAPI.shutdown() }
         )
       },
       pairingFeatureFactory: PairingFeatureFactory(

@@ -722,7 +722,10 @@ actor ConversationSyncEngine {
   private func isIsolatedForegroundResourceFailure(_ error: Error) -> Bool {
     guard let error = error as? GatewayError else { return false }
     switch error {
-    case .notFound, .validation, .revisionConflict, .conversationBusy, .server:
+    // `.speech` sits with the isolated failures: the sync engine never calls
+    // `/speech/*`, and a provider failure says nothing about reachability, so
+    // it must never tear the connection down.
+    case .notFound, .validation, .revisionConflict, .conversationBusy, .server, .speech:
       return true
     case .unauthorized, .rateLimited, .gatewayOffline, .capabilityRequired, .updateRequired,
       .transport, .mutationOutcomeUnknown:

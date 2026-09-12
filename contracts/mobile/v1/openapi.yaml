@@ -578,6 +578,134 @@ paths:
                   - $ref: '#/components/schemas/ConversationDeletedEvent'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /speech/config:
+    get:
+      operationId: getSpeechConfig
+      summary: The gateway's persisted speech configuration and provider availability.
+      responses:
+        '200':
+          description: Current speech configuration plus per-provider availability.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechConfigResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    patch:
+      operationId: patchSpeechConfig
+      summary: Merge a partial speech configuration and return the merged result.
+      description: >-
+        A shallow per-section merge: an omitted key keeps its current value. Sending an
+        unknown key anywhere in the body is a 400, not a silent drop. The response body
+        is identical in shape to `GET /speech/config`, so a client never needs a second
+        round-trip to learn what it now has.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpeechConfigPatch'
+      responses:
+        '200':
+          description: Merged speech configuration plus per-provider availability.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechConfigResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /speech/models:
+    get:
+      operationId: listSpeechModels
+      summary: Models the configured provider offers for one speech kind.
+      parameters:
+        - $ref: '#/components/parameters/SpeechModelKind'
+      responses:
+        '200':
+          description: Models for the requested kind, cached one hour per provider.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechModelList'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/SpeechUpstreamFailed'
+        '503':
+          $ref: '#/components/responses/SpeechUnavailable'
+  /speech/transcriptions:
+    post:
+      operationId: createSpeechTranscription
+      summary: Transcribe one recorded clip.
+      description: >-
+        The clip is inlined as base64 rather than multipart so the request stays a plain
+        JSON body on every client. Upstream limits are hard: the DECODED audio must be at
+        most 8 MiB (413 `too_large`) and the clip at most 60 seconds. The gateway also
+        fast-rejects on `Content-Length` above 12 MB before reading the body at all, so an
+        oversized upload is refused without being buffered.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TranscriptionRequest'
+      responses:
+        '200':
+          description: The transcript.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptionResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/SpeechPayloadTooLarge'
+        '502':
+          $ref: '#/components/responses/SpeechUpstreamFailed'
+        '503':
+          $ref: '#/components/responses/SpeechUnavailable'
+  /speech/speech:
+    post:
+      operationId: createSpeechSynthesis
+      summary: Synthesize speech, streamed as MPEG audio, or PCM-only models are a WAV response.
+      description: >-
+        The ONLY operation in this namespace whose success body is not JSON. The gateway
+        pins the format to `mp3` (this route always feeds a file player) and streams the
+        provider's bytes through without buffering. A PCM-only provider (e.g. Gemini TTS)
+        cannot honor that request and answers `audio/wav` instead, buffered whole rather
+        than streamed. An error raised before the first audio chunk still becomes a JSON
+        `MobileApiError`, which is why a client must send an `Accept` that admits all three:
+        `audio/mpeg, audio/wav`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthesisRequest'
+      responses:
+        '200':
+          description: MPEG audio, streamed, or WAV audio, whole, for a PCM-only model.
+          content:
+            audio/mpeg:
+              schema: { type: string, format: binary }
+            audio/wav:
+              schema: { type: string, format: binary }
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/SpeechPayloadTooLarge'
+        '502':
+          $ref: '#/components/responses/SpeechUpstreamFailed'
+        '503':
+          $ref: '#/components/responses/SpeechUnavailable'
   /ws-ticket:
     post:
       operationId: createWsTicket
@@ -659,6 +787,14 @@ components:
         is also what keeps a path separator, a dot segment or a NUL out of the resolved
         file path.
       schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' }
+    SpeechModelKind:
+      name: kind
+      in: query
+      required: true
+      description: >-
+        Required, with no default: the route answers 400 `validation_failed` when it is
+        absent or is anything but these two values.
+      schema: { enum: [transcription, speech] }
   responses:
     Unauthorized:
       description: Missing or invalid bearer token.
@@ -696,6 +832,31 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/MobileApiError'
+    SpeechPayloadTooLarge:
+      description: >-
+        The request exceeded an upstream hard limit — `too_large` for audio over 8 MiB
+        decoded (or a `Content-Length` over 12 MB), `too_long` for synthesis input over
+        4 000 characters. Never retryable as sent.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MobileApiError'
+    SpeechUpstreamFailed:
+      description: >-
+        The speech provider refused or the call to it failed — `provider` or `network`.
+        `network` is marked retryable; `provider` is not.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MobileApiError'
+    SpeechUnavailable:
+      description: >-
+        No provider is configured for this kind (`unavailable`). Retryable: a credential
+        added in Mission Control makes the same request succeed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MobileApiError'
   schemas:
     MobileHealth:
       type: object
@@ -711,7 +872,7 @@ components:
         capabilities:
           type: array
           uniqueItems: true
-          items: { enum: [conversation-sync-v1, chat-resume-v1] }
+          items: { enum: [conversation-sync-v1, chat-resume-v1, speech-v1] }
     GatewayIdentity:
       type: object
       additionalProperties: false
@@ -1257,7 +1418,11 @@ components:
       required: [code, error, retryable]
       properties:
         code:
-          enum: [unauthorized, not_found, validation_failed, revision_conflict, conversation_busy, rate_limited, gateway_offline, capability_required]
+          # The last six are `SpeechErrorCode`s. The `/speech/*` handlers reuse this
+          # envelope and pass the provider-level code through UNTRANSLATED, so a client
+          # that decoded only the first eight would fall off the end of the union on a
+          # real transcription failure. `packages/speech/src/errors.ts` owns them.
+          enum: [unauthorized, not_found, validation_failed, revision_conflict, conversation_busy, rate_limited, gateway_offline, capability_required, too_large, too_long, provider, network, unavailable, invalid]
         error: { type: string, minLength: 1 }
         retryable: { type: boolean }
         details: { type: object, additionalProperties: true }
@@ -1325,7 +1490,7 @@ components:
             type: { const: error }
             error: { type: string, minLength: 1 }
             code:
-              enum: [unauthorized, not_found, validation_failed, revision_conflict, conversation_busy, rate_limited, gateway_offline, capability_required]
+              enum: [unauthorized, not_found, validation_failed, revision_conflict, conversation_busy, rate_limited, gateway_offline, capability_required, too_large, too_long, provider, network, unavailable, invalid]
             retryable: { type: boolean }
     ReplayEntry:
       type: object
@@ -1375,3 +1540,163 @@ components:
         expiresAt:
           type: string
           format: date-time
+    SpeechConfig:
+      description: >-
+        The gateway's persisted speech configuration (`packages/speech/src/config.ts`).
+        `realtime.provider` is explicitly nullable and null means "no realtime provider";
+        omission is NOT the same thing on a patch.
+      type: object
+      additionalProperties: false
+      required: [stt, tts, realtime]
+      properties:
+        stt:
+          type: object
+          additionalProperties: false
+          required: [provider, model]
+          properties:
+            provider: { type: string, minLength: 1, maxLength: 200 }
+            model: { type: string, minLength: 1, maxLength: 200 }
+            language: { type: string, minLength: 2, maxLength: 8 }
+        tts:
+          type: object
+          additionalProperties: false
+          required: [provider, model, voice]
+          properties:
+            provider: { type: string, minLength: 1, maxLength: 200 }
+            model: { type: string, minLength: 1, maxLength: 200 }
+            voice: { type: string, minLength: 1, maxLength: 200 }
+            speed: { type: number, minimum: 0.25, maximum: 4 }
+        realtime:
+          type: object
+          additionalProperties: false
+          required: [provider]
+          properties:
+            provider: { type: [string, 'null'], minLength: 1, maxLength: 200 }
+    SpeechCapabilities:
+      type: object
+      additionalProperties: false
+      required: [transcription, speech, realtime]
+      properties:
+        transcription: { type: boolean }
+        speech: { type: boolean }
+        realtime: { type: boolean }
+    SpeechProviderStatus:
+      description: >-
+        One row per provider the gateway knows how to build, plus the `realtime`
+        pseudo-entry which is always unavailable until a provider offers realtime.
+        `reason` is present only when `available` is false.
+      type: object
+      additionalProperties: false
+      required: [id, capabilities, available]
+      properties:
+        id: { type: string, minLength: 1 }
+        capabilities: { $ref: '#/components/schemas/SpeechCapabilities' }
+        available: { type: boolean }
+        reason: { enum: [no_credential, no_provider_offers_realtime] }
+    SpeechConfigResponse:
+      type: object
+      additionalProperties: false
+      required: [config, providers]
+      properties:
+        config: { $ref: '#/components/schemas/SpeechConfig' }
+        providers:
+          type: array
+          items: { $ref: '#/components/schemas/SpeechProviderStatus' }
+    SpeechConfigPatch:
+      description: >-
+        Every member is optional, but `realtime` is all-or-nothing: when the object is
+        present its `provider` key is REQUIRED and may be null. A client that omits the
+        key inside a present `realtime` gets a 400, so encoders must write an explicit
+        JSON null rather than dropping the field. `stt.language` is nullable for a
+        different reason: omitting it leaves the language alone, and `null` clears it
+        back to the provider's own detection.
+      type: object
+      additionalProperties: false
+      properties:
+        stt:
+          type: object
+          additionalProperties: false
+          properties:
+            provider: { type: string, minLength: 1, maxLength: 200 }
+            model: { type: string, minLength: 1, maxLength: 200 }
+            # Explicitly nullable, like `realtime.provider`: an OMITTED key
+            # leaves the language alone, while `null` CLEARS it back to the
+            # provider's own detection. `SpeechConfig.stt.language` is absent
+            # when auto, so there is no other way to express it.
+            language: { type: [string, 'null'], minLength: 2, maxLength: 8 }
+        tts:
+          type: object
+          additionalProperties: false
+          properties:
+            provider: { type: string, minLength: 1, maxLength: 200 }
+            model: { type: string, minLength: 1, maxLength: 200 }
+            voice: { type: string, minLength: 1, maxLength: 200 }
+            speed: { type: number, minimum: 0.25, maximum: 4 }
+        realtime:
+          type: object
+          additionalProperties: false
+          required: [provider]
+          properties:
+            provider: { type: [string, 'null'], minLength: 1, maxLength: 200 }
+    SpeechModel:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind]
+      properties:
+        id: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1 }
+        kind: { enum: [transcription, speech] }
+        voices:
+          description: Present only on `speech` models that expose named voices.
+          type: array
+          items: { type: string, minLength: 1 }
+    SpeechModelList:
+      type: object
+      additionalProperties: false
+      required: [models]
+      properties:
+        models:
+          type: array
+          items: { $ref: '#/components/schemas/SpeechModel' }
+    TranscriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [audio, format]
+      properties:
+        audio:
+          description: >-
+            Standard base64 (no URL alphabet, no newlines). The gateway rejects anything
+            whose length is not a multiple of 4 or that carries a character outside
+            `A-Za-z0-9+/=`, and rejects an empty decode.
+          type: string
+          minLength: 4
+          contentEncoding: base64
+          pattern: '^[A-Za-z0-9+/]+={0,2}$'
+        format: { enum: [wav, m4a, mp3, flac, ogg, webm, aac] }
+        language:
+          description: BCP-47 / ISO-639 hint passed to the provider.
+          type: string
+          minLength: 2
+          maxLength: 8
+    TranscriptionResponse:
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        text: { type: string }
+        durationSeconds:
+          description: Present only when the provider reported one.
+          type: number
+          minimum: 0
+    SynthesisRequest:
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        text:
+          description: >-
+            Bounded by the upstream TTS limit — `MAX_TTS_CHARS` in the gateway's speech
+            routes and `MAX_SYNTHESIZE_CHARS` in `@dash/speech`. Over it, 413 `too_long`.
+          type: string
+          minLength: 1
+          maxLength: 4000

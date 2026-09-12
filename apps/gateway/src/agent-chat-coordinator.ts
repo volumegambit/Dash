@@ -199,6 +199,13 @@ export interface ChatRequest {
    */
   location?: ClientLocation;
   /**
+   * Set only for a turn spoken through the Phase B voice session (Task B6) —
+   * never for a dictated turn, which merely fills the text composer. Threaded
+   * straight into `DashAgent.chat`, which appends the `<voice>` spoken-mode
+   * prompt block when it is `'voice'`.
+   */
+  modality?: 'text' | 'voice';
+  /**
    * Abort signal for the in-flight chat. The merge wrapper listens on it: an
    * abort breaks the race loop promptly (without waiting for the next
    * orchestrator/channel event) and drives `attachment.finalize` in `finally`
@@ -685,7 +692,7 @@ export function createAgentChatCoordinator(
             request.channelId ?? 'direct',
             request.conversationId,
             request.text,
-            { images: request.images, location: request.location },
+            { images: request.images, location: request.location, modality: request.modality },
           );
         } finally {
           pool.unpin(request.agentId, request.conversationId);
@@ -762,7 +769,7 @@ export function createAgentChatCoordinator(
         request.channelId ?? 'direct',
         request.conversationId,
         request.text,
-        { images: request.images, location: request.location },
+        { images: request.images, location: request.location, modality: request.modality },
       );
 
       // The two retained promises. `genNext === null` marks the orchestrator

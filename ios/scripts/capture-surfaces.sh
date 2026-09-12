@@ -83,12 +83,31 @@ SURFACES=(
   "conversations-offline|paired-offline|DASH_UI_TEST_TAB=conversations"
   "agents|paired-online|DASH_UI_TEST_TAB=agents"
   "settings|paired-online|DASH_UI_TEST_TAB=settings"
+  # Settings > Speech (speech Phase A). A pushed detail view, so it needs
+  # the route option: `settings-speech` lands on Settings and pushes it.
+  "settings-speech|paired-online|DASH_UI_TEST_TAB=settings-speech"
   "chat|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan"
   "signin|signed-out|"
   "gateway-picker|account-picker|"
   "recovery|pending-recovery|DASH_UI_TEST_TAB=conversations"
   "agent-detail|paired-online|DASH_UI_TEST_AGENT=research-agent"
   "model-picker|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_SHEET=model-picker"
+  # Dictation (speech Phase A). All three states are behind a tap, a
+  # microphone and a gateway with a speech provider, so none of them could be
+  # looked at before `DASH_UI_TEST_DICTATION` drove them from fakes.
+  "chat-dictation-recording|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_DICTATION=recording"
+  "chat-dictation-uploading|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_DICTATION=uploading"
+  "chat-dictation-failed|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_DICTATION=failed"
+  # Hands-free voice mode (speech Phase B). A full-screen cover behind a tap,
+  # a microphone, a speaker and a live socket — five states, none of which
+  # could be looked at before `DASH_UI_TEST_VOICE` drove them from fakes.
+  # `ended` would normally take itself down after 1.5 s; the UI-test factory
+  # gives it no dismiss delay so there is something to photograph.
+  "chat-voice-listening|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_VOICE=listening"
+  "chat-voice-thinking|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_VOICE=thinking"
+  "chat-voice-speaking|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_VOICE=speaking"
+  "chat-voice-muted|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_VOICE=muted"
+  "chat-voice-ended|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_VOICE=ended"
 )
 
 # Tool gallery: every tool type, cards forced EXPANDED, four batches because a

@@ -237,6 +237,15 @@ protocol ChatFeatureTransporting: Actor {
   /// reach this client (sub-agents design 7.6).
   func subscribe(agentID: String, conversationID: String) async throws
   func unsubscribe(agentID: String, conversationID: String) async throws
+  /// Starts the hands-free voice session on `conversationID`. `id` is the
+  /// caller-generated voice session id every `voice_*` frame carries.
+  func voiceStart(id: String, agentID: String, conversationID: String) async throws
+  func voiceAudio(id: String, seq: Int, pcm: Data) async throws
+  func voiceMute(id: String, muted: Bool) async throws
+  func voiceStop(id: String) async throws
+  /// Reports that every `voice_speech` up to and including `seq` has finished
+  /// PLAYING, so the gateway may leave `speaking` (F1).
+  func voicePlayed(id: String, seq: Int) async throws
   func suspendForDetachment() async
   func shutdown() async
 }
@@ -247,6 +256,19 @@ protocol ChatAccessibilityAnnouncing: Actor {
 }
 
 typealias ChatGatewayErrorHandler = @MainActor @Sendable (GatewayError) async -> Void
+
+/// Builds one hands-free voice session (speech Phase B, Task B9). The
+/// `ChatFeature` supplies the session id, the conversation it speaks into and
+/// its OWN transport — the socket the voice frames must share with the chat,
+/// since the gateway keys them by connection — and the factory supplies the
+/// microphone, the speaker and the haptics, none of which this feature can
+/// see. Nil means this build has nothing to build them with.
+typealias ChatVoiceModeFactory = @MainActor @Sendable (
+  _ id: String,
+  _ agentID: String,
+  _ conversationID: String,
+  _ transport: any ChatFeatureTransporting
+) -> VoiceModeFeature?
 
 enum ChatDraftStatus: Equatable, Sendable {
   case saved
@@ -374,6 +396,26 @@ actor LiveChatFeatureTransport: ChatFeatureTransporting {
 
   func unsubscribe(agentID: String, conversationID: String) async throws {
     try await connection.unsubscribe(agentID: agentID, conversationID: conversationID)
+  }
+
+  func voiceStart(id: String, agentID: String, conversationID: String) async throws {
+    try await connection.voiceStart(id: id, agentID: agentID, conversationID: conversationID)
+  }
+
+  func voiceAudio(id: String, seq: Int, pcm: Data) async throws {
+    try await connection.voiceAudio(id: id, seq: seq, pcm: pcm)
+  }
+
+  func voiceMute(id: String, muted: Bool) async throws {
+    try await connection.voiceMute(id: id, muted: muted)
+  }
+
+  func voiceStop(id: String) async throws {
+    try await connection.voiceStop(id: id)
+  }
+
+  func voicePlayed(id: String, seq: Int) async throws {
+    try await connection.voicePlayed(id: id, seq: seq)
   }
 
   func suspendForDetachment() async {
@@ -822,6 +864,44 @@ final class ChatFeature {
   @ObservationIgnored private let validator: ImageAttachmentValidator
   @ObservationIgnored private let recoveryChanges: any ConversationRecoveryChangeSignaling
   @ObservationIgnored private let makeID: @Sendable () -> String
+  @ObservationIgnored private let makeDictation: @MainActor @Sendable () -> DictationFeature?
+  @ObservationIgnored private let makeReadAloud: @MainActor @Sendable () -> ReadAloudFeature?
+  @ObservationIgnored private let makeVoiceMode: ChatVoiceModeFactory
+  /// Read, never requested, from here: `syncVoiceMode` only needs to know
+  /// whether the microphone has ALREADY been refused, and prompting from a
+  /// capability sync would put a system alert on screen nobody asked for.
+  @ObservationIgnored private let permission: any SpeechPermissionRequesting
+  /// The composer's dictation feature, or nil when this gateway has no
+  /// `speech-v1` — see `syncDictation(available:)`. Observable so the mic
+  /// button appears the moment the capability lands, which on a cold launch
+  /// is after the conversation is already on screen.
+  private(set) var dictation: DictationFeature?
+  /// Bumped on every dictated insert, purely so `ComposerView` can fire the
+  /// `.success` haptic the design asks for. A counter rather than a flag: two
+  /// consecutive dictations must each earn their tick.
+  private(set) var dictationInsertTick = 0
+  /// The message row's read-aloud feature, or nil when this gateway has no
+  /// `speech-v1` — see `syncReadAloud(available:)`. Observable so the menu
+  /// item appears the moment the capability lands, which on a cold launch is
+  /// after the transcript is already on screen.
+  private(set) var readAloud: ReadAloudFeature?
+  /// The open voice cover's session, or nil when voice mode is not running.
+  /// Observable because `ChatView` presents the cover off it — clearing it IS
+  /// the dismissal — and `MessageViews` reads it to withhold read aloud,
+  /// whose `.playback` category would evict the live capture.
+  private(set) var voiceMode: VoiceModeFeature?
+  /// Whether the waveform button belongs in the composer: this gateway
+  /// advertises `speech-v1`, this build can build a session, and the
+  /// microphone has not already been refused. Kept in sync by `ComposerView`
+  /// for the same reason `syncDictation` is — the capability belongs to the
+  /// CONNECTION, which this feature cannot see.
+  private(set) var voiceModeAvailable = false
+  /// The last read-aloud sentence written into `state.errorBanner`, so
+  /// clearing it cannot wipe an unrelated banner that replaced it.
+  @ObservationIgnored private var readAloudBanner: String?
+  /// The last answer `ComposerView` gave for `AppModel.speechAvailable`, so a
+  /// deferred teardown knows what it is re-deciding.
+  @ObservationIgnored private var speechIsAvailable = false
   @ObservationIgnored private var eventTask: Task<Void, Never>?
   @ObservationIgnored private var eventTaskGeneration: UInt64 = 0
   @ObservationIgnored private var cacheLoadTask: Task<Void, Never>?
@@ -897,7 +977,11 @@ final class ChatFeature {
     validator: ImageAttachmentValidator = ImageAttachmentValidator(),
     recoveryChanges: any ConversationRecoveryChangeSignaling =
       ConversationRecoveryChangeSignal.shared,
-    makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
+    makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() },
+    makeDictation: @escaping @MainActor @Sendable () -> DictationFeature? = { nil },
+    makeReadAloud: @escaping @MainActor @Sendable () -> ReadAloudFeature? = { nil },
+    makeVoiceMode: @escaping ChatVoiceModeFactory = { _, _, _, _ in nil },
+    permission: any SpeechPermissionRequesting = SystemSpeechPermission()
   ) {
     self.gatewayID = gatewayID
     self.persistence = persistence
@@ -908,6 +992,10 @@ final class ChatFeature {
     self.validator = validator
     self.recoveryChanges = recoveryChanges
     self.makeID = makeID
+    self.makeDictation = makeDictation
+    self.makeReadAloud = makeReadAloud
+    self.makeVoiceMode = makeVoiceMode
+    self.permission = permission
     state = ChatState(
       conversation: conversation,
       messages: [],
@@ -1114,6 +1202,233 @@ final class ChatFeature {
     guard rejectIfShutdown() == false, composerMutationAllowed else { return }
     state.draft = text
     await persistDraft()
+  }
+
+  /// Appends a dictated transcript to the draft (design §4: dictation never
+  /// sends, it only types for you) and persists it, so a crash between the
+  /// transcript landing and the user tapping send does not lose the words.
+  ///
+  /// Appends rather than replaces, and separates with a space unless the
+  /// draft already ends in whitespace: dictating twice, or dictating after
+  /// typing, has to read as one sentence rather than a run-on.
+  func insertDictation(_ text: String) async {
+    guard rejectIfShutdown() == false, composerMutationAllowed else { return }
+    let addition = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard addition.isEmpty == false else { return }
+    let existing = state.draft
+    if existing.isEmpty {
+      state.draft = addition
+    } else if existing.last?.isWhitespace == true {
+      state.draft = existing + addition
+    } else {
+      state.draft = existing + " " + addition
+    }
+    dictationInsertTick &+= 1
+    await persistDraft()
+  }
+
+  /// Creates or drops the dictation feature as the gateway's `speech-v1`
+  /// capability comes and goes (`AppModel.speechAvailable`, the one gate every
+  /// speech surface reads).
+  ///
+  /// Driven by `ComposerView` rather than by this feature, because the
+  /// capability belongs to the CONNECTION, not to a conversation: `AppModel`
+  /// learns it from `/health` and the composer is the only thing that needs
+  /// to know. A recording already in flight is never torn out from under the
+  /// user — a gateway that just lost its speech credential still gets to
+  /// finish uploading the clip it recorded.
+  func syncDictation(available: Bool) {
+    guard isShutdown == false else { return }
+    speechIsAvailable = available
+    guard available else {
+      // A recording already in flight is never torn out from under the user;
+      // `onActivityEnded` runs this again the moment it is over, so a mic
+      // cannot outlive the capability by more than one recording.
+      guard dictation?.isBusy != true else { return }
+      retireDictation()
+      return
+    }
+    guard dictation == nil, let feature = makeDictation() else { return }
+    feature.onInsert = { [weak self] text in
+      await self?.insertDictation(text)
+    }
+    feature.onActivityEnded = { [weak self] in
+      guard let self else { return }
+      self.syncDictation(available: self.speechIsAvailable)
+    }
+    dictation = feature
+  }
+
+  /// Drops the dictation feature and releases what its factory built for it
+  /// (in the app, a `GatewayAPI` and its `URLSession`).
+  private func retireDictation() {
+    guard let retiring = dictation else { return }
+    dictation = nil
+    Task { await retiring.shutdown() }
+  }
+
+  /// Whether voice mode may be offered at all. Driven by `ComposerView`
+  /// alongside `syncDictation`, off the same one gate
+  /// (`AppModel.speechAvailable`).
+  ///
+  /// A microphone iOS has already refused is the second half: iOS never asks
+  /// twice, so offering a button whose only possible outcome is an error
+  /// sentence is worse than not offering it. A session already RUNNING is
+  /// never torn down from here — the same courtesy `syncDictation` extends to
+  /// a recording in flight.
+  func syncVoiceMode(available: Bool) {
+    guard isShutdown == false else { return }
+    voiceModeAvailable = available && permission.microphoneIsDenied == false
+  }
+
+  /// Opens a session and returns it for the cover to present, or nil when
+  /// voice mode is not available on this gateway/build. The caller starts it:
+  /// `start()` is async and asks for the microphone.
+  ///
+  /// The conversation's own subscription is deliberately left alone (Task
+  /// B6): the gateway drops the VOICE turn's conversation subscription to
+  /// avoid double fan-out, so the chat screen underneath the cover is what
+  /// keeps the transcript live.
+  func startVoiceMode() -> VoiceModeFeature? {
+    guard isShutdown == false, voiceModeAvailable else { return nil }
+    if let voiceMode { return voiceMode }
+    // Read aloud and voice mode are mutually exclusive (its `.playback`
+    // category evicts the live capture), but stopping it happens in the
+    // feature's `prepare` hook below rather than here, so the deactivate is
+    // ordered BEFORE the capture arms the route rather than racing it.
+    let sessionID = makeID()
+    guard
+      let feature = makeVoiceMode(
+        sessionID,
+        state.conversation.agentId,
+        state.conversation.id,
+        transport
+      )
+    else { return nil }
+    feature.prepare = { [weak self] in
+      guard let self else { return }
+      // Awaited, not detached: `ReadAloudFeature.stop()` deactivates the one
+      // process-wide audio session, and a detached stop could land after the
+      // capture has armed `.playAndRecord`.
+      await self.readAloud?.stop()
+      // The same call `send()` makes, and a no-op when the socket is already
+      // up — `ChatConnection.connect()` REPLACES the socket, so it must never
+      // be called unconditionally.
+      try? await self.ensureConnected()
+    }
+    feature.onStartLocalTurn = { [weak self] turnID, text in
+      await self?.startLocalTurn(turnID: turnID, text: text)
+    }
+    // Captures the session ID, NEVER `feature`. This closure is stored ON the
+    // feature, so capturing the feature here made it retain itself: every
+    // closed session — with its `AVAudioEngine` and `AVAudioPlayerNode` still
+    // attached — stayed alive for the whole life of the chat screen, one per
+    // session opened. `[weak self]` alone was not enough, because the cycle
+    // never went through `ChatFeature` at all.
+    feature.onDismiss = { [weak self] in
+      guard let self, let current = self.voiceMode, current.id == sessionID else { return }
+      self.releaseVoiceMode(current)
+    }
+    voiceMode = feature
+    return feature
+  }
+
+  /// Drops the session and every callback it holds. The callbacks capture
+  /// `self` weakly, so they are not themselves a cycle — clearing them is
+  /// hygiene for the closures' own captures (`sessionID`, and whatever a
+  /// future hook adds) and makes "this session is over" a single fact rather
+  /// than three.
+  private func releaseVoiceMode(_ feature: VoiceModeFeature) {
+    guard voiceMode === feature else { return }
+    voiceMode = nil
+    feature.releaseCallbacks()
+  }
+
+  /// Ends the open session and takes the cover down. The close button, the
+  /// cover's binding and the app going to the background all land here.
+  func stopVoiceMode() async {
+    guard let voiceMode else { return }
+    await voiceMode.stop()
+    // `stop()` dismisses through `onDismiss`, which already ran this; the
+    // second call is a guarded no-op, and covers a session whose callbacks
+    // were cleared before it.
+    releaseVoiceMode(voiceMode)
+  }
+
+  /// The optimistic row for a SPOKEN turn (Task B9). Exactly the two things
+  /// `send()` does for a typed one — insert the turn id into `localTurnIDs`
+  /// and reduce `.sendStarted` — so the hub's following `accepted` adopts this
+  /// row instead of creating a second one, and the composer never shows
+  /// "Active on another device" for a turn this device started.
+  ///
+  /// Nothing else of `send()` applies: there is no draft to clear, no
+  /// attachment to validate, no pending-send durability to stage (the words
+  /// only ever existed as audio), and the turn is ALREADY running on the
+  /// gateway by the time the transcript naming it arrives.
+  func startLocalTurn(turnID: String, text: String) async {
+    guard isShutdown == false, turnID.isEmpty == false else { return }
+    // The queued-utterance pair can deliver the same id twice if the gateway
+    // ever repeats itself; a second row would be a duplicate bubble.
+    guard localTurnIDs.contains(turnID) == false else { return }
+    localTurnIDs.insert(turnID)
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .sendStarted(
+        turnID: turnID,
+        localUserID: makeID(),
+        text: text,
+        images: []
+      )
+    )
+  }
+
+  /// Creates or drops the read-aloud feature as the gateway's `speech-v1`
+  /// capability comes and goes — the same one gate the composer's mic reads
+  /// (`AppModel.speechAvailable`), driven from `ChatView` for the same reason
+  /// `syncDictation` is driven from `ComposerView`: the capability belongs to
+  /// the CONNECTION, and this feature cannot see the app model.
+  ///
+  /// Unlike dictation there is no in-flight grace period. A recording holds
+  /// words the user cannot get back; a read aloud holds only audio they can
+  /// ask for again, so a gateway that loses speech stops talking immediately.
+  func syncReadAloud(available: Bool) {
+    guard isShutdown == false else { return }
+    guard available else {
+      retireReadAloud()
+      return
+    }
+    guard readAloud == nil, let feature = makeReadAloud() else { return }
+    feature.onErrorChanged = { [weak self] message in
+      self?.applyReadAloudError(message)
+    }
+    readAloud = feature
+  }
+
+  /// Read aloud has no error surface of its own: a failure belongs in the
+  /// conversation's existing banner, where every other chat failure lands.
+  private func applyReadAloudError(_ message: String?) {
+    if let message {
+      readAloudBanner = message
+      state.errorBanner = message
+      return
+    }
+    // Only OUR sentence is cleared — a banner something else wrote in the
+    // meantime is not read aloud's to remove.
+    if let previous = readAloudBanner, state.errorBanner == previous {
+      state.errorBanner = nil
+    }
+    readAloudBanner = nil
+  }
+
+  /// Drops the read-aloud feature, stopping any playback and releasing what
+  /// its factory built for it (in the app, a `GatewayAPI` and its
+  /// `URLSession`).
+  private func retireReadAloud() {
+    guard let retiring = readAloud else { return }
+    readAloud = nil
+    retiring.onErrorChanged = nil
+    applyReadAloudError(nil)
+    Task { await retiring.shutdown() }
   }
 
   func addSelections(_ selections: [ImageSelection]) async {
@@ -2128,6 +2443,11 @@ final class ChatFeature {
   }
 
   func sceneDidEnterBackground() async {
+    // Voice mode first, and whether or not this feature is shutting down: it
+    // is hands-free by definition, so nothing on screen would tell the user
+    // the microphone is still live behind another app. `SceneLifecycleModifier`
+    // → `AppModel.sceneChanged` → here is the whole hook.
+    await stopVoiceMode()
     guard isShutdown == false else { return }
     let attachmentIntent = beginAttachmentIntent(attached: false)
     await persistDraft()
@@ -2172,6 +2492,21 @@ final class ChatFeature {
     recoveryChangeGeneration &+= 1
     isStartingRecoveryChangeObservation = false
     recoveryChangeTask?.cancel()
+    // A recording outlives its composer otherwise: the recorder keeps running
+    // and the process-wide audio session stays active with nothing owning it.
+    speechIsAvailable = false
+    retireDictation()
+    // Playback outlives its transcript otherwise: the audio keeps talking
+    // about a conversation that is no longer on screen, with the process-wide
+    // session active and nothing owning it.
+    retireReadAloud()
+    // And the microphone outlives both: a voice session left running would
+    // keep `.playAndRecord` armed for a conversation that is gone.
+    voiceModeAvailable = false
+    if let retiring = voiceMode {
+      releaseVoiceMode(retiring)
+      Task { await retiring.stop() }
+    }
   }
 
   func shutdown() async {
@@ -2840,12 +3175,44 @@ final class ChatFeature {
         subscribedSubagentIDs.removeAll()
       case .connecting, .connected, .reconnecting: break
       }
+      // A voice session cannot survive its socket: the gateway keeps the slot
+      // in the per-connection closure, so even a `.reconnecting` the chat
+      // recovers from transparently leaves the session gone. `.connecting` is
+      // deliberately NOT in this list — `startVoiceMode` itself may have just
+      // asked `ensureConnected()` for a socket, and ending on the state that
+      // request produces would close the cover the user just opened.
+      switch transportState {
+      case .reconnecting, .idle, .detached:
+        voiceMode?.transportLost()
+      case .connecting, .connected: break
+      }
       _ = ChatReducer.reduce(state: &state, action: .transportChanged(transportState))
       if reconnectCompleted {
         await replayAndResumeActiveTurn()
       }
 
     case .frame(let frame):
+      // The hands-free `voice_*` server frames (Task B7) are keyed by voice
+      // SESSION id, not a chat turn id. Every helper below
+      // (`turnIDForFeature`, `conversationIDForFeature`, …) is chat-turn
+      // machinery, so they go to the open cover — which filters by session id
+      // itself — rather than through this feature under a borrowed meaning.
+      if frame.isVoiceForFeature {
+        voiceMode?.receive(frame)
+        return
+      }
+      // F12: an oversize or malformed `voice_*` frame fails the gateway's
+      // parser BEFORE it is recognized as voice, so it is answered with the
+      // ordinary `error` frame — carrying the voice SESSION id in `id`
+      // (`apps/gateway/src/chat-ws.ts`). Routed as a chat turn it would be
+      // acted on under a borrowed meaning and never reach the cover, so it is
+      // translated into the voice vocabulary here instead.
+      if case let .error(id, _, _, message, code, _, _) = frame, let voice = voiceMode,
+        id == voice.id
+      {
+        voice.receive(.voiceError(id: id, code: code ?? "invalid", error: message))
+        return
+      }
       // BEFORE the recovery deferral below, deliberately: the deferral is
       // about classifying a LOCAL send and returns early, and a list read has
       // nothing to do with that decision. Placed here it cannot be swallowed
@@ -3224,8 +3591,10 @@ final class ChatFeature {
     case .transport:
       connection = .offline
       isAuthoritative = false
+    // `.speech` changes no connection state — the reducer above already turned
+    // it into a banner, and a provider failure is not a reachability signal.
     case .notFound, .validation, .revisionConflict, .conversationBusy,
-      .mutationOutcomeUnknown, .server:
+      .mutationOutcomeUnknown, .server, .speech:
       break
     }
     await gatewayErrorHandler?(gatewayError)
@@ -3548,8 +3917,11 @@ final class ChatFeature {
     switch gatewayError {
     case .transport, .mutationOutcomeUnknown:
       return true
+    // A speech failure is a DEFINITE outcome — the gateway answered with a
+    // code — so there is nothing ambiguous to reconcile.
     case .unauthorized, .rateLimited, .gatewayOffline, .notFound, .validation,
-      .revisionConflict, .conversationBusy, .capabilityRequired, .updateRequired, .server:
+      .revisionConflict, .conversationBusy, .capabilityRequired, .updateRequired, .server,
+      .speech:
       return false
     }
   }
@@ -3833,12 +4205,25 @@ final class ChatFeature {
 }
 
 extension MobileWSServerFrame {
+  /// True for any `voice_*` server frame. `consume(_:)` returns before any of
+  /// the other computed properties below run — they are chat-turn machinery
+  /// and voice frames carry no turn id.
+  fileprivate var isVoiceForFeature: Bool {
+    switch self {
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      true
+    case .accepted, .event, .done, .error:
+      false
+    }
+  }
+
   fileprivate var conversationIDForFeature: String? {
     switch self {
     case let .accepted(_, conversationID, _, _, _, _, _, _, _): conversationID
     case let .event(_, conversationID, _, _): conversationID
     case let .done(_, conversationID, _, _): conversationID
     case let .error(_, conversationID, _, _, _, _, _): conversationID
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: nil
     }
   }
 
@@ -3875,6 +4260,7 @@ extension MobileWSServerFrame {
       default: false
       }
     case .error: false
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
 
@@ -3897,6 +4283,7 @@ extension MobileWSServerFrame {
     switch self {
     case .accepted, .done, .error: true
     case .event: false
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
 
@@ -3904,6 +4291,7 @@ extension MobileWSServerFrame {
     switch self {
     case .done, .error: true
     case .accepted, .event: false
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
 
@@ -3912,7 +4300,12 @@ extension MobileWSServerFrame {
     case .accepted(let id, _, _, _, _, _, _, _, _),
       .event(let id, _, _, _),
       .done(let id, _, _, _),
-      .error(let id, _, _, _, _, _, _):
+      .error(let id, _, _, _, _, _, _),
+      .voiceState(let id, _, _),
+      .voiceTranscript(let id, _, _, _),
+      .voiceSpeech(let id, _, _, _, _, _),
+      .voiceError(let id, _, _),
+      .voiceStopped(let id, _):
       id
     }
   }
@@ -3926,6 +4319,8 @@ extension MobileWSServerFrame {
       seq
     case .error(_, _, let seq, _, _, _, _):
       seq
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      nil
     }
   }
 }

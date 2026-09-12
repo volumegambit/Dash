@@ -79,12 +79,28 @@ extension AppDependenciesFactory {
     }
 
     static var initialTab: AppTab? {
-      let environment = ProcessInfo.processInfo.environment
-      guard
-        let raw = environment["DASH_UI_TEST_TAB"]
-          ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tab")
-      else { return nil }
+      guard let raw = rawInitialTab else { return nil }
+      // `settings-speech` is a ROUTE, not a tab: it lands on Settings and
+      // pushes Settings > Speech. Kept in this one option rather than a
+      // second variable because a capture asks for a surface, and Speech is
+      // one of Settings' surfaces.
+      if raw == speechSettingsTab { return .settings }
       return AppTab(rawValue: raw)
+    }
+
+    /// Whether the launch asked for Settings > Speech, the one screen in
+    /// Settings that is behind a tap and so unreachable from `simctl`.
+    /// `SettingsView` reads this and pushes the screen itself, since a
+    /// pushed detail view is view state rather than `AppModel` state.
+    static var opensSpeechSettings: Bool {
+      rawInitialTab == speechSettingsTab
+    }
+
+    private static let speechSettingsTab = "settings-speech"
+
+    private static var rawInitialTab: String? {
+      ProcessInfo.processInfo.environment["DASH_UI_TEST_TAB"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tab")
     }
 
     /// Start every tool card expanded, so a capture can show the tool BODIES.
@@ -101,6 +117,31 @@ extension AppDependenciesFactory {
       let environment = ProcessInfo.processInfo.environment
       return environment["DASH_UI_TEST_TOOL_GALLERY"]
         ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tool-gallery")
+    }
+
+    /// Seeds the composer's dictation state: `recording`, `uploading` or
+    /// `failed`. Like `toolGallery`, this exists because the states behind it
+    /// are unreachable from `simctl` — dictation needs a tap, a microphone
+    /// and a gateway — so none of the three could be looked at on any screen.
+    ///
+    /// It drives the REAL `DictationFeature` through the UI-test fakes below
+    /// rather than writing a phase, so a capture cannot show a state the app
+    /// is unable to reach.
+    static var dictation: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_DICTATION"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-dictation")
+    }
+
+    /// Opens the hands-free voice cover and drives it into one state:
+    /// `listening`, `thinking`, `speaking`, `muted` or `ended`. Same reason
+    /// `dictation` exists — every one of those needs a tap, a microphone, a
+    /// speech provider and a live socket, so none of them could be looked at
+    /// on any screen before this.
+    static var voice: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_VOICE"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-voice")
     }
 
     static var expandTools: Bool {
@@ -245,6 +286,20 @@ extension AppDependenciesFactory {
 
     var connection: GatewayConnectionState {
       self == .pairedOffline ? .offline : .online
+    }
+
+    /// What this scenario's fake gateway advertises.
+    ///
+    /// Only `.pairedOnline` carries `speech-v1`, which is what makes the
+    /// composer's mic testable in BOTH directions: every other scenario —
+    /// `.pairedOffline` in particular — stands in for a gateway that has no
+    /// speech provider, where `chat.dictate` must not exist at all.
+    var capabilities: Set<MobileCapability> {
+      var advertised: Set<MobileCapability> = [.conversationSyncV1, .chatResumeV1]
+      if self == .pairedOnline {
+        advertised.insert(.speechV1)
+      }
+      return advertised
     }
   }
 
@@ -1205,7 +1260,10 @@ extension AppDependenciesFactory {
         makeSyncEngine: { _ in
           UITestSyncEngine(snapshot: await store.syncSnapshot())
         },
-        verifyProfile: { _ in },
+        verifyProfile: { _ in scenario.capabilities },
+        // The same answer `/health` gives at launch, so a UI test sees the
+        // capability without having to trigger a reconnect first.
+        fetchCapabilities: { _ in scenario.capabilities },
         rememberProfile: { _ in },
         deleteProfileSecrets: { profile in
           await keychain.delete(for: profile.id)
@@ -1237,7 +1295,53 @@ extension AppDependenciesFactory {
             clock: clock,
             announcer: UITestAccessibilityAnnouncer(),
             recoveryChanges: recoveryChanges,
-            makeID: { source.next() }
+            makeID: { source.next() },
+            makeDictation: {
+              DictationFeature(
+                recorder: UITestAudioRecorder(),
+                permission: UITestSpeechPermission(),
+                transcriber: UITestSpeechTranscriber(seed: UITestLaunchOptions.dictation),
+                // Deliberately the SYSTEM clock, not `UITestClock` (which is
+                // frozen): the countdown has to actually count down in a
+                // capture, and a UI test never runs a recording near the 60 s
+                // cap.
+                clock: SystemAppClock(),
+                session: UITestSpeechSessionControl(),
+                interruptions: { AsyncStream { _ in } }
+              )
+            },
+            makeVoiceMode: { id, agentID, conversationID, transport in
+              VoiceModeFeature(
+                id: id,
+                agentID: agentID,
+                conversationID: conversationID,
+                transport: transport,
+                capture: UITestAudioCapture(),
+                player: UITestAudioPlayer(),
+                haptics: UITestVoiceHaptics(),
+                permission: UITestSpeechPermission(),
+                session: UITestSpeechSessionControl(),
+                // Deliberately never dismissing: `DASH_UI_TEST_VOICE=ended`
+                // exists so the ended state can be READ — and photographed —
+                // and a cover that took itself down after 1.5 s could be
+                // neither.
+                dismissDelay: nil
+              )
+            }
+          )
+        },
+        // Settings > Speech, answered from the contract fixtures
+        // (`contracts/mobile/v1/fixtures/speech-{config,models}.json`) so the
+        // screen has a provider, two model lists and a voice list without a
+        // gateway. Patches are merged the way `mergeSpeechConfig` merges
+        // them, so a UI test that changes a picker sees what the gateway
+        // would have answered.
+        makeSpeechSettingsFeature: { _ in
+          SpeechSettingsFeature(
+            api: UITestSpeechConfigurator(),
+            synthesizer: UITestSpeechSynthesizer(),
+            player: UITestAudioPlayer(),
+            session: UITestSpeechSessionControl()
           )
         },
         pairingFeatureFactory: PairingFeatureFactory(
@@ -1267,6 +1371,238 @@ extension AppDependenciesFactory {
               clock: clock
             )
       )
+    }
+  }
+
+  /// A microphone that is always granted: a UI test cannot answer the system
+  /// permission alert, and the alert is not what these tests are about.
+  private struct UITestSpeechPermission: SpeechPermissionRequesting {
+    func requestMicrophone() async -> Bool { true }
+  }
+
+  /// No `AVAudioSession` in a UI test: the simulator has no input route, and
+  /// arming one would make the harness depend on the host Mac's audio.
+  private struct UITestSpeechSessionControl: SpeechSessionControlling {
+    func activateRecording() throws {}
+    func activatePlayback() throws {}
+    func deactivate() {}
+  }
+
+  /// Produces a moving meter and a fixed clip. Reuses the real
+  /// `AudioLevelBroadcaster`, so the fresh-stream-per-recording contract is
+  /// the same one `AudioRecorderService` implements.
+  private actor UITestAudioRecorder: AudioRecording {
+    nonisolated let levels = AudioLevelBroadcaster()
+    nonisolated var level: AsyncStream<Float> { levels.stream }
+    private var meterTask: Task<Void, Never>?
+
+    func start(maxDuration: Duration) async throws {
+      meterTask?.cancel()
+      meterTask = Task { [levels] in
+        var step = 0
+        while Task.isCancelled == false {
+          do {
+            try await Task.sleep(for: .milliseconds(120))
+          } catch {
+            return
+          }
+          // A slow sweep between a murmur and a shout, so a capture catches
+          // the bar somewhere visible rather than at silence.
+          levels.yield(Float(0.05 + 0.2 * abs(sin(Double(step) / 4))))
+          step += 1
+        }
+      }
+    }
+
+    func stop() async throws -> Data {
+      endMetering()
+      return Data("ui-test-clip".utf8)
+    }
+
+    func cancel() async {
+      endMetering()
+    }
+
+    private func endMetering() {
+      meterTask?.cancel()
+      meterTask = nil
+      levels.finish()
+    }
+  }
+
+  /// Answers "hello world" — the string `DictationUITests` asserts lands in
+  /// the composer — unless the launch option asks for a state that needs the
+  /// upload to hang (`uploading`) or fail (`failed`).
+  /// A microphone that is live but silent: the stream NEVER finishes, since
+  /// a finished stream is voice mode's interruption signal and would end
+  /// every seeded session a fraction of a second after it opened.
+  private actor UITestAudioCapture: AudioCapturing {
+    private var continuation: AsyncStream<Data>.Continuation?
+
+    func start() async throws -> AsyncStream<Data> {
+      let pair = AsyncStream<Data>.makeStream()
+      continuation = pair.continuation
+      return pair.stream
+    }
+
+    func stop() async {
+      continuation?.finish()
+      continuation = nil
+    }
+  }
+
+  /// A simulator has no taptic engine, and a UI test has no way to observe
+  /// one. Silence keeps the console clean.
+  private struct UITestVoiceHaptics: VoiceHaptics {
+    func impact(_ weight: VoiceHapticWeight) {}
+    func error() {}
+  }
+
+  private struct UITestSpeechTranscriber: SpeechTranscribing {
+    let seed: String?
+
+    func transcribe(_ request: TranscriptionRequestDTO) async throws -> TranscriptionResponseDTO {
+      switch seed {
+      case "uploading":
+        // Long enough to outlive any capture; cancelled with the app.
+        try await Task.sleep(for: .seconds(600))
+        throw CancellationError()
+      case "failed":
+        throw GatewayError.speech(
+          code: "unavailable",
+          message: "speech is not configured on this gateway",
+          retryable: false
+        )
+      default:
+        return TranscriptionResponseDTO(text: "hello world", durationSeconds: 1.5)
+      }
+    }
+  }
+
+  /// The gateway's speech-config half. Starts from the bundled fixture and
+  /// merges patches per section, exactly as `mergeSpeechConfig` does — a fake
+  /// that echoed the request back would let a broken one-key patch pass.
+  private actor UITestSpeechConfigurator: SpeechConfiguring {
+    private var config = SpeechConfigDTO(
+      stt: SpeechSttConfigDTO(
+        provider: "openrouter",
+        model: "openai/whisper-large-v3",
+        language: "en"
+      ),
+      tts: SpeechTtsConfigDTO(
+        provider: "openrouter",
+        model: "minimax/speech-2.8-turbo",
+        voice: "English_expressive_narrator",
+        speed: 1
+      ),
+      realtime: SpeechRealtimeConfigDTO(provider: nil)
+    )
+
+    private let providers: [SpeechProviderStatusDTO] = [
+      SpeechProviderStatusDTO(
+        id: "openrouter",
+        capabilities: SpeechCapabilitiesDTO(transcription: true, speech: true, realtime: false),
+        available: true
+      ),
+      SpeechProviderStatusDTO(
+        id: "realtime",
+        capabilities: SpeechCapabilitiesDTO(transcription: false, speech: false, realtime: true),
+        available: false,
+        reason: .noProviderOffersRealtime
+      ),
+    ]
+
+    func speechConfig() async throws -> SpeechConfigResponseDTO {
+      SpeechConfigResponseDTO(config: config, providers: providers)
+    }
+
+    func patchSpeechConfig(_ patch: SpeechConfigPatchDTO) async throws -> SpeechConfigResponseDTO {
+      config = SpeechConfigDTO(
+        stt: SpeechSttConfigDTO(
+          provider: patch.stt?.provider ?? config.stt.provider,
+          model: patch.stt?.model ?? config.stt.model,
+          // An omitted key leaves the language alone; an explicit null
+          // clears it — `mergeSpeechConfig`'s rule, so the fake cannot pass a
+          // patch the gateway would treat differently.
+          language: patch.stt?.language.map(\.value) ?? config.stt.language
+        ),
+        tts: SpeechTtsConfigDTO(
+          provider: patch.tts?.provider ?? config.tts.provider,
+          model: patch.tts?.model ?? config.tts.model,
+          voice: patch.tts?.voice ?? config.tts.voice,
+          speed: patch.tts?.speed ?? config.tts.speed
+        ),
+        realtime: patch.realtime ?? config.realtime
+      )
+      return SpeechConfigResponseDTO(config: config, providers: providers)
+    }
+
+    func speechModels(kind: SpeechModelKind) async throws -> [SpeechModelDTO] {
+      switch kind {
+      case .transcription:
+        return [
+          SpeechModelDTO(
+            id: "openai/whisper-large-v3",
+            name: "Whisper Large v3",
+            kind: .transcription,
+            voices: nil
+          )
+        ]
+      case .speech:
+        return [
+          SpeechModelDTO(
+            id: "minimax/speech-2.8-turbo",
+            name: "MiniMax: Speech 2.8 Turbo",
+            kind: .speech,
+            voices: ["English_expressive_narrator", "English_radiant_girl"]
+          )
+        ]
+      }
+    }
+  }
+
+  /// Hands back a few bytes so "Preview voice" reaches the player. The bytes
+  /// are never decoded: `UITestAudioPlayer` stands in for playback.
+  private struct UITestSpeechSynthesizer: SpeechSynthesizing {
+    func synthesize(text: String) async throws -> Data {
+      Data([0x49, 0x44, 0x33])
+    }
+  }
+
+  /// A player with no audio route — the simulator's route is the host Mac's.
+  /// `playMP3` takes about as long as a short sample would, so the preview
+  /// button's progress state is visible in a capture.
+  private actor UITestAudioPlayer: AudioPlaying {
+    private var playing = false
+    // Fix round 2 (item 4): `AudioPlaying` dropped its default no-op
+    // `enqueuePCM`/`flush` — this fake records both so a UI-test scenario
+    // driving voice mode can be extended later without silently no-op-ing.
+    private(set) var enqueued: [(Data, Double)] = []
+    private(set) var flushCount = 0
+    private(set) var drainWaits = 0
+
+    var isPlaying: Bool { playing }
+
+    func playMP3(_ data: Data) async throws {
+      playing = true
+      defer { playing = false }
+      try? await Task.sleep(for: .seconds(2))
+    }
+
+    func stop() async {
+      playing = false
+    }
+
+    func enqueuePCM(_ data: Data, sampleRate: Double) async {
+      enqueued.append((data, sampleRate))
+    }
+
+    func awaitDrain() async {
+      drainWaits += 1
+    }
+
+    func flush() async {
+      flushCount += 1
     }
   }
 
@@ -2247,6 +2583,33 @@ extension AppDependenciesFactory {
     func subscribe(agentID: String, conversationID: String) {}
 
     func unsubscribe(agentID: String, conversationID: String) {}
+
+    // The UI-test harness has no voice session to drive; these are no-ops.
+    func voiceStart(id: String, agentID: String, conversationID: String) {
+      _ = id
+      _ = agentID
+      _ = conversationID
+    }
+
+    func voiceAudio(id: String, seq: Int, pcm: Data) {
+      _ = id
+      _ = seq
+      _ = pcm
+    }
+
+    func voiceMute(id: String, muted: Bool) {
+      _ = id
+      _ = muted
+    }
+
+    func voicePlayed(id: String, seq: Int) {
+      _ = id
+      _ = seq
+    }
+
+    func voiceStop(id: String) {
+      _ = id
+    }
 
     func sendTurn(
       id: String,

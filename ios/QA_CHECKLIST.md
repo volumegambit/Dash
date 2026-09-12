@@ -88,6 +88,104 @@ less precisely.
 - [ ] Floating (undocked/minimised) keyboard -> the composer stays visible and the send button
       stays reachable; the transcript is not left scrolled behind the keyboard
 
+## Speech — dictation and read aloud
+
+- [ ] Tap the mic button with microphone permission not yet decided -> iOS presents its permission
+      prompt; recording starts once you allow it
+- [ ] Deny microphone access (or with access previously denied) -> Dash shows "Microphone access
+      is off. Turn it on in Settings." with a **Settings** button that opens the app's iOS Settings
+      page
+- [ ] Start a recording and let it run without tapping anything -> it auto-finishes at 60 seconds
+      and the transcript is inserted, exactly as if the checkmark had been tapped
+- [ ] Record dictation over AirPods or another Bluetooth input -> the recording uses that input and
+      transcribes correctly
+- [ ] Receive a phone call (or another audio interruption) while recording -> the recording stops
+      and Dash shows "Recording was interrupted."
+- [ ] Choose **Read aloud** on an assistant message -> audio plays and the context menu item
+      becomes **Stop reading**; tapping it stops playback
+- [ ] Start **Read aloud** on a message, then start it on a second message before the first
+      finishes -> the first stops immediately and only the second plays
+- [ ] Open **Settings → Speech** on a gateway with a speech provider configured -> the screen loads
+      the speech-to-text model, text-to-speech model, voice, and language without error
+- [ ] Change the speech-to-text model, text-to-speech model, or voice, then force-quit and relaunch
+      the app -> the change persisted on the gateway and the screen reflects it on reload
+- [ ] Tap **Preview voice** -> the configured voice speaks the sample sentence
+- [ ] Set **Language** to **Auto** -> the change saves, and the gateway's stored configuration no
+      longer carries a language, so a subsequent dictation is transcribed with the provider's own
+      auto-detection
+- [ ] Open **Settings** on a gateway without the `speech-v1` capability -> the **Speech** row is
+      hidden and the section footer reads "Update your gateway to use speech."
+
+## Speech — voice mode
+
+- [ ] Tap the waveform button with microphone permission not yet decided -> iOS presents its
+      permission prompt; the voice cover opens and starts listening once you allow it
+- [ ] Deny microphone access (or with access already denied) -> the waveform button does not
+      appear in the composer, the same as dictation's denial behavior
+- [ ] Have a two-turn conversation hands-free: ask a question, let the agent finish answering, then
+      ask a follow-up without touching the screen -> both turns are heard and answered correctly,
+      the state line moves Listening -> Thinking -> Speaking -> Listening each time, and closing
+      voice mode afterward shows both exchanges in the transcript as ordinary messages
+- [ ] Listen to the END of a multi-sentence answer, and to a one-sentence answer ("Four.") ->
+      the LAST sentence is heard in full, not clipped or dropped, and the state line only moves
+      to Listening once the speaker has actually gone quiet (this is what `voice_played` fixes:
+      the gateway used to say Listening the moment it SENT the last chunk, and the phone flushes
+      playback when it leaves Speaking)
+- [ ] While the agent is speaking, start talking over it (barge-in) -> playback stops immediately,
+      the state line returns to Listening, and what you said starts a new turn rather than being
+      lost
+- [ ] Start a session on the built-in microphone, then connect AirPods (or another Bluetooth
+      input) mid-session -> the session keeps running; then disconnect the active input -> the
+      cover shows "Microphone stopped" and closes
+- [ ] Receive a phone call while voice mode is open -> the cover shows "Microphone stopped" and
+      closes; the conversation is unaffected and any completed turns remain in the transcript
+- [ ] Background the app while voice mode is open (Home button/gesture, or switch apps) -> voice
+      mode ends immediately ("Voice mode ended") rather than continuing to listen with nothing on
+      screen to show it
+- [ ] Connect to a gateway over cellular (no local Wi-Fi, through the relay) and start voice mode
+      -> the session starts, hears you, and speaks back with no more latency than the equivalent
+      typed turn
+- [ ] Ask something that makes the agent run a tool (e.g. a file search or a web search) -> you
+      hear exactly one short status line for the tool activity (for example "Looking at the
+      files."), not one per call, before the agent's spoken answer
+- [ ] Ask something the agent must ask a clarifying question about -> the question is spoken aloud,
+      answering it out loud (without touching the screen) continues the same turn, and the answer
+      appears in the transcript afterward like a normal exchange
+- [ ] Tap the mute button while the agent is speaking -> the agent keeps speaking to completion;
+      say something while muted -> it is not heard, and the state line reads "Muted" until you tap
+      the button again
+- [ ] Force-quit the gateway (or otherwise drop the connection) while voice mode is open -> the
+      cover shows "Connection lost" and closes rather than hanging on "Listening" or "Thinking"
+- [ ] Open the context menu on an assistant message while voice mode is open -> **Read aloud** is
+      unavailable; it becomes available again once voice mode is closed
+- [ ] Open voice mode on iPad, in both portrait and landscape, and with the app split-screened
+      narrow -> the orb and captions stay centered in a single readable column and never stretch
+      edge to edge
+
+## Voice mode — capture and playback (device only)
+
+`AudioCaptureService` and `AudioPlaybackService`'s PCM path (Task B8) need a real microphone and
+a real audio route, so — like dictation and read-aloud above — the REAL tap/route is not
+exercised on the simulator. `PCMFramerTests` and `AudioPlaybackServiceTests` cover the byte-level
+logic; `AudioCaptureServiceTests` (fix round 2) exercises `AudioCaptureService`'s own logic —
+conversion, framing, termination plumbing, the generation guard — against the real actor via an
+injectable tap seam, with only the hardware tap itself faked.
+
+- [ ] Start voice mode and speak -> frames arrive at roughly 10/s (100 ms each); the orb's level
+      meter visibly tracks your voice, not a flat line
+- [ ] While voice mode is capturing, disconnect the active input (unplug a wired headset, or let
+      connected AirPods drop) or let a phone call interrupt -> capture ends immediately rather
+      than continuing to listen on the old route or silently hanging. Plugging in a NEW input
+      device does not stop capture on its own
+- [ ] While the agent is speaking, start talking (barge-in) -> playback stops instantly, with no
+      trailing audio or delay before the mic is heard again. PCM16 is rendered through a Float32
+      mixer connection, so also confirm the agent's voice sounds correct (no static, pitch shift,
+      or clipping) — that conversion is new as of fix round 1
+- [ ] Echo cancellation: with the agent speaking through the device speaker, the agent must not
+      interrupt itself with its own voice picked up by the mic (the capture engine's
+      `.voiceChat` mode enables voice-processing/echo cancellation; playback runs on a SEPARATE
+      engine from capture, so this is not automatic — confirm it actually holds on real hardware)
+
 ## Evidence notes
 
 For each checked item, record the device, OS, build commit, date, tester, and a screenshot or

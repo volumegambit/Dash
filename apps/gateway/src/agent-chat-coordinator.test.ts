@@ -1935,3 +1935,47 @@ describe('AgentChatCoordinator location gating', () => {
     expect(prompt).not.toContain('get_location');
   });
 });
+
+describe('AgentChatCoordinator modality threading', () => {
+  it("forwards modality: 'voice' from ChatRequest into the agent's chat() call", async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: `voice-${Math.random().toString(36).slice(2)}`,
+      model: 'anthropic/claude-sonnet-5',
+      systemPrompt: 'base',
+    });
+    const { backend, states } = makeStateCapturingBackend();
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => backend,
+    });
+
+    await drain(
+      agents.chat({ agentId: id, conversationId: 'conv-voice', text: 'hi', modality: 'voice' }),
+    );
+    await agents.stop();
+
+    expect(states[0]?.systemPrompt).toContain('<voice>');
+  });
+
+  it('does not append the voice block when modality is absent', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: `voice-${Math.random().toString(36).slice(2)}`,
+      model: 'anthropic/claude-sonnet-5',
+      systemPrompt: 'base',
+    });
+    const { backend, states } = makeStateCapturingBackend();
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => backend,
+    });
+
+    await drain(agents.chat({ agentId: id, conversationId: 'conv-text', text: 'hi' }));
+    await agents.stop();
+
+    expect(states[0]?.systemPrompt).not.toContain('<voice>');
+  });
+});

@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
 import { MemoryOpError, persistBook, readBook } from '@dash/agent';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_SPEECH_CONFIG } from '@dash/speech';
+import type { SpeechService } from '@dash/speech';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Hono } from 'hono';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
@@ -18,6 +20,7 @@ import type { DynamicGateway } from './gateway.js';
 import type { JsonBody } from './json-body.test-helpers.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
+import { SpeechConfigStore } from './speech-config-store.js';
 
 // --- Mock factories ---
 
@@ -176,6 +179,30 @@ function makeModelsStore() {
     save: vi.fn().mockResolvedValue(undefined),
     clear: vi.fn().mockResolvedValue(undefined),
   } as unknown as import('./models-store.js').ModelsStore;
+}
+
+function makeSpeechService(overrides: Partial<SpeechService> = {}): SpeechService {
+  return {
+    currentConfig: vi.fn().mockResolvedValue(DEFAULT_SPEECH_CONFIG),
+    providers: vi.fn().mockResolvedValue([
+      {
+        id: 'openrouter',
+        capabilities: { transcription: true, speech: true, realtime: false },
+        available: true,
+      },
+    ]),
+    listModels: vi.fn().mockResolvedValue([]),
+    transcribe: vi.fn().mockResolvedValue({ text: 'hi' }),
+    synthesize: vi.fn().mockResolvedValue({
+      format: 'mp3',
+      audio: (async function* () {
+        yield new Uint8Array([1]);
+      })(),
+    }),
+    available: vi.fn().mockResolvedValue(true),
+    invalidate: vi.fn(),
+    ...overrides,
+  };
 }
 
 function makeConversationService(): ConversationService {
@@ -562,6 +589,70 @@ describe('createGatewayManagementApp', () => {
         errorMessageLength: privateError.length,
       });
       expect(error.mock.calls[0]?.[1]).toBeUndefined();
+    });
+
+    it('omits even the hasJsonBody shape flag for the two speech audio/text routes, on both mounts', async () => {
+      const info = vi.fn();
+      const speech = makeSpeechService();
+      const speechDataDir = await mkdtemp(join(tmpdir(), 'speech-log-'));
+      const speechConfigStore = new SpeechConfigStore(speechDataDir);
+      try {
+        const { app } = createApp({ speech, speechConfigStore, logger: { info } });
+
+        // Each response must actually succeed (200) — otherwise this test
+        // would pass just as well if /speech/* were never mounted at all
+        // (a 404 also carries no hasJsonBody, which would be a false green).
+        const transcriptionRes = await app.request('/speech/transcriptions', {
+          method: 'POST',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({
+            audio: Buffer.from('secret-audio-bytes').toString('base64'),
+            format: 'wav',
+          }),
+        });
+        expect(transcriptionRes.status).toBe(200);
+
+        const mobileTranscriptionRes = await app.request('/mobile/v1/speech/transcriptions', {
+          method: 'POST',
+          headers: MOBILE_JSON_HEADERS,
+          body: JSON.stringify({
+            audio: Buffer.from('secret-audio-bytes-2').toString('base64'),
+            format: 'wav',
+          }),
+        });
+        expect(mobileTranscriptionRes.status).toBe(200);
+
+        const speechRes = await app.request('/speech/speech', {
+          method: 'POST',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ text: 'private dictated text' }),
+        });
+        expect(speechRes.status).toBe(200);
+
+        const mobileSpeechRes = await app.request('/mobile/v1/speech/speech', {
+          method: 'POST',
+          headers: MOBILE_JSON_HEADERS,
+          body: JSON.stringify({ text: 'private dictated text 2' }),
+        });
+        expect(mobileSpeechRes.status).toBe(200);
+
+        for (const path of [
+          '/speech/transcriptions',
+          '/mobile/v1/speech/transcriptions',
+          '/speech/speech',
+          '/mobile/v1/speech/speech',
+        ]) {
+          const call = info.mock.calls.find(([msg]) => msg === `→ POST ${path}`);
+          expect(call, path).toBeDefined();
+          expect(call?.[1]).not.toHaveProperty('hasJsonBody');
+        }
+
+        const output = JSON.stringify(info.mock.calls);
+        expect(output).not.toContain('secret-audio-bytes');
+        expect(output).not.toContain('private dictated text');
+      } finally {
+        await rm(speechDataDir, { recursive: true, force: true });
+      }
     });
   });
 
@@ -2242,6 +2333,163 @@ describe('createGatewayManagementApp', () => {
         anthropic: 'sk-ant-1',
         openai: 'sk-openai-1',
       });
+    });
+  });
+});
+
+describe('speech routes wiring', () => {
+  let dataDir: string;
+  let speechConfigStore: SpeechConfigStore;
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), 'speech-wiring-'));
+    speechConfigStore = new SpeechConfigStore(dataDir);
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  describe('speech-v1 capability', () => {
+    it('is absent when no speech service is wired', async () => {
+      const { app } = createApp();
+      const res = await app.request('/health');
+      const body = (await res.json()) as JsonBody;
+      expect(body.capabilities).toEqual(['conversation-sync-v1', 'chat-resume-v1']);
+    });
+
+    it('is absent when speech is wired but speechConfigStore is not', async () => {
+      const speech = makeSpeechService({ available: vi.fn().mockResolvedValue(true) });
+      const { app } = createApp({ speech });
+      const res = await app.request('/health');
+      const body = (await res.json()) as JsonBody;
+      expect(body.capabilities).toEqual(['conversation-sync-v1', 'chat-resume-v1']);
+    });
+
+    it('is absent when both deps are wired but the service is unavailable', async () => {
+      const speech = makeSpeechService({ available: vi.fn().mockResolvedValue(false) });
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/health');
+      const body = (await res.json()) as JsonBody;
+      expect(body.capabilities).toEqual(['conversation-sync-v1', 'chat-resume-v1']);
+    });
+
+    it('is present only when both deps are wired AND the service is available', async () => {
+      const speech = makeSpeechService({ available: vi.fn().mockResolvedValue(true) });
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/health');
+      const body = (await res.json()) as JsonBody;
+      expect(body.capabilities).toEqual(['conversation-sync-v1', 'chat-resume-v1', 'speech-v1']);
+    });
+
+    it('does not 500 /health when available() rejects', async () => {
+      const speech = makeSpeechService({
+        available: vi.fn().mockRejectedValue(new Error('credential store read failed')),
+      });
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as JsonBody;
+      expect(body.capabilities).toEqual(['conversation-sync-v1', 'chat-resume-v1']);
+    });
+  });
+
+  describe('mount gating', () => {
+    it('mounts nothing on either namespace when speech deps are absent', async () => {
+      const { app } = createApp();
+      expect((await app.request('/speech/config', { headers: AUTH })).status).toBe(404);
+      expect((await app.request('/mobile/v1/speech/config', { headers: MOBILE_AUTH })).status).toBe(
+        404,
+      );
+    });
+  });
+
+  describe('GET /speech/config', () => {
+    it('serves the fake SpeechService on the loopback app', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/speech/config', { headers: AUTH });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as JsonBody;
+      expect(body.config.stt.provider).toBe('openrouter');
+      expect(speech.providers).toHaveBeenCalled();
+    });
+
+    it('serves the fake SpeechService on /mobile/v1', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/mobile/v1/speech/config', { headers: MOBILE_AUTH });
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe('per-namespace auth', () => {
+    it('rejects the admin bearer on /mobile/v1/speech/config', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/mobile/v1/speech/config', { headers: AUTH });
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects the mobile bearer on /speech/config', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/speech/config', { headers: MOBILE_AUTH });
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects both bearers when neither is presented', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      expect((await app.request('/speech/config')).status).toBe(401);
+      expect((await app.request('/mobile/v1/speech/config')).status).toBe(401);
+    });
+  });
+
+  describe('credential-change invalidation', () => {
+    it('calls speech.invalidate() when a provider API key is set', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/credentials', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ key: 'anthropic-api-key:default', value: 'sk-foo' }),
+      });
+      expect(res.status).toBe(201);
+      expect(speech.invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it('calls speech.invalidate() when a provider API key is deleted', async () => {
+      const speech = makeSpeechService();
+      const { app, credentialStore } = createApp({ speech, speechConfigStore });
+      await credentialStore.set('anthropic-api-key:default', 'sk-foo');
+      const res = await app.request('/credentials/anthropic-api-key%3Adefault', {
+        method: 'DELETE',
+        headers: AUTH,
+      });
+      expect(res.status).toBe(200);
+      expect(speech.invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not call speech.invalidate() for a non-provider-key credential', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      await app.request('/credentials', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ key: 'channel:tg1:token', value: 'tok' }),
+      });
+      expect(speech.invalidate).not.toHaveBeenCalled();
+    });
+
+    it('does not throw when a provider key changes and no speech service is wired', async () => {
+      const { app } = createApp();
+      const res = await app.request('/credentials', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ key: 'anthropic-api-key:default', value: 'sk-foo' }),
+      });
+      expect(res.status).toBe(201);
     });
   });
 });

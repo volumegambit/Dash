@@ -69,7 +69,7 @@ struct LocationProviderTests {
       images: nil,
       location: location
     )
-    guard case let .message(_, _, _, _, _, sent, _, _, _) = frame else {
+    guard case let .message(_, _, _, _, _, sent, _, _, _, _) = frame else {
       Issue.record("expected a message frame")
       return
     }

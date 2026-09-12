@@ -144,6 +144,10 @@ struct MessageListView: View {
   /// meaningful inside a `ScrollView` that reads it; `ChatView`'s transcript
   /// is the one place that does.
   let isScrollTarget: Bool
+  /// The conversation's read-aloud feature, or nil when this gateway has no
+  /// `speech-v1` (Task A9). Optional and defaulted so a bare
+  /// `MessageListView(messages:)` — previews, `ChatViewTests` — still builds.
+  let readAloud: ReadAloudFeature?
   let onAnswer: (String, String) -> Void
   let onRetry: (String) -> Void
   let onEditAndResend: (String) -> Void
@@ -156,6 +160,7 @@ struct MessageListView: View {
     firstRowFrameCoordinateSpace: String? = nil,
     isAnsweringEnabled: Bool = true,
     isScrollTarget: Bool = false,
+    readAloud: ReadAloudFeature? = nil,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     onRetry: @escaping (String) -> Void = { _ in },
     onEditAndResend: @escaping (String) -> Void = { _ in },
@@ -165,6 +170,7 @@ struct MessageListView: View {
     self.firstRowFrameCoordinateSpace = firstRowFrameCoordinateSpace
     self.isAnsweringEnabled = isAnsweringEnabled
     self.isScrollTarget = isScrollTarget
+    self.readAloud = readAloud
     self.onAnswer = onAnswer
     self.onRetry = onRetry
     self.onEditAndResend = onEditAndResend
@@ -195,6 +201,7 @@ struct MessageListView: View {
           isAnsweringEnabled: isAnsweringEnabled,
           isFailedTurn: message.role == .user && failedTurns.contains(message.turnID),
           retryTargetID: retryTargetID(for: message, in: messages),
+          readAloud: readAloud,
           onAnswer: onAnswer,
           onRetry: onRetry,
           onEditAndResend: onEditAndResend,
@@ -348,16 +355,25 @@ struct ChatMessageView: View {
   /// Non-nil only for a `.assistant` row whose own `status == .failed`: the
   /// user message id its inline Retry button should resend.
   let retryTargetID: String?
+  /// See `MessageListView.readAloud` — nil means this gateway cannot speak.
+  let readAloud: ReadAloudFeature?
   let onAnswer: (String, String) -> Void
   let onRetry: (String) -> Void
   let onEditAndResend: (String) -> Void
   let subagentInteraction: SubagentInteraction
+
+  /// The one gate every speech surface reads, the same way `ComposerView`
+  /// gates the mic. OPTIONAL on purpose: `MessageListView` is constructed
+  /// bare in previews and in `ChatViewTests`, and a non-optional
+  /// `@Environment(AppModel.self)` traps when nothing installed one.
+  @Environment(AppModel.self) private var appModel: AppModel?
 
   init(
     message: ChatMessageState,
     isAnsweringEnabled: Bool = true,
     isFailedTurn: Bool = false,
     retryTargetID: String? = nil,
+    readAloud: ReadAloudFeature? = nil,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     onRetry: @escaping (String) -> Void = { _ in },
     onEditAndResend: @escaping (String) -> Void = { _ in },
@@ -367,6 +383,7 @@ struct ChatMessageView: View {
     self.isAnsweringEnabled = isAnsweringEnabled
     self.isFailedTurn = isFailedTurn
     self.retryTargetID = retryTargetID
+    self.readAloud = readAloud
     self.onAnswer = onAnswer
     self.onRetry = onRetry
     self.onEditAndResend = onEditAndResend
@@ -444,6 +461,11 @@ struct ChatMessageView: View {
         // whose ToolBlock/assistant bubble treatment (design doc appendix
         // §6) keeps the `bg-[#141414] border-2` card.
         if let assistant = message.assistant {
+          // Read INSIDE `body` (not only inside the `.contextMenu` closure,
+          // which SwiftUI evaluates lazily when the menu opens): this is what
+          // registers the observation dependency that makes the row redraw
+          // when playback starts, ends or is interrupted.
+          let reading = readAloudPhase
           VStack(alignment: .leading, spacing: 8) {
             AssistantEventViews(
               projection: assistant,
@@ -453,6 +475,14 @@ struct ChatMessageView: View {
               exposesResponseToAccessibility: message.exposesAssistantTextToAccessibility,
               subagentInteraction: subagentInteraction
             )
+
+            // The context menu closes the moment "Read aloud" is tapped, so
+            // the row itself carries the only feedback the user can see while
+            // the audio is being synthesized — and the only thing VoiceOver
+            // can find afterwards.
+            if let reading {
+              ReadAloudIndicatorView(isLoading: reading == .loading, messageID: message.id)
+            }
 
             // Inline Retry (chat-ux Phase 2, Task 4 / audit #5): shown
             // directly on the failed bubble, in addition to Retry being
@@ -470,7 +500,7 @@ struct ChatMessageView: View {
           // (`markdownPlainTextAccessibilityLabel`), not the raw markdown —
           // one flattener shared by both affordances, per the task brief.
           .draggable(markdownPlainTextAccessibilityLabel(for: assistant.text))
-          .contextMenu { assistantContextMenuItems(assistant) }
+          .contextMenu { assistantContextMenuItems(assistant, reading: reading) }
           .accessibilityElement(children: .contain)
           .accessibilityLabel(message.accessibilityStatusLabel)
           .accessibilityIdentifier("chat.message.\(message.id)")
@@ -518,7 +548,10 @@ struct ChatMessageView: View {
   }
 
   @ViewBuilder
-  private func assistantContextMenuItems(_ assistant: AssistantMessageProjection) -> some View {
+  private func assistantContextMenuItems(
+    _ assistant: AssistantMessageProjection,
+    reading: ReadAloudPhase?
+  ) -> some View {
     if !assistant.text.isEmpty {
       let plainText = markdownPlainTextAccessibilityLabel(for: assistant.text)
       Button {
@@ -529,7 +562,69 @@ struct ChatMessageView: View {
       ShareLink(item: plainText) {
         Label("Share", systemImage: "square.and.arrow.up")
       }
+      // Speech is optional on the gateway, so the item is absent — not
+      // disabled — when it cannot work. `assistant.text` is the RAW markdown:
+      // `ReadAloudFeature` flattens and truncates it, so the words that are
+      // spoken are the same ones Copy above puts on the pasteboard.
+      if isReadAloudOffered, let readAloud {
+        Button {
+          Task { await readAloud.toggle(messageID: message.id, text: assistant.text) }
+        } label: {
+          Label(
+            reading == nil ? "Read aloud" : "Stop reading",
+            systemImage: reading == nil ? "speaker.wave.2" : "speaker.slash"
+          )
+        }
+        .accessibilityIdentifier("chat.message.readAloud")
+      }
     }
+  }
+
+  /// Which half of the read-aloud state this row is in, or nil when it is not
+  /// the message being read.
+  private var readAloudPhase: ReadAloudPhase? {
+    guard let readAloud, readAloud.isActive(messageID: message.id) else { return nil }
+    return readAloud.isLoading ? .loading : .speaking
+  }
+
+  /// Whether the menu offers reading at all — the same gate the composer's
+  /// mic reads. `readAloud` is non-nil only while `ChatFeature` has been told
+  /// the capability is there, so this is belt-and-braces against a row that
+  /// renders in the gap between the two.
+  private var isReadAloudOffered: Bool {
+    appModel?.speechAvailable == true && readAloud != nil
+  }
+}
+
+enum ReadAloudPhase: Equatable, Sendable {
+  case loading
+  case speaking
+}
+
+/// The in-row read-aloud state (Task A9). Deliberately quiet — a footnote
+/// line under the reply, in the chrome-trim spirit of audit #17 — because the
+/// audio itself is the feedback; this only has to say which message is
+/// talking and give VoiceOver something to land on.
+private struct ReadAloudIndicatorView: View {
+  let isLoading: Bool
+  let messageID: String
+
+  var body: some View {
+    HStack(spacing: 6) {
+      if isLoading {
+        ProgressView()
+          .controlSize(.mini)
+      } else {
+        Image(systemName: "speaker.wave.2")
+          .font(.footnote)
+          .accessibilityHidden(true)
+      }
+      Text(isLoading ? "Preparing audio" : "Reading aloud")
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("chat.message.\(messageID).readAloudStatus")
   }
 }
 

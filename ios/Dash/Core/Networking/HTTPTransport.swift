@@ -1,6 +1,35 @@
 import Foundation
 
+/// The seven `SpeechErrorCode`s (`packages/speech/src/errors.ts`). `/speech/*`
+/// reuses the shared `{ code, error, retryable }` envelope and passes these
+/// through untranslated, so the CODE — not the status — is what identifies a
+/// speech failure.
+///
+/// `unauthorized` is in the list deliberately. A provider's rejected key and
+/// the gateway's own rejected bearer token are indistinguishable by code on
+/// this namespace, and the trade-off runs one way only: showing a speech error
+/// when the phone's token really expired costs a confusing message on one
+/// screen, while the reverse sends the user to re-pair a device whose pairing
+/// is fine. Every other route still maps a 401 to `.unauthorized`.
+private let speechErrorCodes: Set<String> = [
+  "unauthorized",
+  "too_large",
+  "too_long",
+  "provider",
+  "network",
+  "unavailable",
+  "invalid",
+]
+
 struct GatewayRequest: Sendable {
+  /// Which error vocabulary a non-2xx on this request speaks. `/speech/*`
+  /// answers with provider-level codes whose HTTP statuses collide with the
+  /// gateway's own meanings; every other route is unaffected.
+  enum ErrorScope: Sendable {
+    case gateway
+    case speech
+  }
+
   enum Method: String, Sendable {
     case get = "GET"
     case post = "POST"
@@ -18,20 +47,36 @@ struct GatewayRequest: Sendable {
   let query: [URLQueryItem]
   let resourceID: String?
   let requestID: String?
+  let errorScope: ErrorScope
 
   init(
     method: Method,
     path: [String],
     query: [URLQueryItem] = [],
     resourceID: String? = nil,
-    requestID: String? = nil
+    requestID: String? = nil,
+    errorScope: ErrorScope = .gateway
   ) {
     self.method = method
     self.path = path
     self.query = query
     self.resourceID = resourceID
     self.requestID = requestID
+    self.errorScope = errorScope
   }
+}
+
+/// A speech-scoped failure, or nil when the body is undecodable or carries a
+/// code outside the speech vocabulary — in which case the caller falls through
+/// to the ordinary status-first mapping unchanged.
+private func speechError(from data: Data) -> GatewayError? {
+  guard
+    let body = try? ContractCoding.decoder().decode(MobileAPIError.self, from: data),
+    speechErrorCodes.contains(body.code)
+  else {
+    return nil
+  }
+  return .speech(code: body.code, message: body.error, retryable: body.retryable)
 }
 
 actor HTTPTransport {
@@ -74,6 +119,25 @@ actor HTTPTransport {
     }
   }
 
+  /// The raw response body, for the one operation whose success payload is not
+  /// JSON: `POST /speech/speech` streams `audio/mpeg`, or `audio/wav` for a
+  /// PCM-only model. Identical to `send` apart from the `Accept` it asks for
+  /// and the absence of a decode — in particular a non-2xx still goes through
+  /// `perform`'s `mapHTTPError`, so a failed synthesis surfaces as a
+  /// `GatewayError` rather than as error-page bytes handed back as if they
+  /// were audio.
+  ///
+  /// No empty-body guard: audio is opaque, and a zero-byte 200 is a provider
+  /// problem for the caller to notice, not a contract violation.
+  func sendData(
+    _ request: GatewayRequest,
+    body: (any Encodable & Sendable)? = nil,
+    accept: String
+  ) async throws -> Data {
+    let (data, _) = try await perform(request, body: body, ifMatch: nil, accept: accept)
+    return data
+  }
+
   func sendEmpty(
     _ request: GatewayRequest,
     body: (any Encodable & Sendable)? = nil,
@@ -88,12 +152,13 @@ actor HTTPTransport {
   private func perform(
     _ descriptor: GatewayRequest,
     body: (any Encodable & Sendable)?,
-    ifMatch: Int?
+    ifMatch: Int?,
+    accept: String = "application/json"
   ) async throws -> (Data, HTTPURLResponse) {
     try endpoint.requireTrustedTransport()
     var request = URLRequest(url: try url(for: descriptor))
     request.httpMethod = descriptor.method.rawValue
-    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    request.setValue(accept, forHTTPHeaderField: "Accept")
     if descriptor.path != ["mobile", "v1", "health"] {
       request.setValue(
         "Bearer \(secrets.managementToken)",
@@ -130,6 +195,15 @@ actor HTTPTransport {
       throw GatewayError.transport("Gateway returned a non-HTTP response")
     }
     guard (200..<300).contains(httpResponse.statusCode) else {
+      // Body BEFORE status, and only on a speech-scoped request: the codes
+      // `/speech/*` emits ride statuses that mean something else to
+      // `mapHTTPError` (401 → repair-required, 502-on-relay → gateway
+      // offline). Anything the speech vocabulary does not name — and any body
+      // that will not decode — falls through untouched, so `.gateway` requests
+      // are byte-for-byte unaffected.
+      if descriptor.errorScope == .speech, let error = speechError(from: data) {
+        throw error
+      }
       throw await mapHTTPError(response: httpResponse, data: data)
     }
     return (data, httpResponse)

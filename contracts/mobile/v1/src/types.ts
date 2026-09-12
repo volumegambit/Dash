@@ -1,4 +1,4 @@
-export type MobileCapability = 'conversation-sync-v1' | 'chat-resume-v1';
+export type MobileCapability = 'conversation-sync-v1' | 'chat-resume-v1' | 'speech-v1';
 export type ConversationStatus = 'idle' | 'running' | 'interrupted' | 'archived' | 'deleted';
 export type ConversationMessageStatus =
   | 'accepted'
@@ -362,7 +362,49 @@ export type MobileApiErrorCode =
   | 'conversation_busy'
   | 'rate_limited'
   | 'gateway_offline'
-  | 'capability_required';
+  | 'capability_required'
+  // `SpeechErrorCode` (`packages/speech/src/errors.ts`), reachable on `/speech/*`:
+  // those handlers reuse this envelope and pass the provider-level code through
+  // untranslated, so the union has to admit them.
+  | 'too_large'
+  | 'too_long'
+  | 'provider'
+  | 'network'
+  | 'unavailable'
+  | 'invalid';
+
+/**
+ * Runtime mirror of {@link MobileApiErrorCode}, in the same order. Exists so a
+ * test can assert the schema `enum`s and OpenAPI `enum`s are the same SET as
+ * the TS union without hand-maintaining a second literal list — see
+ * `contract.test.ts`'s "keeps MobileApiErrorCode identical" test. The
+ * `satisfies` clause below fails to compile if this array ever drops a member
+ * the type union still has.
+ */
+export const MOBILE_API_ERROR_CODES = [
+  'unauthorized',
+  'not_found',
+  'validation_failed',
+  'revision_conflict',
+  'conversation_busy',
+  'rate_limited',
+  'gateway_offline',
+  'capability_required',
+  'too_large',
+  'too_long',
+  'provider',
+  'network',
+  'unavailable',
+  'invalid',
+] as const satisfies readonly MobileApiErrorCode[];
+
+// Exhaustiveness in the OTHER direction: if `MobileApiErrorCode` grows a
+// member not listed in `MOBILE_API_ERROR_CODES` above, this line fails to
+// compile rather than letting the two silently drift apart.
+type _AssertMobileApiErrorCodesComplete =
+  MobileApiErrorCode extends (typeof MOBILE_API_ERROR_CODES)[number] ? true : never;
+const _mobileApiErrorCodesComplete: _AssertMobileApiErrorCodesComplete = true;
+void _mobileApiErrorCodesComplete;
 
 export interface MobileApiError {
   code: MobileApiErrorCode;
@@ -417,6 +459,13 @@ export type MobileWsClientFrame =
       conversationId: string;
       text: string;
       location?: MobileClientLocation;
+      /**
+       * Set only for a turn spoken through the Phase B voice session — never
+       * for a dictated turn, which merely fills the text composer. Threaded
+       * into `DashAgent.chat`, which appends the `<voice>` spoken-mode prompt
+       * block when it is `'voice'`.
+       */
+      modality?: 'text' | 'voice';
       images?: MobileImage[];
       streamingBehavior?: 'steer' | 'followUp';
       resumable?: boolean;
@@ -431,7 +480,67 @@ export type MobileWsClientFrame =
    * needed for a conversation the socket has not otherwise touched.
    */
   | { type: 'subscribe'; id: string; agentId: string; conversationId: string }
-  | { type: 'unsubscribe'; id: string; agentId: string; conversationId: string };
+  | { type: 'unsubscribe'; id: string; agentId: string; conversationId: string }
+  /**
+   * Starts the hands-free voice session on `conversationId`. `id` is the
+   * client-generated session id: every `voice_*` frame in both directions
+   * (including the server's) is tagged with it, and a second `voice_start`
+   * from the same socket replaces the first session.
+   */
+  | { type: 'voice_start'; id: string; agentId: string; conversationId: string }
+  /**
+   * One capture chunk from the phone's microphone. `pcm` is standard base64
+   * PCM16 at 16 kHz mono; the gateway caps the DECODED size at 16 384 bytes
+   * (~512ms). `seq` is advisory only and never used to reorder — the VAD
+   * consumes chunks in arrival order.
+   */
+  | { type: 'voice_audio'; id: string; seq: number; pcm: string }
+  | { type: 'voice_mute'; id: string; muted: boolean }
+  | { type: 'voice_stop'; id: string }
+  /**
+   * The phone has finished PLAYING every `voice_speech` up to and including
+   * `seq` — not merely received it. The gateway holds the session in
+   * `speaking` until this arrives (or an 8 s safety timer fires), because the
+   * client flushes playback the moment it leaves `speaking`: announcing
+   * `listening` while the speaker is still going truncated every reply's tail.
+   *
+   * Sent once per drained playback chain (or once per sentence), carrying the
+   * highest `seq` enqueued so far. Never sent for audio a barge-in flushed.
+   */
+  | { type: 'voice_played'; id: string; seq: number };
+
+/**
+ * The hands-free voice session's state machine (`@dash/speech`'s
+ * `VoiceSession`). `muted` and `stopped` cut across the others; the rest
+ * advance in the order the session actually moves through them.
+ */
+export type VoiceState =
+  | 'listening'
+  | 'transcribing'
+  | 'thinking'
+  | 'speaking'
+  | 'muted'
+  | 'stopped';
+
+/** Why a `voice_stopped` frame was sent — never the reason for an ordinary error. */
+export type VoiceStopReason = 'client' | 'socket' | 'provider' | 'replaced';
+
+/**
+ * The exact `SpeechErrorCode` union from `packages/speech/src/errors.ts`,
+ * restated here so a client depends on the frozen wire contract rather than
+ * on the server package. It is a strict subset of `MobileApiErrorCode` (which
+ * additionally carries the REST-only codes like `not_found`), and is its own
+ * type rather than a reuse of `MobileApiErrorCode` because a `voice_error`
+ * frame can never legally carry one of those REST-only codes.
+ */
+export type SpeechErrorCode =
+  | 'unauthorized'
+  | 'unavailable'
+  | 'too_long'
+  | 'too_large'
+  | 'invalid'
+  | 'provider'
+  | 'network';
 
 export type MobileWsServerFrame =
   | {
@@ -496,7 +605,30 @@ export type MobileWsServerFrame =
       code?: MobileApiErrorCode;
       retryable?: boolean;
       activeTurnId?: string;
-    };
+    }
+  /** `turnId` is set once a turn is running and cleared once it settles back to `listening`. */
+  | { type: 'voice_state'; id: string; state: VoiceState; turnId?: string }
+  | {
+      type: 'voice_transcript';
+      id: string;
+      text: string;
+      final: boolean;
+      /** Set on the transcript that STARTS a turn — always emitted before that turn's `accepted`. */
+      turnId?: string;
+    }
+  | {
+      type: 'voice_speech';
+      id: string;
+      /** Per-chunk counter, independent of the resumable chat hub's `seq`. */
+      seq: number;
+      /** base64 of the chunk's raw bytes. */
+      audio: string;
+      format: 'pcm16' | 'mp3';
+      sampleRate?: number;
+      text: string;
+    }
+  | { type: 'voice_error'; id: string; code: SpeechErrorCode; error: string }
+  | { type: 'voice_stopped'; id: string; reason: VoiceStopReason };
 
 export type ReplayPayload =
   | {
@@ -538,4 +670,105 @@ export interface ConversationDeletedEvent {
 export interface WsTicketResponse {
   ticket: string;
   expiresAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Speech (`/speech/*`). Mirrors `@dash/speech`'s own types, restated here so a
+// client depends on the frozen wire contract rather than on the server package.
+// ---------------------------------------------------------------------------
+
+export type SpeechModelKind = 'transcription' | 'speech';
+
+export type SpeechAudioFormat = 'wav' | 'm4a' | 'mp3' | 'flac' | 'ogg' | 'webm' | 'aac';
+
+export type SpeechProviderReason = 'no_credential' | 'no_provider_offers_realtime';
+
+export interface SpeechSttConfig {
+  provider: string;
+  model: string;
+  language?: string;
+}
+
+export interface SpeechTtsConfig {
+  provider: string;
+  model: string;
+  voice: string;
+  speed?: number;
+}
+
+/** `null` means "no realtime provider" and is a real value, never an omission. */
+export interface SpeechRealtimeConfig {
+  provider: string | null;
+}
+
+export interface SpeechConfigDTO {
+  stt: SpeechSttConfig;
+  tts: SpeechTtsConfig;
+  realtime: SpeechRealtimeConfig;
+}
+
+export interface SpeechCapabilitiesDTO {
+  transcription: boolean;
+  speech: boolean;
+  realtime: boolean;
+}
+
+/** `reason` is present only when `available` is false. */
+export interface SpeechProviderStatusDTO {
+  id: string;
+  capabilities: SpeechCapabilitiesDTO;
+  available: boolean;
+  reason?: SpeechProviderReason;
+}
+
+/** The body of both `GET` and `PATCH /speech/config`. */
+export interface SpeechConfigResponse {
+  config: SpeechConfigDTO;
+  providers: SpeechProviderStatusDTO[];
+}
+
+/**
+ * A shallow per-section merge. NOTE the asymmetry on `realtime`: the section
+ * itself is optional, but once present its `provider` key is REQUIRED (and may
+ * be null) — the gateway 400s on `{ "realtime": {} }`. That is why it is typed
+ * as the whole `SpeechRealtimeConfig` rather than a `Partial` of it.
+ */
+export interface SpeechConfigPatch {
+  /**
+   * `language: null` CLEARS the language (back to the provider's own
+   * detection); omitting the key leaves it alone. Spelled out rather than
+   * `Partial<SpeechSttConfig>`, which cannot express the difference.
+   */
+  stt?: { provider?: string; model?: string; language?: string | null };
+  tts?: Partial<SpeechTtsConfig>;
+  realtime?: SpeechRealtimeConfig;
+}
+
+export interface SpeechModelDTO {
+  id: string;
+  name: string;
+  kind: SpeechModelKind;
+  voices?: string[];
+}
+
+export interface SpeechModelList {
+  models: SpeechModelDTO[];
+}
+
+export interface TranscriptionRequest {
+  /** Standard base64. Decoded size is capped at 8 MiB; the clip at 60 seconds. */
+  audio: string;
+  format: SpeechAudioFormat;
+  language?: string;
+}
+
+export interface TranscriptionResponse {
+  text: string;
+  durationSeconds?: number;
+}
+
+/** `POST /speech/speech`. The RESPONSE is `audio/mpeg` bytes, not JSON. */
+export interface SynthesisRequest {
+  /** At most 4 000 characters; over that the gateway answers 413 `too_long`. */
+  text: string;
 }

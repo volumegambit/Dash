@@ -228,7 +228,10 @@ struct SettingsFeatureTests {
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
         makeSyncEngine: { _ in SettingsSyncEngine() },
-        verifyProfile: { _ in try await lifecycle.verify() },
+        verifyProfile: { _ in
+          try await lifecycle.verify()
+          return [.conversationSyncV1, .chatResumeV1]
+        },
         deleteProfileSecrets: { _ in await lifecycle.deleteSecrets() }
       )
     )
@@ -292,6 +295,7 @@ struct SettingsFeatureTests {
         verifyProfile: { value in
           #expect(value == profile)
           await events.record(.verify)
+          return [.conversationSyncV1, .chatResumeV1]
         }
       )
     )
@@ -398,9 +402,12 @@ struct SettingsFeatureTests {
     )
     let verifier = GatewayProfileVerifier { _, _ in gateway }
 
-    try await verifier.verify(profile: profile(), secrets: secrets())
+    let capabilities = try await verifier.verify(profile: profile(), secrets: secrets())
 
     #expect(await gateway.calls == [.health, .identity, .shutdown])
+    // The verifier no longer discards what it checked: the capability set is
+    // its return value, which is what lets `AppModel` retain it.
+    #expect(capabilities == [.conversationSyncV1, .chatResumeV1])
   }
 
   @Test("profile verifier rejects missing capabilities and always shuts down")
@@ -480,7 +487,7 @@ struct SettingsFeatureTests {
     await gateway.releaseHealth()
 
     do {
-      try await operation.value
+      _ = try await operation.value
       Issue.record("Expected profile verification to preserve cancellation")
     } catch {
       #expect(error is CancellationError)
