@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+region            = "ap-southeast-1"
+admin_public_key  = "ssh-ed25519 AAAA... you@laptop"
+deploy_public_key = "ssh-ed25519 AAAA... dash-deploy-production"
+alarm_email       = "you@example.com"
+acme_email        = "you@example.com"
+# instance_type   = "t3.small"
+# relay_zone      = "relay.dashsquad.ai"
+# cp_host         = "api.relay.dashsquad.ai"
