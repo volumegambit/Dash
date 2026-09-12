@@ -30,6 +30,18 @@ protocol AudioPlaying: Sendable {
   /// both record calls (`enqueued`/`flushCount`) so those tests can assert on
   /// them.
   func enqueuePCM(_ data: Data, sampleRate: Double) async
+  /// Voice mode: plays one COMPRESSED chunk (the gateway's `mp3` format)
+  /// through the same engine `enqueuePCM` uses, by decoding it first.
+  ///
+  /// `playMP3` cannot serve voice mode. Its contract — stated above — is that
+  /// the caller puts the session in `.playback` first, and voice mode cannot:
+  /// its session is `.playAndRecord` with the microphone live, and switching
+  /// to `.playback` would evict the capture. Routing compressed chunks down
+  /// the same engine as PCM keeps voice mode on ONE playback path whatever
+  /// text-to-speech model the gateway is configured with — which matters
+  /// because that choice belongs to the user, and mp3-only models (the
+  /// shipped default among them) are the common case.
+  func enqueueCompressed(_ data: Data) async
   /// Returns once every buffer `enqueuePCM` has scheduled has finished
   /// PLAYING — `enqueuePCM` itself returns as soon as one is scheduled, which
   /// is the whole difference the gateway's drain gate turns on (F1).
@@ -76,7 +88,10 @@ actor AudioPlaybackService: AudioPlaying {
   // `AVAudioPlayer` above: `playMP3` and `enqueuePCM` are two different
   // playback mechanisms that happen to share this actor so the two never
   // fight over which one currently "owns" audio output.
-  private let pcmEngine = AVAudioEngine()
+  /// `nonisolated let`: the engine reference itself is immutable, and the
+  /// configuration-change observer has to name it as the notification's object
+  /// from outside the actor's isolation.
+  private nonisolated let pcmEngine = AVAudioEngine()
   private let pcmPlayerNode = AVAudioPlayerNode()
   private var pcmFormat: AVAudioFormat?
 
@@ -109,12 +124,64 @@ actor AudioPlaybackService: AudioPlaying {
   /// idle.
   var isPCMEngineRunning: Bool { pcmEngine.isRunning }
 
+  /// Test-only. `AVAudioEngineConfigurationChange` is posted BY the engine, so
+  /// a test that wants to simulate a route change has to post it with the same
+  /// object this service observes.
+  nonisolated var engineForTesting: AVAudioEngine { pcmEngine }
+
+  /// `AVAudioEngineConfigurationChange` observer, removed in `deinit`.
+  private var configurationObserver: (any NSObjectProtocol)?
+
   init(startPCMEngine: @escaping @Sendable (AVAudioEngine) throws -> Void = { try $0.start() }) {
     self.startPCMEngine = startPCMEngine
     // Attached once, up front: `AVAudioPlayerNode.stop()`/`.reset()` are safe
     // to call on an attached-but-never-connected node, which is exactly the
     // idle state a `flush()` with nothing queued finds it in.
     pcmEngine.attach(pcmPlayerNode)
+    observeConfigurationChanges()
+  }
+
+  /// An `AVAudioEngine`'s connections are made against the hardware format in
+  /// force at the time, and iOS INVALIDATES them whenever the route or that
+  /// format changes — it posts `AVAudioEngineConfigurationChange` and expects
+  /// the graph to be rebuilt. An engine left on a stale graph keeps rendering
+  /// at the old rate into a route running at the new one, so the reply plays
+  /// at the wrong speed.
+  ///
+  /// Voice mode makes this the NORMAL case rather than an edge: arming the
+  /// microphone moves the session to `.playAndRecord`/voice processing, which
+  /// is itself a format change, and it lands while this engine is mid-reply.
+  /// The simulator never reproduces it — its route is a fixed 48 kHz with no
+  /// voice-processing hardware — which is why only a device shows the fault.
+  ///
+  /// Clearing `pcmFormat` is what forces the rebuild: the next chunk finds no
+  /// cached format and reconnects against the current output.
+  private nonisolated func observeConfigurationChanges() {
+    let observer = NotificationCenter.default.addObserver(
+      forName: .AVAudioEngineConfigurationChange,
+      object: pcmEngine,
+      queue: nil
+    ) { [weak self] _ in
+      guard let self else { return }
+      Task { await self.rebuildAfterConfigurationChange() }
+    }
+    Task { await setConfigurationObserver(observer) }
+  }
+
+  private func setConfigurationObserver(_ observer: any NSObjectProtocol) {
+    configurationObserver = observer
+  }
+
+  /// Drops the invalidated graph. The buffers already scheduled die with it —
+  /// they were queued for a route that no longer exists — so the drain waiters
+  /// are released rather than left parked on completions that will never come.
+  private func rebuildAfterConfigurationChange() {
+    pcmEngine.stop()
+    pcmPlayerNode.stop()
+    pcmPlayerNode.reset()
+    pcmFormat = nil
+    pendingPCMBuffers = 0
+    releaseDrainWaiters()
   }
 
   func playMP3(_ data: Data) async throws {
@@ -155,6 +222,79 @@ actor AudioPlaybackService: AudioPlaying {
     // ending a read-aloud clip should not leave a stray PCM frame queued
     // behind it (or vice versa).
     await flush()
+  }
+
+  func enqueueCompressed(_ data: Data) async {
+    guard !data.isEmpty else { return }
+    guard let decoded = Self.decode(data) else { return }
+    await enqueuePCM(decoded.pcm, sampleRate: decoded.sampleRate)
+  }
+
+  /// Decodes compressed audio to the PCM16 the engine path takes.
+  ///
+  /// Through a temporary FILE because `AVAudioFile` is the only decoder that
+  /// takes a container without the caller having to hand-feed packet
+  /// descriptions: `AVAudioConverter` on an `AVAudioCompressedBuffer` needs
+  /// the mp3 frame table this code would have to parse itself. A reply is a
+  /// handful of sentence-sized chunks, so the write costs far less than that
+  /// parser would.
+  ///
+  /// Returns nil rather than throwing: a chunk that will not decode is one
+  /// silent sentence, and the reducer has already shown its words as a
+  /// caption. Failing the whole session over it would be worse.
+  /// `AVAudioFile` picks its decoder from the path extension, not from the
+  /// bytes, so the container has to be named correctly or a perfectly valid
+  /// file fails to open. Sniffed rather than taken from the frame's `format`
+  /// field because the gateway legitimately sends WAV as well: a PCM-only
+  /// model's audio is wrapped in a WAV container before it goes out.
+  private nonisolated static func containerExtension(of data: Data) -> String {
+    let magic = [UInt8](data.prefix(4))
+    if magic.count >= 4, magic[0] == 0x52, magic[1] == 0x49, magic[2] == 0x46, magic[3] == 0x46 {
+      return "wav"  // "RIFF"
+    }
+    if magic.count >= 4, magic[0] == 0x66, magic[1] == 0x74, magic[2] == 0x79, magic[3] == 0x70 {
+      return "m4a"  // "ftyp" — an MPEG-4 container
+    }
+    if magic.count >= 4, magic[0] == 0x63, magic[1] == 0x61, magic[2] == 0x66, magic[3] == 0x66 {
+      return "caf"  // "caff"
+    }
+    return "mp3"
+  }
+
+  nonisolated static func decode(_ data: Data) -> (pcm: Data, sampleRate: Double)? {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("dash-voice-\(UUID().uuidString)")
+      .appendingPathExtension(Self.containerExtension(of: data))
+    defer { try? FileManager.default.removeItem(at: url) }
+    guard (try? data.write(to: url, options: .atomic)) != nil else { return nil }
+    guard let file = try? AVAudioFile(forReading: url) else { return nil }
+
+    let format = file.processingFormat
+    let frames = AVAudioFrameCount(file.length)
+    guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)
+    else { return nil }
+    guard (try? file.read(into: buffer)) != nil, buffer.frameLength > 0 else { return nil }
+    guard let channels = buffer.floatChannelData else { return nil }
+
+    // Downmixed to mono, because that is what the engine path connects at and
+    // what every voice the gateway offers actually is. Averaging rather than
+    // taking channel 0 keeps a stereo master's centre image at full level.
+    let channelCount = Int(format.channelCount)
+    let count = Int(buffer.frameLength)
+    var pcm = Data(count: count * MemoryLayout<Int16>.size)
+    pcm.withUnsafeMutableBytes { raw in
+      guard let out = raw.baseAddress else { return }
+      for index in 0..<count {
+        var sum: Float = 0
+        for channel in 0..<channelCount { sum += channels[channel][index] }
+        let sample = max(-1, min(1, sum / Float(channelCount)))
+        // 32767, not 32768: the positive side of Int16 stops one short, and
+        // scaling by 32768 would wrap a full-scale sample to negative.
+        let value = Int16(sample * 32_767).littleEndian
+        out.storeBytes(of: value, toByteOffset: index * MemoryLayout<Int16>.size, as: Int16.self)
+      }
+    }
+    return (pcm, format.sampleRate)
   }
 
   func enqueuePCM(_ data: Data, sampleRate: Double) async {

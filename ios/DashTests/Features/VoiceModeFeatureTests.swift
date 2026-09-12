@@ -210,8 +210,12 @@ struct VoiceModeFeatureTests {
     #expect(harness.feature.state.assistantCaption == "chunk0 chunk1 chunk2 ")
   }
 
-  @Test("an mp3 chunk goes to the clip player instead")
-  func mp3ChunksPlayAsClips() async {
+  /// A device found this one: `playMP3` requires a `.playback` session, which
+  /// voice mode cannot adopt without evicting its own microphone, so every
+  /// reply from an mp3-only model — the shipped default among them — was
+  /// silent. Compressed chunks go down the SAME engine as PCM.
+  @Test("an mp3 chunk goes down the engine path, never the clip player")
+  func mp3ChunksGoThroughTheEngine() async {
     let harness = await Harness.started()
     let audio = Data([0x49, 0x44, 0x33])
 
@@ -226,11 +230,10 @@ struct VoiceModeFeatureTests {
       )
     )
 
-    await expectEventuallyAsync("the clip to start") { await harness.player.played == [audio] }
-    #expect(await harness.player.enqueued.isEmpty)
-    // `FakeAudioPlayer.playMP3` hangs until the clip ends — release it so the
-    // harness does not leave a task behind.
-    await harness.player.finish()
+    await expectEventuallyAsync("the chunk to be enqueued") {
+      await harness.player.enqueued.map(\.0) == [audio]
+    }
+    #expect(await harness.player.played.isEmpty, "the clip player must not be used in voice mode")
   }
 
   @Test("the gateway's own barge-in flushes what is already buffered")
@@ -352,20 +355,24 @@ struct VoiceModeFeatureTests {
       )
     )
 
-    await expectEventuallyAsync("the clip to start") { await harness.player.played.count == 1 }
-    // `FakeAudioPlayer.playMP3` hangs until the clip ends — exactly like a
-    // real one. Nothing may be acknowledged while it is still playing.
-    #expect(await harness.transport.playedCalls.isEmpty)
-
-    await harness.player.finish()
+    // Now that a compressed chunk is an engine buffer like any other, its
+    // acknowledgement waits on the same drain — which is what makes the ack
+    // mean "the user heard it" rather than "it was handed to a decoder".
+    await expectEventuallyAsync("the chunk to be enqueued") {
+      await harness.player.enqueued.count == 1
+    }
     await expectEventuallyAsync("the drain ack to be sent") {
       await harness.transport.calls.contains(.played(seq: 7))
     }
+    #expect(await harness.player.drainWaits >= 1)
   }
 
   @Test("a flush never acknowledges the audio it discarded")
   func flushNeverAcknowledges() async {
     let harness = await Harness.started()
+    // Hold the drain open so the barge-in below lands while the chunk is still
+    // playing — which is the only moment this rule has anything to say.
+    await harness.player.holdDrain()
     harness.feature.receive(.voiceState(id: "voice-1", state: .speaking, turnId: "turn-1"))
     harness.feature.receive(
       .voiceSpeech(
@@ -377,16 +384,19 @@ struct VoiceModeFeatureTests {
         text: "Sunny"
       )
     )
-    await expectEventuallyAsync("the clip to start") { await harness.player.played.count == 1 }
+    await expectEventuallyAsync("the chunk to be enqueued") {
+      await harness.player.enqueued.count == 1
+    }
 
     // The user talks over it: the gateway's barge-in flushes what is buffered.
     harness.feature.receive(.voiceState(id: "voice-1", state: .listening, turnId: nil))
     await expectEventuallyAsync("playback to be flushed") { await harness.player.flushCount == 1 }
 
-    // `player.stop()` releases the parked `playMP3`, so the chain does drain —
-    // but it drained because it was DISCARDED, which is not "played".
+    // The flush drops the buffered chunk, so the chain does drain — but it
+    // drained because it was DISCARDED, which is not "played".
     try? await Task.sleep(for: .milliseconds(50))
     #expect(await harness.transport.playedCalls.isEmpty)
+    await harness.player.releaseDrain()
   }
 
   // MARK: - Transcripts
