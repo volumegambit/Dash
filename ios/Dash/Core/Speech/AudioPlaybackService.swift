@@ -213,9 +213,17 @@ actor AudioPlaybackService: AudioPlaying {
     // `.dataPlayedBack` — NOT the default `.dataRendered`: the drain gate
     // exists to answer "has the user heard this?", and rendering happens one
     // buffer ahead of the speaker.
-    pcmPlayerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) {
-      [weak self] _ in
+    // The completion runs on AVFoundation's render-adjacent thread, outside
+    // any actor. Build the hop back onto this actor here, as a `@Sendable`
+    // closure, and hand the completion only that — Swift 6.1 (the CI
+    // toolchain) rejects creating the `Task` inside the non-Sendable
+    // completion closure as a potential data race; 6.2's region analysis
+    // accepts it, but the explicit form compiles on both.
+    let onPlayedBack: @Sendable () -> Void = { [weak self] in
       Task { await self?.pcmBufferFinished() }
+    }
+    pcmPlayerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
+      onPlayedBack()
     }
     if !pcmPlayerNode.isPlaying {
       pcmPlayerNode.play()
