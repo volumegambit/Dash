@@ -224,14 +224,17 @@ Unified semver across all packages and apps. The root `package.json` version is 
 - **Minor** (`0.1.0` → `0.2.0`) — new features, non-breaking changes
 - **Major** (`0.1.0` → `1.0.0`) — breaking changes
 
-To bump the version:
+To cut a release:
 
 ```bash
-npm version patch|minor|major    # Bumps root package.json
-npm run version:sync             # Syncs version to all packages and apps
+scripts/release.sh patch|minor|major     # --dry-run to preview
 ```
 
-Then commit all updated `package.json` files together. Do not bump version on every commit — only when a meaningful change ships.
+The script bumps the root version, runs `version:sync`, commits, tags `vX.Y.Z`, and pushes. The tag starts `.github/workflows/release.yml`, which verifies every version file agrees (`scripts/check-release-version.mjs`), runs the gates, and ships each surface. Do not bump version on every commit — only when a meaningful change ships.
+
+## Deployment
+
+`main` deploys to staging automatically after CI (`deploy-staging.yml`); a version tag deploys to production behind an approval (`release.yml`). Deploy scripts, the server image, and the setup/rollback runbook live in [`deploy/`](deploy/README.md). Never run a deploy script against a live host from an agent session; the runbook is for humans.
 
 ## Communication Style
 
