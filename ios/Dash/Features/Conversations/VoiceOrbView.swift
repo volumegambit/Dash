@@ -90,7 +90,11 @@ struct VoiceOrbView: View {
   /// `elapsed` is wall-clock seconds, and every animated case is periodic in
   /// it, so there is no start date to carry: an orb that appears mid-second
   /// simply joins the cycle where it is.
-  static func scale(for phase: VoiceModeState.Phase, level: Float, elapsed: Double) -> Double {
+  ///
+  /// `nonisolated`: pure arithmetic on value types, callable from the reducer
+  /// tests without hopping to the main actor (Swift 6.1 on CI rejects the
+  /// implicit hop that 6.2+ accepts).
+  nonisolated static func scale(for phase: VoiceModeState.Phase, level: Float, elapsed: Double) -> Double {
     switch phase {
     case .listening:
       1 + 0.05 * sin(2 * .pi * elapsed / 3)
