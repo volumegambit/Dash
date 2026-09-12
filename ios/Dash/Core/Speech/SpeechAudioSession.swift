@@ -11,16 +11,26 @@ import Foundation
 /// session themselves, because the session is process-wide and the last writer
 /// would win.
 enum SpeechAudioSession {
+  /// The hands-free Bluetooth profile option. The iOS 26 SDK renamed
+  /// `.allowBluetooth` to `.allowBluetoothHFP`; older SDKs (CI builds with
+  /// Xcode 16) only know the old name, so the choice is made at compile time
+  /// on the compiler version that ships with each SDK.
+  #if compiler(>=6.2)
+    private static let bluetoothHFP: AVAudioSession.CategoryOptions = .allowBluetoothHFP
+  #else
+    private static let bluetoothHFP: AVAudioSession.CategoryOptions = .allowBluetooth
+  #endif
+
   /// Dictation (Phase A). `.playAndRecord` rather than `.record` so an
   /// in-flight read-aloud or a notification sound is not silenced by arming
   /// the mic, `.defaultToSpeaker` so a phone with no headset records and plays
-  /// through the speaker instead of the earpiece, and `.allowBluetoothHFP` so
-  /// AirPods are a usable microphone.
+  /// through the speaker instead of the earpiece, and `bluetoothHFP` (the
+  /// hands-free Bluetooth profile) so AirPods are a usable microphone.
   static func activateRecording() throws {
     try activate(
       category: .playAndRecord,
       mode: .default,
-      options: [.defaultToSpeaker, .allowBluetoothHFP]
+      options: [.defaultToSpeaker, bluetoothHFP]
     )
   }
 
@@ -41,7 +51,7 @@ enum SpeechAudioSession {
     try activate(
       category: .playAndRecord,
       mode: .voiceChat,
-      options: [.defaultToSpeaker, .allowBluetoothHFP]
+      options: [.defaultToSpeaker, bluetoothHFP]
     )
   }
 
