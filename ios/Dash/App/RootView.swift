@@ -257,8 +257,18 @@ struct RootView: View {
     ContentUnavailableView {
       Label("Select a conversation", systemImage: "bubble.left.and.bubble.right")
     } actions: {
-      Button("New conversation") {
+      // Mirrors the list toolbar's compose affordance: while the sync
+      // engine is `.connecting` (mutations blocked but no offline banner —
+      // see `ConversationListView`'s compose button comment), show a
+      // progress label rather than an unexplained disabled button.
+      Button {
         Task { await composeFromEmptyDetail() }
+      } label: {
+        if isComposingFromDetail || composeIsConnecting {
+          ProgressView()
+        } else {
+          Text("New conversation")
+        }
       }
       .buttonStyle(.borderedProminent)
       .frame(minHeight: 44)
@@ -288,8 +298,13 @@ struct RootView: View {
     return ComposeAgentSelection.unavailableHint(
       feature.agents,
       filteredAgentID: feature.selectedAgentID,
-      mutationsAllowed: feature.mutationsAllowed
+      mutationsAllowed: feature.mutationsAllowed,
+      isConnecting: feature.isConnecting
     )
+  }
+
+  private var composeIsConnecting: Bool {
+    appModel.conversationListFeature?.isConnecting == true
   }
 
   /// The two-column layout's empty-detail compose entry point (iPad goal
