@@ -355,6 +355,8 @@ actor FakeSpeechSynthesizer: SpeechSynthesizing {
 actor FakeAudioPlayer: AudioPlaying {
   private(set) var played: [Data] = []
   private(set) var stopCount = 0
+  private var holdsDrain = false
+  private var drainWaiters: [CheckedContinuation<Void, Never>] = []
   private var continuation: CheckedContinuation<Void, Error>?
   private var failure: Error?
   private var playing = false
@@ -402,8 +404,33 @@ actor FakeAudioPlayer: AudioPlaying {
     events.append(.enqueue(data))
   }
 
+  /// Recorded exactly like a PCM enqueue, with a 0 rate marking "this arrived
+  /// compressed" — the point a voice-mode test asserts is that the chunk went
+  /// down the ENGINE path rather than `playMP3`.
+  func enqueueCompressed(_ data: Data) async {
+    enqueued.append((data, 0))
+    events.append(.enqueue(data))
+  }
+
   func awaitDrain() async {
     drainWaits += 1
+    // Parked only when a test asked for it. A real drain returns when the
+    // speaker has caught up, so a test about what happens WHILE audio is still
+    // playing needs to hold it open; every other test wants it instant.
+    guard holdsDrain else { return }
+    await withCheckedContinuation { drainWaiters.append($0) }
+  }
+
+  /// Makes the next `awaitDrain` park until `releaseDrain()`.
+  func holdDrain() {
+    holdsDrain = true
+  }
+
+  func releaseDrain() {
+    holdsDrain = false
+    let waiters = drainWaiters
+    drainWaiters = []
+    for waiter in waiters { waiter.resume() }
   }
 
   func flush() async {
