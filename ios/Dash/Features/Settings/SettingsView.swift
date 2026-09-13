@@ -15,6 +15,9 @@ struct SettingsView: View {
     // `@Environment` hands back a plain reference; `@Bindable` is what turns an
     // @Observable into something `$`-bindable for the location Toggle.
     @Bindable var feature = feature
+    // The composer Return-key preference lives in its own observable singleton
+    // so the composer and this Picker can never disagree about it.
+    @Bindable var composerPreferences = ComposerPreferences.shared
     return Form {
       Section("Gateway") {
         LabeledContent("Name") {
@@ -100,6 +103,25 @@ struct SettingsView: View {
           Your agent already knows your time zone and region. Turning this on \
           also shares your approximate coordinates, which are stored with the \
           conversation.
+          """
+        )
+      }
+
+      Section {
+        Picker("Return key", selection: $composerPreferences.returnKeySends) {
+          Text("New line").tag(false)
+          Text("Send message").tag(true)
+        }
+        .frame(minHeight: 44)
+        .accessibilityIdentifier("settings.return-key")
+      } header: {
+        Text("Composer")
+      } footer: {
+        Text(
+          """
+          What the Return key does in the message composer, on both the \
+          hardware and on-screen keyboards. Cmd+Return always sends; \
+          Shift+Return always inserts a new line.
           """
         )
       }

@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ModelsFetchSpec } from '@dash/plugin-sdk';
 import { RESERVED_PROVIDER_IDS, findCatalogPattern, validateProviderCatalog } from '@dash/plugins';
+import { clampThinkingLevel, getModel, getSupportedThinkingLevels } from '@earendil-works/pi-ai';
+import { buildModel } from './plugin-providers.js';
 
 const DIR = fileURLToPath(new URL('../plugins/dash-core-providers/providers', import.meta.url));
 
@@ -138,6 +140,55 @@ describe('bundled dash-core-providers catalogs (checked-in JSON invariants)', ()
     expect(patterns.indexOf('gpt-*-codex*')).toBeLessThan(patterns.indexOf('gpt-5.6*'));
     expect(findCatalogPattern(cat, 'gpt-5.6-codex')?.pattern).toBe('gpt-*-codex*');
     expect(findCatalogPattern(cat, 'gpt-5.6-sol')?.pattern).toBe('gpt-5.6*');
+  });
+
+  it('every bundled reasoning model resolves to a thinking level the provider accepts', async () => {
+    // A reasoning model whose `thinkingLevelMap` marks `off` unavailable
+    // (`null`) must clamp to a real level; a model that allows `off` must
+    // either tolerate a missing `reasoning_effort` (no `off` key at all) or
+    // declare the literal to send (`off: "none"`). The failure this guards is
+    // a request with reasoning silently omitted, which such providers reject.
+    const files = (await readdir(DIR)).filter((f) => f.endsWith('.json')).sort();
+    for (const f of files) {
+      const cat = validateProviderCatalog(JSON.parse(await readFile(join(DIR, f), 'utf-8')));
+      for (const model of cat.models) {
+        const built = buildModel(cat, model);
+        const levels = getSupportedThinkingLevels(built);
+        expect(levels.length, `${f}: "${model.id}" supports no thinking level`).toBeGreaterThan(0);
+
+        const resolved = clampThinkingLevel(built, 'off');
+        expect(levels, `${f}: "${model.id}" clamped to an unsupported level`).toContain(resolved);
+
+        if (model.thinkingLevelMap?.off === null) {
+          expect(resolved, `${f}: "${model.id}" requires reasoning but resolved to off`).not.toBe(
+            'off',
+          );
+        }
+      }
+    }
+  });
+
+  it('bundled thinkingLevelMaps agree with pi-ai for models pi-ai also knows', async () => {
+    // pi-ai's baked registry is the reference for reasoning requirements. Where
+    // both describe the same provider/model, a divergent `off` handling means
+    // one of them is wrong — and ours is the one that reaches the provider.
+    const files = (await readdir(DIR)).filter((f) => f.endsWith('.json')).sort();
+    const compared: string[] = [];
+    for (const f of files) {
+      const cat = validateProviderCatalog(JSON.parse(await readFile(join(DIR, f), 'utf-8')));
+      for (const model of cat.models) {
+        // biome-ignore lint/suspicious/noExplicitAny: provider/model ids are not statically known
+        const known = getModel(cat.id as any, model.id as any);
+        if (!known) continue;
+        compared.push(`${cat.id}/${model.id}`);
+        expect(
+          getSupportedThinkingLevels(buildModel(cat, model)),
+          `${f}: "${model.id}" thinking levels diverge from pi-ai`,
+        ).toEqual(getSupportedThinkingLevels(known));
+      }
+    }
+    // Guard the guard: if this drops to zero the assertion above is vacuous.
+    expect(compared.length).toBeGreaterThan(0);
   });
 
   it('no catalog deny glob shadows its own static bootstrap models', async () => {

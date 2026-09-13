@@ -13,6 +13,8 @@ export function GeneralSettings(): JSX.Element {
   const setCompanionVisible = useUIStore((s) => s.setCompanionVisible);
   const companionSelection = useUIStore((s) => s.companionSelection);
   const setCompanionSelection = useUIStore((s) => s.setCompanionSelection);
+  const composerReturnKeySends = useUIStore((s) => s.composerReturnKeySends);
+  const setComposerReturnKeySends = useUIStore((s) => s.setComposerReturnKeySends);
 
   useEffect(() => {
     window.api.getVersion().then(setVersion);
@@ -70,6 +72,27 @@ export function GeneralSettings(): JSX.Element {
           <div className="mt-5 border-t border-border pt-5">
             <GatewayRuntimeSettings />
           </div>
+        </div>
+
+        <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">
+          <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
+            Composer
+          </h2>
+          <p className="mb-3 text-xs text-muted">
+            What the Return key does in the message composer. Cmd+Return always sends and
+            Shift+Return always starts a new line.
+          </p>
+          <label className="flex cursor-pointer items-center gap-3">
+            <input
+              type="checkbox"
+              checked={composerReturnKeySends}
+              onChange={(e) => setComposerReturnKeySends(e.target.checked)}
+              className="rounded border border-border"
+            />
+            <span className="text-xs font-medium text-foreground">
+              Pressing Return sends the message
+            </span>
+          </label>
         </div>
 
         <div className="mt-6 rounded-lg border border-border bg-card-bg p-4">

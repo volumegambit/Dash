@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { ProviderConfigEntry } from '@dash/plugins';
 import { RESERVED_PROVIDER_IDS, loadPlugins } from '@dash/plugins';
 import type { Api, Model } from '@earendil-works/pi-ai';
+import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   appendPluginModels,
@@ -57,6 +58,70 @@ describe('createPluginModelCatalog', () => {
     ]);
     const model = catalog.resolve('myllm', 'm1') as Model<Api> | null;
     expect(model?.name).toBe('m1');
+  });
+
+  it('forwards thinkingLevelMap so pi-ai clamps a reasoning-required model off "off"', () => {
+    const catalog = createPluginModelCatalog([
+      entry({
+        id: 'myllm',
+        label: 'My LLM',
+        credentialPrefix: 'myllm-api-key',
+        baseUrl: 'https://x/v1',
+        api: 'openai-completions',
+        models: [
+          {
+            id: 'needs-reasoning',
+            contextWindow: 1000,
+            maxTokens: 100,
+            reasoning: true,
+            // `off: null` = this model REFUSES thinking-disabled requests.
+            thinkingLevelMap: { off: null, xhigh: 'xhigh' },
+          },
+          { id: 'off-is-fine', contextWindow: 1000, maxTokens: 100, reasoning: true },
+        ],
+      }),
+    ]);
+
+    const strict = catalog.resolve('myllm', 'needs-reasoning') as Model<Api>;
+    expect(strict.thinkingLevelMap).toEqual({ off: null, xhigh: 'xhigh' });
+    // The actual regression: asking for "off" must NOT yield "off", because a
+    // resolved level of "off" makes the host omit `reasoning_effort` and the
+    // provider then rejects the request.
+    expect(getSupportedThinkingLevels(strict)).not.toContain('off');
+    expect(clampThinkingLevel(strict, 'off')).toBe('minimal');
+
+    // A reasoning model that never declared a map keeps the old behavior:
+    // thinking off stays off, so nothing regresses for existing catalogs.
+    const lenient = catalog.resolve('myllm', 'off-is-fine') as Model<Api>;
+    expect(lenient.thinkingLevelMap).toBeUndefined();
+    expect(clampThinkingLevel(lenient, 'off')).toBe('off');
+  });
+
+  it('forwards an "off" remap so thinking-disabled still sends an explicit effort', () => {
+    const catalog = createPluginModelCatalog([
+      entry({
+        id: 'myllm',
+        label: 'My LLM',
+        credentialPrefix: 'myllm-api-key',
+        baseUrl: 'https://x/v1',
+        api: 'openai-completions',
+        models: [
+          {
+            id: 'off-means-none',
+            contextWindow: 1000,
+            maxTokens: 100,
+            reasoning: true,
+            // GPT-5-family shape: "off" is allowed, but must travel as "none".
+            thinkingLevelMap: { off: 'none', xhigh: 'xhigh' },
+          },
+        ],
+      }),
+    ]);
+    const model = catalog.resolve('myllm', 'off-means-none') as Model<Api>;
+    expect(getSupportedThinkingLevels(model)).toContain('off');
+    expect(clampThinkingLevel(model, 'off')).toBe('off');
+    // pi-ai reads this to emit `reasoning_effort: "none"` instead of omitting it.
+    expect(model.thinkingLevelMap?.off).toBe('none');
   });
 
   it('returns null for an unknown model id on a known provider', () => {

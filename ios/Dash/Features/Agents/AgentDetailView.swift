@@ -308,16 +308,6 @@ struct AgentDetailView: View {
     return lists.contains { ($0?.isEmpty == false) }
   }
 
-  /// The Memory section, grouped by `MemoryTypeDTO` bucket (the enum is
-  /// `CaseIterable` for exactly this). Swipe-to-delete is the only mutation
-  /// the phone gets — writes stay loopback-only.
-  ///
-  /// Accessibility identifiers deliberately sit on LEAF views: the section
-  /// header carries `agent.memory.list` and each row carries
-  /// `agent.memory.row.<name>`. Putting an identifier on the `Section` (a
-  /// container) makes XCUITest collapse it into one element and erases the
-  /// per-row identifiers underneath it.
-  @ViewBuilder
   /// Read-only. The mobile API exposes no skill mutation, so there is nothing
   /// to edit here — the value is seeing what the agent taught itself.
   private func skillsSection(_ agent: RegisteredAgentDTO) -> some View {
@@ -338,8 +328,15 @@ struct AgentDetailView: View {
         loadingRow("Loading skills", identifier: "agent.skills.loading")
       }
     } header: {
-      Text("Skills")
-        .accessibilityIdentifier("agent.skills.list")
+      HStack {
+        Text("Skills")
+        if let rows = feature.skills[agent.id] {
+          Text("\(rows.count)")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      }
+      .accessibilityIdentifier("agent.skills.list")
     }
   }
 
@@ -367,9 +364,16 @@ struct AgentDetailView: View {
     }
   }
 
+  /// The Memory section, grouped by `MemoryTypeDTO` bucket (the enum is
+  /// `CaseIterable` for exactly this). Each memory row is compact (1-line
+  /// truncated description + name caption) and navigates to a detail view
+  /// for full metadata. Swipe-to-delete is the only mutation the phone gets.
   private func memorySection(_ agent: RegisteredAgentDTO) -> some View {
     Section {
-      // Same nil-vs-empty distinction as `skillsSection`.
+      // `nil` means the load has not returned yet; `[]` means it returned
+      // nothing (`loadSkills` writes `[]` on failure too, so this cannot
+      // stick). Showing "No memories yet." for `nil` claimed an answer the
+      // screen did not have (finding 7).
       if let rows = feature.memories[agent.id] {
         if rows.isEmpty {
           Text("No memories yet.")
@@ -379,9 +383,20 @@ struct AgentDetailView: View {
           ForEach(MemoryTypeDTO.allCases, id: \.self) { type in
             let group = rows.filter { $0.type == type }
             if group.isEmpty == false {
-              memoryBucketHeader(memoryTypeTitle(type))
+              memoryBucketHeader("\(memoryTypeTitle(type)) (\(group.count))")
               ForEach(group) { memory in
-                memoryRow(agentID: agent.id, memory: memory)
+                NavigationLink {
+                  MemoryDetailView(memory: memory)
+                } label: {
+                  memoryRowLabel(memory: memory)
+                }
+                .accessibilityIdentifier("agent.memory.row.\(memory.name)")
+                .swipeActions(edge: .trailing) {
+                  Button("Delete", role: .destructive) {
+                    Task { await feature.deleteMemory(agentID: agent.id, name: memory.name) }
+                  }
+                  .disabled(feature.mutationsAllowed == false)
+                }
               }
             }
           }
@@ -390,8 +405,15 @@ struct AgentDetailView: View {
         loadingRow("Loading memories", identifier: "agent.memory.loading")
       }
     } header: {
-      Text("Memory")
-        .accessibilityIdentifier("agent.memory.list")
+      HStack {
+        Text("Memory")
+        if let rows = feature.memories[agent.id] {
+          Text("\(rows.count)")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      }
+      .accessibilityIdentifier("agent.memory.list")
     }
   }
 
@@ -420,23 +442,19 @@ struct AgentDetailView: View {
     .accessibilityIdentifier(identifier)
   }
 
+  /// Compact label for a memory row: 1-line truncated description + name
+  /// caption. Full metadata is shown in `MemoryDetailView` on navigation.
   @ViewBuilder
-  private func memoryRow(agentID: String, memory: MemoryInfoDTO) -> some View {
+  private func memoryRowLabel(memory: MemoryInfoDTO) -> some View {
     VStack(alignment: .leading, spacing: 2) {
       Text(memory.description)
+        .lineLimit(1)
       Text(memory.name)
         .font(.caption)
         .foregroundStyle(.secondary)
+        .lineLimit(1)
     }
     .padding(.vertical, 2)
-    .accessibilityElement(children: .combine)
-    .accessibilityIdentifier("agent.memory.row.\(memory.name)")
-    .swipeActions(edge: .trailing) {
-      Button("Delete", role: .destructive) {
-        Task { await feature.deleteMemory(agentID: agentID, name: memory.name) }
-      }
-      .disabled(feature.mutationsAllowed == false)
-    }
   }
 
   private func memoryTypeTitle(_ type: MemoryTypeDTO) -> String {
@@ -679,6 +697,33 @@ struct SkillDetailView: View {
     .navigationTitle(skill.name)
     .navigationBarTitleDisplayMode(.inline)
     .accessibilityIdentifier("skill.detail.\(skill.name)")
+  }
+}
+
+/// Read-only detail view for a single memory entry. Shows the full metadata
+/// that the compact 1-line row on the agent detail screen omits.
+struct MemoryDetailView: View {
+  let memory: MemoryInfoDTO
+
+  var body: some View {
+    List {
+      Section {
+        Text(memory.description)
+          .textSelection(.enabled)
+      }
+
+      Section {
+        LabeledContent("Name", value: memory.name)
+        LabeledContent("Type", value: memory.type.rawValue.capitalized)
+        LabeledContent("Source", value: memory.source)
+        LabeledContent("Created", value: memory.createdAt)
+        LabeledContent("Updated", value: memory.updatedAt)
+        LabeledContent("Size", value: "\(memory.size) chars")
+      }
+    }
+    .navigationTitle(memory.name)
+    .navigationBarTitleDisplayMode(.inline)
+    .accessibilityIdentifier("memory.detail.\(memory.name)")
   }
 }
 

@@ -399,11 +399,24 @@ describe('ChatView', () => {
   });
 
   // Cross-client composer key contract (UI-quality goal, Phase D). Driven by
-  // scripts/fixtures/composer-key-contract.json, the same file the iOS suite
-  // reads, so a handler change on one client that silently diverges from the
-  // agreed contract fails here instead of being noticed months later by a
-  // human with a hardware keyboard.
+  // scripts/fixtures/composer-key-contract.json, the same file the iOS and
+  // Mission Control suites read, so a handler change on one client that
+  // silently diverges from the agreed contract fails here instead of being
+  // noticed months later by a human with a hardware keyboard.
   describe('composer key contract', () => {
+    type ClientAnswer = 'send' | 'newline' | 'focus';
+    interface EnterCase {
+      name: string;
+      key: string;
+      shift: boolean;
+      meta: boolean;
+      web?: ClientAnswer;
+      mechanism?: { web: 'handler' | 'native' };
+      enter?: {
+        newline: { web: ClientAnswer; mechanism?: { web: 'handler' | 'native' } };
+        send: { web: ClientAnswer };
+      };
+    }
     const contract = JSON.parse(
       // `import.meta.dirname`, not `new URL(..., import.meta.url)`: this file
       // runs under happy-dom, whose global `URL` polyfill rejects `file:`.
@@ -412,19 +425,26 @@ describe('ChatView', () => {
         join(import.meta.dirname, '../../../../scripts/fixtures/composer-key-contract.json'),
         'utf8',
       ),
-    ) as {
-      cases: {
-        name: string;
-        key: string;
-        shift: boolean;
-        meta: boolean;
-        web: 'send' | 'newline' | 'focus';
-        mechanism?: { web: 'handler' | 'native' };
-      }[];
-    };
+    ) as { cases: EnterCase[] };
 
-    for (const testCase of contract.cases) {
-      it(`${testCase.name} -> ${testCase.web}`, async () => {
+    const RETURN_KEY = 'dash.composer.returnKeySends';
+
+    // Plain Return is now configurable, so its row carries an `enter` map and
+    // is exercised in BOTH modes; modifier rows keep a flat `web` answer.
+    function runCase(
+      testCase: EnterCase,
+      web: ClientAnswer,
+      mechanism: { web: 'handler' | 'native' } | undefined,
+      returnKeySends: boolean,
+    ): void {
+      it(`${testCase.name} -> ${web} (returnKeySends=${returnKeySends})`, async () => {
+        // The handler reads the setting once at mount (useMemo on
+        // isReturnKeySendsEnabled), so seed localStorage before rendering.
+        if (returnKeySends) {
+          localStorage.setItem(RETURN_KEY, '1');
+        } else {
+          localStorage.removeItem(RETURN_KEY);
+        }
         const { sockets } = await renderConnected();
         const input = screen.getByLabelText('Message') as HTMLTextAreaElement;
         fireEvent.change(input, { target: { value: 'draft' } });
@@ -436,17 +456,17 @@ describe('ChatView', () => {
           metaKey: testCase.meta,
         });
 
-        if (testCase.web === 'send') {
+        if (web === 'send') {
           await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
           expect(input.value).not.toContain('\n');
-        } else if (testCase.web === 'newline' && testCase.mechanism?.web === 'native') {
+        } else if (web === 'newline' && mechanism?.web === 'native') {
           // The platform inserts the break, so there is nothing in the draft
           // to assert — a synthetic keydown performs no default action. What
           // IS assertable, and what actually broke on iOS, is that the
           // handler declined the key: nothing sent, default not prevented.
           expect(sockets[0].turnFrames).toHaveLength(0);
           expect(notCancelled).toBe(true);
-        } else if (testCase.web === 'newline') {
+        } else if (web === 'newline') {
           await waitFor(() => expect(input.value).toContain('\n'));
           expect(sockets[0].turnFrames).toHaveLength(0);
         } else {
@@ -455,6 +475,15 @@ describe('ChatView', () => {
           expect(sockets[0].turnFrames).toHaveLength(0);
         }
       });
+    }
+
+    for (const testCase of contract.cases) {
+      if (testCase.enter) {
+        runCase(testCase, testCase.enter.newline.web, testCase.enter.newline.mechanism, false);
+        runCase(testCase, testCase.enter.send.web, undefined, true);
+      } else if (testCase.web) {
+        runCase(testCase, testCase.web, testCase.mechanism, false);
+      }
     }
   });
 
@@ -787,17 +816,34 @@ describe('ChatView scroll pinning wiring (chat-ux Phase 2 Task 3, audit #4)', ()
 });
 
 describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
-  it('Enter sends the drafted message; Shift+Enter does not', async () => {
+  it('Enter inserts a newline by default; Shift+Enter also does not send', async () => {
     const { sockets } = await renderConnected();
-    const textarea = screen.getByLabelText('Message');
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: 'hello' } });
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
     expect(sockets[0].turnFrames).toHaveLength(0);
 
+    // Plain Enter now inserts a newline rather than sending — the default
+    // `returnKeySends` is false. The send mode is exercised by the composer
+    // key contract cases above (which seed the setting before render).
     fireEvent.keyDown(textarea, { key: 'Enter' });
-    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
-    expect(sockets[0].turnFrames[0]).toMatchObject({ type: 'message', text: 'hello' });
+    expect(sockets[0].turnFrames).toHaveLength(0);
+  });
+
+  it('Enter sends when the returnKeySends setting is on', async () => {
+    localStorage.setItem('dash.composer.returnKeySends', '1');
+    try {
+      const { sockets } = await renderConnected();
+      const textarea = screen.getByLabelText('Message');
+
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+      await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+      expect(sockets[0].turnFrames[0]).toMatchObject({ type: 'message', text: 'hello' });
+    } finally {
+      localStorage.removeItem('dash.composer.returnKeySends');
+    }
   });
 
   it('ignores Enter while an IME composition is in progress (isComposing, and the legacy keyCode 229 fallback)', async () => {

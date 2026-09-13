@@ -579,8 +579,23 @@ export function isUnknownTool(name: string): boolean {
  * because each client's handler was only ever tested against itself. */
 export type ComposerKeyAction = 'send' | 'newline' | 'focus';
 
-export function composerKeyAction(key: string, shift: boolean, meta: boolean): ComposerKeyAction {
-  if (key === 'Enter') return shift ? 'newline' : 'send';
+/**
+ * `returnKeySends` carries the user's "what does plain Return do" setting
+ * (default false = newline). When false plain Return inserts a newline; when
+ * true it sends. Shift+Return always inserts a newline, Cmd+Return always
+ * sends — those rows are unchanged by the setting.
+ */
+export function composerKeyAction(
+  key: string,
+  shift: boolean,
+  meta: boolean,
+  returnKeySends: boolean,
+): ComposerKeyAction {
+  if (key === 'Enter') {
+    if (meta) return 'send';
+    if (shift) return 'newline';
+    return returnKeySends ? 'send' : 'newline';
+  }
   if (key === 'Tab') return shift ? 'newline' : 'focus';
   return 'focus';
 }
@@ -594,7 +609,8 @@ export function composerKeyMechanism(
   key: string,
   shift: boolean,
   meta: boolean,
+  returnKeySends: boolean,
 ): 'handler' | 'native' | null {
-  if (composerKeyAction(key, shift, meta) !== 'newline') return null;
+  if (composerKeyAction(key, shift, meta, returnKeySends) !== 'newline') return null;
   return key === 'Tab' ? 'handler' : 'native';
 }

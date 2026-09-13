@@ -18,6 +18,8 @@ import {
   TOOL_DESCRIPTIONS,
   TOOL_GROUPS,
 } from '../../components/deploy-options.js';
+import { useAgentMemoryStore } from '../../stores/agent-memory.js';
+import { useAgentSkillsStore } from '../../stores/agent-skills.js';
 import { useAgentsStore } from '../../stores/agents.js';
 import { useChannelsStore } from '../../stores/messaging-apps.js';
 import { AgentConfigTab } from './-components/AgentConfigTab.js';
@@ -124,7 +126,7 @@ export function AgentDetail(): JSX.Element {
   if (!agent) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
-        <p className="text-muted">Agent not found.</p>
+        <p className="text-muted">Squad member not found.</p>
         <Link
           to="/agents"
           className="inline-flex items-center gap-2 text-sm text-accent hover:text-primary-hover"
@@ -279,7 +281,11 @@ export function AgentDetail(): JSX.Element {
       {/* Tab content */}
       <div className="flex-1 p-8 overflow-y-auto">
         {activeTab === 'overview' && (
-          <OverviewTab agent={agent} connectedChannels={connectedChannels} />
+          <OverviewTab
+            agent={agent}
+            connectedChannels={connectedChannels}
+            onSwitchTab={setActiveTab}
+          />
         )}
         {activeTab === 'configuration' && (
           <AgentConfigTab
@@ -391,10 +397,25 @@ function ToolsCard({ tools }: { tools: string[] }): JSX.Element {
 function OverviewTab({
   agent,
   connectedChannels,
+  onSwitchTab,
 }: {
   agent: GatewayAgent;
   connectedChannels: GatewayChannel[];
+  onSwitchTab: (tab: TabId) => void;
 }): JSX.Element {
+  const { memories, loading: memLoading } = useAgentMemoryStore();
+  const { skills, loading: skillsLoading } = useAgentSkillsStore();
+
+  // Load memory + skills data for the summary cards. The stores are
+  // module-global and also used by the dedicated Memory/Skills tabs, so if
+  // the user already visited those tabs the data is cached.
+  useEffect(() => {
+    void useAgentMemoryStore.getState().load(agent.id);
+  }, [agent.id]);
+  useEffect(() => {
+    void useAgentSkillsStore.getState().load(agent.id);
+  }, [agent.id]);
+
   // Agent-detail refinement (2026-09-07). This used to be a fixed 360px column
   // of cards beside a "Recent Activity" card that nothing ever wrote to — it
   // read "No activity recorded." for every agent, forever, and took the whole
@@ -459,6 +480,94 @@ function OverviewTab({
             ))
           )}
         </div>
+      </div>
+
+      {/* Memory summary card */}
+      <SummaryCard
+        title="Memory"
+        count={memLoading ? null : memories.length}
+        loading={memLoading}
+        emptyText="No memories yet."
+        items={memories.slice(0, 5).map((m) => ({
+          primary: m.description,
+          secondary: m.name,
+        }))}
+        onViewAll={() => onSwitchTab('memory')}
+      />
+
+      {/* Skills summary card */}
+      <SummaryCard
+        title="Skills"
+        count={skillsLoading ? null : skills.length}
+        loading={skillsLoading}
+        emptyText="No skills yet."
+        items={skills.slice(0, 5).map((s) => ({
+          primary: s.name,
+          secondary: s.description,
+        }))}
+        onViewAll={() => onSwitchTab('skills')}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Summary card (used by Overview tab for Memory + Skills)
+// ---------------------------------------------------------------------------
+
+function SummaryCard({
+  title,
+  count,
+  loading,
+  emptyText,
+  items,
+  onViewAll,
+}: {
+  title: string;
+  count: number | null;
+  loading: boolean;
+  emptyText: string;
+  items: { primary: string; secondary?: string }[];
+  onViewAll: () => void;
+}): JSX.Element {
+  return (
+    <div className="bg-card-bg border border-border overflow-hidden">
+      <div className="px-5 py-3 border-b border-border flex items-center justify-between">
+        <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+          {title}
+        </span>
+        {count !== null && (
+          <span className="font-[family-name:var(--font-mono)] text-[10px] text-muted">
+            {count}
+          </span>
+        )}
+      </div>
+      <div className="p-5 flex flex-col gap-2">
+        {loading ? (
+          <p className="text-sm text-muted">Loading…</p>
+        ) : items.length === 0 ? (
+          <p className="text-sm text-muted">{emptyText}</p>
+        ) : (
+          <>
+            {items.map((item, i) => (
+              <div key={`${item.primary}-${i}`} className="text-sm">
+                <span className="text-foreground truncate block">{item.primary}</span>
+                {item.secondary && (
+                  <span className="text-muted text-xs truncate block">{item.secondary}</span>
+                )}
+              </div>
+            ))}
+            {count !== null && count > items.length && (
+              <button
+                type="button"
+                onClick={onViewAll}
+                className="mt-1 text-xs text-accent hover:text-primary-hover text-left"
+              >
+                View all {count} →
+              </button>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

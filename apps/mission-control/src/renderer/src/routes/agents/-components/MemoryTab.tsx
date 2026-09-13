@@ -56,15 +56,26 @@ export function MemoryList({
   onOpen: (name: string) => void;
   onRemove: (name: string) => void;
 }): JSX.Element {
+  const [query, setQuery] = useState('');
+  const [expandedName, setExpandedName] = useState<string | null>(null);
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return memories;
+    const q = query.toLowerCase();
+    return memories.filter(
+      (m) => m.name.toLowerCase().includes(q) || m.description.toLowerCase().includes(q),
+    );
+  }, [memories, query]);
+
   const groups = useMemo(
     () =>
-      TYPE_ORDER.map((type) => ({ type, items: memories.filter((m) => m.type === type) })).filter(
+      TYPE_ORDER.map((type) => ({ type, items: filtered.filter((m) => m.type === type) })).filter(
         (g) => g.items.length > 0,
       ),
-    [memories],
+    [filtered],
   );
 
-  if (groups.length === 0) {
+  if (memories.length === 0) {
     return (
       <p className="text-sm text-muted">No memories yet. The agent saves them as it learns.</p>
     );
@@ -72,22 +83,70 @@ export function MemoryList({
 
   return (
     <div className="space-y-4">
+      {/* Search filter — only when there are enough memories to warrant it */}
+      {memories.length > 5 && (
+        <input
+          type="search"
+          placeholder="Filter memories…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="w-full border border-border bg-sidebar-hover px-3 py-2 text-sm"
+        />
+      )}
+
+      {/* Result count when filtering */}
+      {query && (
+        <p className="text-xs text-muted">
+          {filtered.length} of {memories.length} memories match
+        </p>
+      )}
+
+      {/* Empty filter result */}
+      {query && groups.length === 0 && (
+        <p className="text-sm text-muted">No memories match “{query}”.</p>
+      )}
+
       {groups.map((g) => (
         <section key={g.type}>
-          <h3 className="mb-1 text-sm font-semibold">{TYPE_LABEL[g.type]}</h3>
+          <h3 className="mb-1 text-sm font-semibold">
+            {TYPE_LABEL[g.type]} <span className="text-muted font-normal">({g.items.length})</span>
+          </h3>
           <ul className="divide-y divide-border border border-border">
             {g.items.map((m) => (
-              <li key={m.name} className="flex items-center gap-3 px-3 py-2 text-sm">
-                <button type="button" className="flex-1 text-left" onClick={() => onOpen(m.name)}>
-                  <span className="font-mono text-xs text-muted">{m.name}</span>
-                  <span className="ml-2">{m.description}</span>
-                </button>
-                <span className="text-xs text-muted">
-                  {m.source} · {m.updatedAt}
-                </span>
-                <button type="button" className={BTN} onClick={() => onRemove(m.name)}>
-                  Delete
-                </button>
+              <li key={m.name} className="px-3 py-2 text-sm">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    className="flex-1 text-left"
+                    onClick={() => setExpandedName(expandedName === m.name ? null : m.name)}
+                  >
+                    <span className="font-mono text-xs text-muted">{m.name}</span>
+                    <span className="ml-2 block truncate text-foreground">{m.description}</span>
+                  </button>
+                  <span className="text-xs text-muted whitespace-nowrap">{m.source}</span>
+                </div>
+                {/* Expanded metadata row */}
+                {expandedName === m.name && (
+                  <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
+                    <span className="text-xs text-muted">Updated {m.updatedAt}</span>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        className="text-xs text-accent hover:text-primary-hover"
+                        onClick={() => onOpen(m.name)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="text-xs text-red-400 hover:text-red-300"
+                        onClick={() => onRemove(m.name)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                )}
               </li>
             ))}
           </ul>
@@ -142,16 +201,31 @@ export function MemoryTab({ agentId }: { agentId: string }): JSX.Element {
         </>
       )}
 
+      {/* Modal overlay for editing — keeps the list in place rather than
+          pushing content down when the EditForm opens inline. */}
       {editing && (
-        <EditForm
-          key={editing.name}
-          memory={editing}
-          onCancel={() => setEditing(null)}
-          onSubmit={async (input) => {
-            await put(agentId, editing.name, input);
-            setEditing(null);
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setEditing(null);
           }}
-        />
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setEditing(null);
+          }}
+          role="presentation"
+        >
+          <div className="max-h-[80vh] w-full max-w-2xl overflow-y-auto border border-border bg-surface p-6">
+            <EditForm
+              key={editing.name}
+              memory={editing}
+              onCancel={() => setEditing(null)}
+              onSubmit={async (input) => {
+                await put(agentId, editing.name, input);
+                setEditing(null);
+              }}
+            />
+          </div>
+        </div>
       )}
     </div>
   );
@@ -172,13 +246,18 @@ function EditForm({
 
   return (
     <form
-      className="space-y-2 border border-border bg-card-bg p-4"
+      className="space-y-2"
       onSubmit={(e) => {
         e.preventDefault();
         void onSubmit({ description, type, content });
       }}
     >
-      <div className="font-mono text-xs text-muted">{memory.name}</div>
+      <div className="flex items-center justify-between">
+        <div className="font-mono text-xs text-muted">{memory.name}</div>
+        <button type="button" className="text-muted hover:text-foreground" onClick={onCancel}>
+          ✕
+        </button>
+      </div>
       <input
         className={FIELD}
         aria-label="Description"

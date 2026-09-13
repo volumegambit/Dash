@@ -1,6 +1,10 @@
 {
-  "note": "Cross-client composer key contract (UI-quality goal, Phase D). The single source of truth for what each key does in the message composer on each client. Consumed by apps/web/src/ui/ChatView.test.tsx and, for the shared decision logic, by the iOS suite. Add a row here BEFORE changing a composer key handler on any client.",
-  "why": "Shift+Enter inserted a newline on web and Mission Control and was silently impossible on iOS for months: SwiftUI's onSubmit fires on every Return with no modifier awareness, so a hardware keyboard could not type a newline at all. Every test on every client passed. A per-client handler tested only against itself cannot see that. These rows are deliberately allowed to differ per client where the platform demands it (iOS Return), so the fixture documents intended divergence rather than pretending the clients are identical \u2014 what it forbids is UNINTENDED divergence.",
+  "note": "Cross-client composer key contract (UI-quality goal, Phase D). The single source of truth for what each key does in the message composer on each client. Consumed by apps/web/src/ui/ChatView.test.tsx, apps/mission-control/src/renderer/src/routes/chat.helpers.test.ts, and, for the shared decision logic, by the iOS suite. Add a row here BEFORE changing a composer key handler on any client.",
+  "why": "Shift+Enter inserted a newline on web and Mission Control and was silently impossible on iOS for months: SwiftUI's onSubmit fires on every Return with no modifier awareness, so a hardware keyboard could not type a newline at all. Every test on every client passed. A per-client handler tested only against itself cannot see that. These rows are deliberately allowed to differ per client where the platform demands it, so the fixture documents intended divergence rather than pretending the clients are identical \u2014 what it forbids is UNINTENDED divergence.",
+  "enterKeySetting": {
+    "note": "Plain Enter is configurable on every client via a shared user setting `returnKeySends` (default false, i.e. Enter inserts a newline). A row whose `enter` map is present is mode-dependent: `enter.newline` is the answer when returnKeySends is false, `enter.send` when true. Every other row keeps the flat `ios`/`web`/`mc` fields because its answer is the same regardless of the setting.",
+    "default": "newline"
+  },
   "actions": {
     "send": "submits the draft",
     "newline": "inserts a line break into the draft, does not submit",
@@ -12,13 +16,20 @@
       "key": "Enter",
       "shift": false,
       "meta": false,
-      "ios": "newline",
-      "web": "send",
-      "mc": "send",
-      "note": "iOS deliberately differs: on a hardware keyboard Return is the natural newline and Cmd+Return sends, matching the send button's existing shortcut. Changed 2026-09-05.",
-      "mechanism": {
-        "ios": "native"
-      }
+      "enter": {
+        "newline": {
+          "ios": "newline",
+          "web": "newline",
+          "mc": "newline",
+          "mechanism": { "ios": "handler", "web": "native", "mc": "native" }
+        },
+        "send": {
+          "ios": "send",
+          "web": "send",
+          "mc": "send"
+        }
+      },
+      "note": "Configurable since 2026-09-13: plain Enter inserts a newline by default (returnKeySends=false) or sends (returnKeySends=true). Before this the clients hardcoded it out of step (iOS newline, web/mc send) and, on iOS, hardware Enter did nothing because the vertical TextField did not reliably splice a hardware Return. iOS now handles the newline itself; web/mc let the textarea insert it natively."
     },
     {
       "name": "Shift+Return",
@@ -30,7 +41,7 @@
       "mc": "newline",
       "note": "The row that was broken on iOS and correct everywhere else. All three rely on the platform's own newline: the handler's job is to DECLINE the key, which is exactly what iOS's onSubmit could not do.",
       "mechanism": {
-        "ios": "native",
+        "ios": "handler",
         "web": "native",
         "mc": "native"
       }

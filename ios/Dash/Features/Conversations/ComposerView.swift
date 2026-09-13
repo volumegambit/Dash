@@ -5,12 +5,16 @@ import UniformTypeIdentifiers
 
 /// What a key does in the composer on iOS (UI-quality goal, Phase D).
 ///
-/// A declaration, not a description: `ComposerView` routes its Shift+Tab
-/// branch through `action(key:shift:command:)`, and
+/// A declaration, not a description: `ComposerView` routes its Return and
+/// Shift+Tab branches through `action(key:shift:command:returnKeySends:)`, and
 /// `ComposerKeyContractTests` cross-checks every case against the `ios`
 /// column of `scripts/fixtures/composer-key-contract.json` — the same file
-/// the web suite generates its tests from. Changing the behaviour on one side
-/// without the other fails the build's tests.
+/// the web and Mission Control suites generate their tests from. Changing the
+/// behaviour on one side without the other fails the build's tests.
+///
+/// Plain Return is configurable via `returnKeySends` (the user's Settings
+/// choice, default false = newline); see
+/// `docs/plans/2026-09-13-composer-return-key-configurable-design.md`.
 ///
 /// Why it exists: Shift+Return inserted a newline on web and Mission Control
 /// and was silently impossible here, because SwiftUI's `onSubmit` fires on
@@ -36,13 +40,22 @@ enum ComposerKeyContract {
     case native
   }
 
-  static func action(key: String, shift: Bool, command: Bool) -> Action {
+  /// `returnKeySends` carries the user's "what does plain Return do" setting
+  /// (`ComposerPreferences.shared.returnKeySends`, default false). When false
+  /// plain Return inserts a newline; when true it sends. The modifier rows are
+  /// unchanged by it: Shift+Return always inserts a newline, ⌘Return always
+  /// sends.
+  static func action(key: String, shift: Bool, command: Bool, returnKeySends: Bool) -> Action {
     switch (key, shift, command) {
     // ⌘Return sends — the send button carries this shortcut.
     case ("Enter", _, true): .send
-    // Return and Shift+Return both insert a newline. `TextField` does it
-    // natively once `.onSubmit` is gone; the composer must not intercept.
-    case ("Enter", _, false): .newline
+    // Shift+Return always inserts a newline, on every client (see the
+    // fixture's Shift+Return row).
+    case ("Enter", true, false): .newline
+    // Plain Return: the user's setting decides. `TextField` did NOT splice a
+    // hardware Return natively (that assumption was the 2026-09-13 bug), so
+    // the composer handles this itself — see `ComposerView`'s `.onKeyPress`.
+    case ("Enter", false, false): returnKeySends ? .send : .newline
     // Shift+Tab is a deliberate override of reverse focus traversal.
     case ("Tab", true, _): .newline
     // Plain Tab is deliberately NOT overridden: taking both directions would
@@ -52,15 +65,25 @@ enum ComposerKeyContract {
     }
   }
 
-  static func mechanism(key: String, shift: Bool, command: Bool) -> Mechanism? {
-    guard action(key: key, shift: shift, command: command) == .newline else { return nil }
-    // Only Shift+Tab is spliced by this app; Return relies on `TextField`.
-    return key == "Tab" ? .handler : .native
+  static func mechanism(
+    key: String, shift: Bool, command: Bool, returnKeySends: Bool
+  ) -> Mechanism? {
+    guard action(key: key, shift: shift, command: command, returnKeySends: returnKeySends) == .newline
+    else { return nil }
+    // Both Enter and Shift+Tab are spliced by this app now: the 2026-09-13 bug
+    // was that Return relied on `TextField` to insert the newline natively,
+    // which a hardware keyboard never did on iPad.
+    return .handler
   }
 }
 
 struct ComposerView: View {
   @Environment(ChatFeature.self) private var feature
+  /// The "what does Return do" setting. Read inline so `body` observes it
+  /// (`ComposerPreferences` is `@Observable`) — flipping it in Settings
+  /// re-evaluates `submitLabel` and the `.onKeyPress` branch here without any
+  /// extra plumbing.
+  private var prefs: ComposerPreferences { .shared }
   /// Speech is a property of the CONNECTED GATEWAY, not of a conversation:
   /// `AppModel.gatewayCapabilities` is the one place that knows whether this
   /// gateway advertises `speech-v1`, so the mic is gated from here rather
@@ -161,34 +184,57 @@ struct ComposerView: View {
             .focused($isDraftFocused)
             .accessibilityIdentifier("chat.composer")
             .keyboardShortcut("l", modifiers: .command)
-            // Return inserts a newline; ⌘Return sends (the send button already
-            // carries that shortcut). Previously `.onSubmit` fired on every
-            // Return, and SwiftUI's `onSubmit` has no modifier awareness — so
-            // with a hardware keyboard there was NO way to type a newline in
-            // the composer at all. `.submitLabel(.send)` goes with it, so the
-            // software keyboard's return key stops advertising a send it no
-            // longer performs.
-            .onKeyPress(keys: [.tab], phases: .down) { press in
-              // Through the contract, so the declaration is load-bearing rather
-              // than decorative: if the table changes, this branch changes with
-              // it and `ComposerKeyContractTests` checks both against the shared
-              // fixture.
-              let shift = press.modifiers.contains(.shift)
-              let action = ComposerKeyContract.action(
-                key: "Tab", shift: shift, command: press.modifiers.contains(.command))
-              guard action == .newline else { return .ignored }
+            // Return is routed through the contract, so the declaration stays
+            // load-bearing. Historically this relied on SwiftUI's `TextField`
+            // splicing Return "natively" once `.onSubmit` was gone — but on
+            // iPad a hardware Return never produced the newline (the
+            // 2026-09-13 bug). So the composer now splices it itself, exactly
+            // as the Shift+Tab branch always has. The `.submitLabel`/`.onSubmit`
+            // pair below is ONLY for the on-screen keyboard (hardware Return is
+            // swallowed by `.onKeyPress`): in send mode the on-screen return
+            // key advertises and performs a send; otherwise the key inserts a
+            // newline and is labelled `.return`.
+            .submitLabel(prefs.returnKeySends ? .send : .return)
+            .onKeyPress(keys: [.return, .tab], phases: .down) { press in
               guard feature.draftEditingAllowed else { return .ignored }
-              // Appends rather than splitting at the caret: SwiftUI's
-              // `TextField` does not expose a selection, and reaching one
-              // would mean replacing the whole input with a `UITextView`
-              // wrapper. Return already gives a caret-correct newline here,
-              // so this is the redundant convenience path.
-              //
-              // Through `updateDraft`, not `state.draft` directly — that is
-              // the path `draftBinding` uses, and the one that persists the
-              // per-conversation draft.
-              Task { await feature.updateDraft(feature.state.draft + "\n") }
-              return .handled
+              let key = press.key == .return ? "Enter" : "Tab"
+              let shift = press.modifiers.contains(.shift)
+              let command = press.modifiers.contains(.command)
+              let action = ComposerKeyContract.action(
+                key: key,
+                shift: shift,
+                command: command,
+                returnKeySends: prefs.returnKeySends)
+              // ⌘Return is deliberately declined here so the send button's own
+              // `.keyboardShortcut(.return, modifiers: .command)` handles it —
+              // handling it twice would double-send.
+              if press.key == .return, command { return .ignored }
+              switch action {
+              case .newline:
+                // Appends rather than splitting at the caret: SwiftUI's
+                // `TextField` does not expose a selection, and reaching one
+                // would mean replacing the whole input with a `UITextView`
+                // wrapper. Documented in the design doc as a known limitation.
+                Task { await feature.updateDraft(feature.state.draft + "\n") }
+                return .handled
+              case .send:
+                actionFeedbackTick += 1
+                Task { await feature.send() }
+                return .handled
+              case .focus:
+                return .ignored
+              }
+            }
+            .composerSubmit(enabled: prefs.returnKeySends) {
+              // On-screen keyboard send ONLY, and only in send mode. Hardware
+              // Return is already consumed (and modifier-checked) by the
+              // `.onKeyPress` above (`return .handled` suppresses `.onSubmit`),
+              // so this reaches the software keyboard's return key. In newline
+              // mode this modifier is a no-op so the on-screen key keeps
+              // inserting a newline.
+              guard feature.canSend else { return }
+              actionFeedbackTick += 1
+              Task { await feature.send() }
             }
 
           primaryAction
@@ -666,6 +712,23 @@ enum ComposerDraftStatusPresentation {
       nil
     case .failed:
       ChipLabel(text: "Draft couldn't be saved", systemImage: "exclamationmark.circle")
+    }
+  }
+}
+
+private extension View {
+  /// Attaches `.onSubmit` only when `enabled` — a conditional modifier, because
+  /// SwiftUI has no `.onSubmit(active:action:)`. The composer needs this
+  /// because attaching `.onSubmit` at all converts a vertical-axis `TextField`'s
+  /// on-screen return key from "insert a newline" into "submit": in newline
+  /// mode (`enabled == false`) the on-screen key must keep inserting newlines,
+  /// so the modifier must not be present at all rather than present-and-guarded.
+  @ViewBuilder
+  func composerSubmit(enabled: Bool, action: @escaping () -> Void) -> some View {
+    if enabled {
+      onSubmit(action)
+    } else {
+      self
     }
   }
 }

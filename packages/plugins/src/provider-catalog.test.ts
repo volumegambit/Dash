@@ -54,6 +54,61 @@ describe('validateProviderCatalog', () => {
     expect(m.compat).toEqual({ foo: 'bar' });
   });
 
+  it('preserves a thinkingLevelMap, keeping string remaps and null removals', () => {
+    const cat = validateProviderCatalog({
+      ...minimalRaw(),
+      models: [
+        {
+          id: 'm',
+          contextWindow: 1000,
+          maxTokens: 100,
+          reasoning: true,
+          thinkingLevelMap: { off: null, low: 'LOW', medium: null, high: 'HIGH', xhigh: 'xhigh' },
+        },
+      ],
+    });
+    expect(cat.models[0].thinkingLevelMap).toEqual({
+      off: null,
+      low: 'LOW',
+      medium: null,
+      high: 'HIGH',
+      xhigh: 'xhigh',
+    });
+  });
+
+  it('drops unknown levels and malformed values from a thinkingLevelMap', () => {
+    const cat = validateProviderCatalog({
+      ...minimalRaw(),
+      models: [
+        {
+          id: 'm',
+          contextWindow: 1000,
+          maxTokens: 100,
+          reasoning: true,
+          thinkingLevelMap: { off: null, ultra: 'nope', low: 42, high: 'HIGH' },
+        },
+      ],
+    });
+    expect(cat.models[0].thinkingLevelMap).toEqual({ off: null, high: 'HIGH' });
+  });
+
+  it('omits thinkingLevelMap entirely when absent or unusable', () => {
+    const base = minimalRaw();
+    const absent = validateProviderCatalog(base);
+    expect(absent.models[0].thinkingLevelMap).toBeUndefined();
+
+    // An all-garbage map must read as "absent" (every level available), never
+    // as an empty map (which getSupportedThinkingLevels would not narrow, but
+    // which would still be a misleading value to persist).
+    for (const bad of [{ nope: 1 }, 'off', 42, null, ['off']]) {
+      const cat = validateProviderCatalog({
+        ...base,
+        models: [{ id: 'm', contextWindow: 1, maxTokens: 1, thinkingLevelMap: bad }],
+      });
+      expect(cat.models[0].thinkingLevelMap).toBeUndefined();
+    }
+  });
+
   it('preserves recognized optional top-level fields', () => {
     const cat = validateProviderCatalog({
       ...minimalRaw(),

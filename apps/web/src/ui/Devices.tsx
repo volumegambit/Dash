@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ControlPlaneClient, PairingInfo } from '../auth/control-plane.js';
 import type { CredentialStore } from '../auth/credential-store.js';
+import { ComposerSetting } from './ComposerSetting.js';
 import { PreciseLocationSetting } from './PreciseLocationSetting.js';
 
 export interface DevicesProps {
@@ -123,6 +124,7 @@ export function Devices({
         </ul>
       )}
       <PreciseLocationSetting />
+      <ComposerSetting />
     </div>
   );
 }

@@ -51,6 +51,7 @@
       "apps/gateway/plugins/dash-core-providers/**",
       ".claude/**",
       ".worktrees/**",
+      ".superpowers/**",
       "apps/website/.next/**"
     ]
   }

@@ -54,6 +54,9 @@
         "output": 4,
         "cacheRead": 0.19,
         "cacheWrite": 0
+      },
+      "thinkingLevelMap": {
+        "off": null
       }
     }
   ],

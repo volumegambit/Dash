@@ -1,6 +1,7 @@
 import type { ConversationMessage } from '@dash/mobile-contract';
 import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Transcript } from '../state/assemble.js';
+import { isReturnKeySendsEnabled } from '../state/composer.js';
 import { useWebAppStore } from './Shell.js';
 import {
   IMAGE_MEDIA_TYPES,
@@ -724,6 +725,9 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   const [draft, setDraftState] = useState('');
   const [sendError, setSendError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // "What does Return do" — read once on mount; the Settings control lives
+  // elsewhere and this value is stable for the lifetime of a composer render.
+  const returnKeySends = useMemo(() => isReturnKeySendsEnabled(), []);
 
   const updateDraft = useCallback(
     (text: string) => {
@@ -1119,7 +1123,17 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
                 });
                 return;
               }
+              // Cmd/Ctrl+Return always sends, regardless of the setting.
+              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                void handleSend();
+                return;
+              }
               if (event.key !== 'Enter' || event.shiftKey) return;
+              // Plain Enter only sends when the user has opted in via Settings
+              // (returnKeySends). Otherwise the textarea inserts the newline
+              // natively — the handler declines, exactly like Shift+Enter.
+              if (!returnKeySends) return;
               // IME composition (e.g. typing Japanese/Chinese/Korean via a
               // candidate window) fires `Enter` to confirm a candidate, not
               // to submit — `isComposing` is the modern signal; `keyCode ===

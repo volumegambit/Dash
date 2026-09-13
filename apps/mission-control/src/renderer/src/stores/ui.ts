@@ -7,6 +7,9 @@ const COMPANION_VISIBLE_KEY = 'dash.companion.visible';
 // the single-pet/crew eras so old values migrate for free: legacy `crew:*`
 // and pet-id values normalize via parseCompanionSelection.
 const COMPANION_SELECTION_KEY = 'dash.companion.pet';
+// "What does Return do in the composer" — default false (Return inserts a
+// newline). See docs/plans/2026-09-13-composer-return-key-configurable-design.md.
+const COMPOSER_RETURN_KEY_SENDS_KEY = 'dash.composer.returnKeySends';
 
 function loadCompanionVisible(): boolean {
   try {
@@ -33,6 +36,14 @@ export function loadCompanionSelection(): CompanionSelection {
   return parseCompanionSelection(raw);
 }
 
+function loadComposerReturnKeySends(): boolean {
+  try {
+    return localStorage.getItem(COMPOSER_RETURN_KEY_SENDS_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 interface UIState {
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
@@ -41,6 +52,8 @@ interface UIState {
   setCompanionVisible: (visible: boolean) => void;
   companionSelection: CompanionSelection;
   setCompanionSelection: (selection: CompanionSelection) => void;
+  composerReturnKeySends: boolean;
+  setComposerReturnKeySends: (sends: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -64,5 +77,14 @@ export const useUIStore = create<UIState>((set) => ({
       // ignore
     }
     set({ companionSelection });
+  },
+  composerReturnKeySends: loadComposerReturnKeySends(),
+  setComposerReturnKeySends: (composerReturnKeySends) => {
+    try {
+      localStorage.setItem(COMPOSER_RETURN_KEY_SENDS_KEY, String(composerReturnKeySends));
+    } catch {
+      // ignore
+    }
+    set({ composerReturnKeySends });
   },
 }));
