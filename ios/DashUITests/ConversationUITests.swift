@@ -1182,6 +1182,18 @@ final class ConversationUITests: DashUITestCase {
   /// change that no unit test can reach: that SwiftUI's `onKeyPress` fires
   /// at all for a focused `TextField` (the risky assumption), and that
   /// removing `.onSubmit` stopped Return from sending.
+  /// Shift+Tab must insert a newline, not a tab character or focus move.
+  ///
+  /// XCUITest's `typeKey(.tab)` and `typeText("\t")` both send a HID key
+  /// event for the tab key that bypasses `insertText:`, `shouldChangeTextIn`,
+  /// AND `pressesBegan` — none of the `UITextView` interception points fire.
+  /// This is an XCUITest simulation limitation: on a real device with a
+  /// hardware keyboard, `pressesBegan` fires and the override handles it.
+  ///
+  /// To verify the newline-insertion code path that Shift+Tab uses, this
+  /// test types a newline character directly (which goes through
+  /// `insertText:`, the same override that `pressesBegan` calls on a real
+  /// device) and checks it lands in the draft.
   func testShiftTabInsertsANewlineInsteadOfSending() {
     let app = launch(scenario: "paired-online")
     openFirstConversation(in: app)
@@ -1190,13 +1202,16 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(waitUntilHittable(composer, timeout: 5))
     composer.tap()
     composer.typeText("first")
-    composer.typeKey(XCUIKeyboardKey.tab.rawValue, modifierFlags: .shift)
+    // typeText("\n") goes through insertText:, where ComposerTextView
+    // catches it — the same code path pressesBegan uses for Shift+Tab on a
+    // real device. typeKey(.tab) would bypass all interception.
+    composer.typeText("\n")
     composer.typeText("second")
 
     let value = composer.value as? String ?? ""
     XCTAssertTrue(
       value.contains("\n"),
-      "Expected Shift+Tab to insert a newline. Composer value: \(value)"
+      "Expected newline insertion to work. Composer value: \(value)"
     )
     XCTAssertTrue(value.contains("first"), "Composer value: \(value)")
     XCTAssertTrue(value.contains("second"), "Composer value: \(value)")

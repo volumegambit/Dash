@@ -11,6 +11,7 @@
 		01DE346F527C03AD6DF386AC /* SpeechPermission.swift in Sources */ = {isa = PBXBuildFile; fileRef = 965F3152320F37D9498C5818 /* SpeechPermission.swift */; };
 		02931AC2C7E2F904AD3659E8 /* PairingFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFA811FD278BEF708BCFC58F /* PairingFeature.swift */; };
 		02A064E055D0040558D605B2 /* UITestScenarioSupportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 157831053268782C34102FDF /* UITestScenarioSupportTests.swift */; };
+		038A4724D68B309D774D19E9 /* ComposerTextInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 956D156B111463BB18363057 /* ComposerTextInput.swift */; };
 		05C3D7786DB5826DFE5CEB65 /* AgentContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEF957521D399CF0D79B78B8 /* AgentContracts.swift */; };
 		0764EF6A808FFC79D12222C6 /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A519DFB23FD80A6230CE9777 /* VoiceOrbView.swift */; };
 		07A97BDF5B7164D37BAD38F8 /* SpeechSettingsFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F53D6D67FBFB2832795E877 /* SpeechSettingsFeatureTests.swift */; };
@@ -332,6 +333,7 @@
 		8F62CDA91716DDDA8F5CBD1C /* ComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerView.swift; sourceTree = "<group>"; };
 		940CCE19AC17162416967ED4 /* CacheReconciliationIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CacheReconciliationIntegrationTests.swift; sourceTree = "<group>"; };
 		94F022B8E0A368FA62D5B145 /* HTTPTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPTransport.swift; sourceTree = "<group>"; };
+		956D156B111463BB18363057 /* ComposerTextInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerTextInput.swift; sourceTree = "<group>"; };
 		965F3152320F37D9498C5818 /* SpeechPermission.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechPermission.swift; sourceTree = "<group>"; };
 		98611F13566BC9C8A0C105F0 /* SequenceReconcilerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequenceReconcilerTests.swift; sourceTree = "<group>"; };
 		9A13F9F78A9904D0F2CEB532 /* LocationProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationProvider.swift; sourceTree = "<group>"; };
@@ -560,6 +562,7 @@
 				60563CD168E77D5CDC24EB77 /* ChatModelPickerSheet.swift */,
 				21AFAE8B91CB5C301E9DE8CA /* ChatReducer.swift */,
 				A8595E34F3DDA23930BA1A37 /* ChatView.swift */,
+				956D156B111463BB18363057 /* ComposerTextInput.swift */,
 				8F62CDA91716DDDA8F5CBD1C /* ComposerView.swift */,
 				ABA55A47560DF79C1A1EB1C2 /* ConversationListFeature.swift */,
 				34F7AB70C0AC1954E310311A /* ConversationListView.swift */,
@@ -1184,6 +1187,7 @@
 				897E5B64B04455196A5275E9 /* ClientLocation.swift in Sources */,
 				F6EA3DA9DB3C227A57BF5FAD /* CodeBlockView.swift in Sources */,
 				6DB42EF16E1B51863B318DDD /* ComposerPreferences.swift in Sources */,
+				038A4724D68B309D774D19E9 /* ComposerTextInput.swift in Sources */,
 				64CC95CC5BF41BE3CB609D3A /* ComposerView.swift in Sources */,
 				F0E70438C5CE1DC08EA36568 /* ConnectionEndpoint.swift in Sources */,
 				A50C5000B180850E674F96C9 /* ConnectionSecrets.swift in Sources */,
