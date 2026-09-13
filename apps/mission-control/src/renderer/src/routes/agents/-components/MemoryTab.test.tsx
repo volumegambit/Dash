@@ -67,7 +67,9 @@ describe('MemoryList', () => {
     expect(screen.getByText('User')).toBeInTheDocument();
     expect(screen.getByText('Project')).toBeInTheDocument();
     // Each bucket has 1 item, shown as count in the heading
-    const counts = screen.getAllByText('(', { exact: false }).filter(el => el.textContent?.match(/\(1\)/));
+    const counts = screen
+      .getAllByText('(', { exact: false })
+      .filter((el) => el.textContent?.match(/\(1\)/));
     expect(counts.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -158,9 +160,7 @@ describe('MemoryList', () => {
   });
 
   it('shows a search filter when there are more than 5 memories', () => {
-    const many = Array.from({ length: 6 }, (_, i) =>
-      memory({ name: `mem-${i}`, type: 'user' }),
-    );
+    const many = Array.from({ length: 6 }, (_, i) => memory({ name: `mem-${i}`, type: 'user' }));
     render(<MemoryList memories={many} onOpen={vi.fn()} onRemove={vi.fn()} />);
     expect(screen.getByPlaceholderText('Filter memories…')).toBeInTheDocument();
   });
@@ -182,13 +182,7 @@ describe('MemoryList', () => {
     );
     many[0] = memory({ name: 'user-timezone', description: 'Singapore timezone', type: 'user' });
     many[1] = memory({ name: 'repo-pnpm', description: 'Uses pnpm', type: 'project' });
-    render(
-      <MemoryList
-        memories={many}
-        onOpen={vi.fn()}
-        onRemove={vi.fn()}
-      />,
-    );
+    render(<MemoryList memories={many} onOpen={vi.fn()} onRemove={vi.fn()} />);
     const search = screen.getByPlaceholderText('Filter memories…');
     fireEvent.change(search, { target: { value: 'singapore' } });
     expect(screen.getByText('user-timezone')).toBeInTheDocument();
