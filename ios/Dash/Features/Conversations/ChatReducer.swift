@@ -1040,13 +1040,28 @@ enum ChatReducer {
       return shouldAnnounce ? [.announceFinalResponse(announcement)] : []
 
     case let .error(id, _, _, error, code, _, activeTurnID):
-      if code == "conversation_busy", let activeTurnID {
+      if code == "conversation_busy" {
+        // Remove the optimistic user message — the gateway rejected it, so
+        // it was never accepted and must not linger as a phantom send.
         state.messages.removeAll { message in
           message.turnID == id && message.role == .user && message.ordinal == nil
             && message.status == .streaming
         }
-        state.activeTurnID = activeTurnID
-        state.composerBlock = .remoteActiveTurn(activeTurnID)
+
+        if let activeTurnID {
+          // Another turn owns this conversation. Block the composer so the
+          // user sees "active on another device" instead of an error.
+          state.activeTurnID = activeTurnID
+          state.composerBlock = .remoteActiveTurn(activeTurnID)
+        } else {
+          // conversation_busy without an activeTurnId — the agent is
+          // quiescing (being disabled/deleted) or the conversation lease is
+          // held by a turn the error didn't identify. Show a retryable banner
+          // instead of "Response failed", and do NOT create a failed
+          // assistant message — the turn was never accepted.
+          state.errorBanner = "A response is already in progress. Try again shortly."
+          finishTurn(id, state: &state)
+        }
         return []
       }
 
