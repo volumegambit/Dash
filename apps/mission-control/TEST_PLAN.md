@@ -42,6 +42,19 @@ npm run mc:dev
 4. **Verify:** A loading spinner or "Setting up" message is shown while the gateway initializes
 5. Wait for initialization to complete (or fail)
 
+### 1.1a Packaged Release Startup
+
+Before publishing desktop installers, build with `npm run mc:package` and run the packaged app
+with a temporary `DASH_HOME`, unused management/channel/LAN ports, and a minimal system `PATH`.
+Do not reset the machine-global keychain during this check.
+
+1. Verify the app opens and its gateway becomes healthy without Homebrew or nvm on `PATH`.
+2. Verify the gateway process uses the Node executable under the app's `Resources/runtime`.
+3. Verify all five core providers appear and the bundled plugin version matches the release.
+4. Verify provider catalogs, bundled skills, and SQL migrations exist in the packaged resources.
+5. Run `scripts/smoke-desktop-runtime.mjs` against the packaged `Contents/Resources` directory.
+6. Repeat the runtime smoke with the matching native dependencies for each published architecture.
+
 ### 1.2 Provider Selection (gateway-driven)
 
 > Note: The wizard provider picker is populated from the gateway's runtime plugins, exactly like the AI Providers page — labels and descriptions come from the provider catalogs, and cards are sorted by catalog `ui.sortOrder`. There is no hardcoded provider list in the wizard.
