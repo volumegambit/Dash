@@ -614,9 +614,9 @@ let projectsWs: WebSocket | null = null;
  * Build (once) the gateway supervisor. The spawner MUST be the packaged
  * wrapper: a packaged Dash.app is launched by Finder/launchd, whose PATH
  * (`/usr/bin:/bin:/usr/sbin:/sbin`) contains no `node` — Homebrew and nvm
- * installs are both invisible to it. `makePackagedSpawner` re-execs
- * Electron's own bundled Node instead, so the gateway daemon always has an
- * interpreter. `baseSpawner` is a seam for tests only.
+ * installs are both invisible to it. The app bundles a separate Node runtime
+ * matching the gateway's requirements; Electron's embedded Node can be older.
+ * `baseSpawner` is a seam for tests only.
  */
 export function getGatewaySupervisor(
   options: GatewaySupervisorOptions,
@@ -627,7 +627,17 @@ export function getGatewaySupervisor(
   if (!gatewaySupervisor) {
     gatewaySupervisor = new GatewaySupervisor(
       options,
-      makePackagedSpawner(process.execPath, baseSpawner, app.isPackaged),
+      makePackagedSpawner(
+        app.isPackaged
+          ? join(
+              process.resourcesPath,
+              'runtime',
+              process.platform === 'win32' ? 'node.exe' : 'bin/node',
+            )
+          : 'node',
+        baseSpawner,
+        app.isPackaged,
+      ),
       undefined,
       undefined,
       keychain,
@@ -731,17 +741,14 @@ async function getClient(gw: GatewaySupervisor): Promise<GatewayManagementClient
 }
 
 export function makePackagedSpawner(
-  execPath: string,
+  runtimePath: string,
   base: ProcessSpawner,
   isPackaged: boolean,
 ): ProcessSpawner {
   return {
     spawn: (command, args, options) => {
       if (command === 'node' && isPackaged) {
-        return base.spawn(execPath, args, {
-          ...options,
-          env: { ...options.env, ELECTRON_RUN_AS_NODE: '1' },
-        });
+        return base.spawn(runtimePath, args, options);
       }
       return base.spawn(command, args, options);
     },

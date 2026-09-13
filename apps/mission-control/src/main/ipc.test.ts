@@ -5,8 +5,6 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// We need to import makePackagedSpawner — it doesn't exist yet, so this will fail
-// Import it from ipc.ts after you implement it
 import { InMemoryKeychainStore } from '@dash/mc';
 import type { GatewaySupervisorOptions, ProcessSpawner } from '@dash/mc';
 import { captureChatIpcResult, unwrapChatIpcResult } from '../shared/ipc.js';
@@ -1098,73 +1096,75 @@ describe('healEnrolledGatewayChatToken', () => {
 });
 
 describe('makePackagedSpawner', () => {
-  it('replaces node with execPath and adds ELECTRON_RUN_AS_NODE=1 when packaged', () => {
-    const spawned: { command: string; env: Record<string, string | undefined> }[] = [];
-    const testSpawner = {
-      spawn: (
-        command: string,
-        args: string[],
-        options: { env?: Record<string, string | undefined> },
-      ) => {
-        spawned.push({ command, env: options.env ?? {} });
-        return { exitCode: null, kill: vi.fn(), on: vi.fn(), stdout: null, stderr: null };
-      },
-    };
+  it('launches bundled Node with the original arguments and options when packaged', () => {
+    const child = { exitCode: null, kill: vi.fn(), on: vi.fn(), stdout: null, stderr: null };
+    const spawn = vi.fn<ProcessSpawner['spawn']>(() => child);
+    const runtimePath = '/Applications/Dash.app/Contents/Resources/runtime/bin/node';
+    const packaged = makePackagedSpawner(runtimePath, { spawn }, true);
+    const args = ['gateway.js', '--config', '/tmp/dash.json'];
+    const options = { env: { FOO: 'bar' }, cwd: '/tmp' };
 
-    const fakeExecPath = '/Applications/Dash.app/Contents/MacOS/Dash';
-    const packaged = makePackagedSpawner(fakeExecPath, testSpawner, true);
-    packaged.spawn('node', ['script.js'], { env: { FOO: 'bar' } });
-
-    expect(spawned[0].command).toBe(fakeExecPath);
-    expect(spawned[0].env.ELECTRON_RUN_AS_NODE).toBe('1');
-    expect(spawned[0].env.FOO).toBe('bar');
+    expect(packaged.spawn('node', args, options)).toBe(child);
+    expect(spawn).toHaveBeenCalledWith(runtimePath, args, options);
+    expect(spawn.mock.calls[0][2]).toBe(options);
   });
 
-  it('passes through to base spawner when not packaged', () => {
-    const spawned: { command: string }[] = [];
-    const testSpawner = {
-      spawn: (command: string, _args: string[], _options: object) => {
-        spawned.push({ command });
-        return { exitCode: null, kill: vi.fn(), on: vi.fn(), stdout: null, stderr: null };
-      },
-    };
+  it.each([
+    { isPackaged: false, command: 'node' },
+    { isPackaged: true, command: 'git' },
+  ])('passes through $command when isPackaged=$isPackaged', ({ isPackaged, command }) => {
+    const child = { exitCode: null, kill: vi.fn(), on: vi.fn(), stdout: null, stderr: null };
+    const spawn = vi.fn<ProcessSpawner['spawn']>(() => child);
+    const spawner = makePackagedSpawner('/resources/runtime/bin/node', { spawn }, isPackaged);
+    const args = ['--version'];
+    const options = { env: { FOO: 'bar' } };
 
-    const notPackaged = makePackagedSpawner('/path/to/electron', testSpawner, false);
-    notPackaged.spawn('node', ['script.js'], { env: {} });
-
-    expect(spawned[0].command).toBe('node');
+    expect(spawner.spawn(command, args, options)).toBe(child);
+    expect(spawn).toHaveBeenCalledWith(command, args, options);
   });
 });
 
 describe('getGatewaySupervisor', () => {
-  // Regression guard: makePackagedSpawner existed and was unit-tested, but an
-  // IPC refactor dropped it from the supervisor construction. The packaged app
-  // then spawned the literal `node`, which is absent from a GUI-launched app's
-  // PATH (nvm installs live in ~/.nvm) — `spawn node ENOENT`, crashing the main
-  // process. Assert the supervisor is built with the packaged spawner, not the
-  // raw default.
-  it('wraps the gateway spawner so a packaged app re-execs Electron instead of `node`', () => {
-    const spawned: { command: string; env: Record<string, string | undefined> }[] = [];
-    const base: ProcessSpawner = {
-      spawn: (command, _args, options) => {
-        spawned.push({ command, env: options.env ?? {} });
-        return { exitCode: null, kill: vi.fn(), on: vi.fn(), stdout: null, stderr: null };
-      },
-    };
-
-    const gw = getGatewaySupervisor(
-      { gatewayDataDir: '/tmp/gw', projectRoot: '/tmp/root' } as GatewaySupervisorOptions,
-      new InMemoryKeychainStore() as never,
-      undefined,
-      base,
-    );
-
-    (gw as unknown as { spawner: ProcessSpawner }).spawner.spawn('node', ['gateway.js'], {
-      env: {},
+  // The gateway needs Node 22 even when Electron embeds an older Node version,
+  // and GUI app launches cannot depend on a system Node installation in PATH.
+  it('launches the gateway with Node from packaged resources', () => {
+    const resourcesPath = '/Applications/Dash.app/Contents/Resources';
+    const previousResourcesPath = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
+    Object.defineProperty(process, 'resourcesPath', {
+      configurable: true,
+      value: resourcesPath,
     });
+    try {
+      const spawned: { command: string; env: Record<string, string | undefined> }[] = [];
+      const base: ProcessSpawner = {
+        spawn: (command, _args, options) => {
+          spawned.push({ command, env: options.env ?? {} });
+          return { exitCode: null, kill: vi.fn(), on: vi.fn(), stdout: null, stderr: null };
+        },
+      };
 
-    expect(spawned[0].command).toBe(process.execPath);
-    expect(spawned[0].env.ELECTRON_RUN_AS_NODE).toBe('1');
+      const gw = getGatewaySupervisor(
+        { gatewayDataDir: '/tmp/gw', projectRoot: '/tmp/root' } as GatewaySupervisorOptions,
+        new InMemoryKeychainStore() as never,
+        undefined,
+        base,
+      );
+
+      (gw as unknown as { spawner: ProcessSpawner }).spawner.spawn('node', ['gateway.js'], {
+        env: { FOO: 'bar' },
+      });
+
+      expect(spawned[0].command).toBe(
+        join(resourcesPath, 'runtime', process.platform === 'win32' ? 'node.exe' : 'bin/node'),
+      );
+      expect(spawned[0].env).toEqual({ FOO: 'bar' });
+    } finally {
+      if (previousResourcesPath) {
+        Object.defineProperty(process, 'resourcesPath', previousResourcesPath);
+      } else {
+        Reflect.deleteProperty(process, 'resourcesPath');
+      }
+    }
   });
 });
 

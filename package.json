@@ -1,6 +1,6 @@
 {
   "name": "dash",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -31,7 +31,9 @@
     "mc:dev:debug": "npm run dev:debug --workspace=apps/mission-control",
     "mc:build": "npm run build --workspace=apps/mission-control",
     "mc:preview": "npm run build --workspace=apps/mission-control && npm run preview --workspace=apps/mission-control",
-    "mc:package": "npm run build --workspace=apps/mission-control && npm run package --workspace=apps/mission-control",
+    "mc:stage": "node scripts/stage-desktop-runtime.mjs",
+    "mc:smoke-runtime": "node scripts/smoke-desktop-runtime.mjs apps/mission-control/release/staging/runtime",
+    "mc:package": "npm run build && npm run mc:build && npm run mc:stage && npm run mc:smoke-runtime && npm run package --workspace=apps/mission-control",
     "website:dev": "npm run dev --workspace=apps/website",
     "website:build": "npm run build --workspace=apps/website",
     "waitlist:dev": "npm run dev --workspace=apps/waitlist",
