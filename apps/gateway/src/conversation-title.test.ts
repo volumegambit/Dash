@@ -42,6 +42,115 @@ describe('generateConversationTitle', () => {
     providerApiKeys: { anthropic: 'sk-test' },
   };
 
+  it('allows a reasoning model to finish before extracting its title', async () => {
+    const completeFn: CompleteFn = vi.fn(
+      async (_model, _context, options) =>
+        ({
+          role: 'assistant',
+          content:
+            options?.maxTokens && options.maxTokens >= 318
+              ? [
+                  { type: 'thinking', thinking: 'Reasoning' },
+                  { type: 'text', text: 'Chat title repair' },
+                ]
+              : [{ type: 'thinking', thinking: 'Reasoning' }],
+          stopReason: options?.maxTokens && options.maxTokens >= 318 ? 'stop' : 'length',
+        }) as Awaited<ReturnType<CompleteFn>>,
+    );
+    await expect(
+      generateConversationTitle({ ...base, text: 'Fix titles', completeFn }),
+    ).resolves.toEqual({ title: 'Chat title repair', projectKey: null });
+  });
+
+  it('retries a truncated completion with a larger budget instead of saving a partial title', async () => {
+    const completeFn = vi
+      .fn()
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'Partial' }], stopReason: 'length' })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: 'Complete useful title' }],
+        stopReason: 'stop',
+      });
+    await expect(
+      generateConversationTitle({ ...base, text: 'Fix titles', completeFn }),
+    ).resolves.toEqual({ title: 'Complete useful title', projectKey: null });
+    expect(completeFn).toHaveBeenCalledTimes(2);
+    expect(completeFn.mock.calls.map((call) => call[2].maxTokens)).toEqual([2048, 4096]);
+    expect(completeFn.mock.calls[1][2].signal).toBe(completeFn.mock.calls[0][2].signal);
+  });
+
+  it('bounds retries and reports the provider stop reason', async () => {
+    const completeFn = vi.fn().mockResolvedValue({ content: [], stopReason: 'length' });
+    await expect(
+      generateConversationTitle({ ...base, text: 'Fix titles', completeFn }),
+    ).rejects.toThrow(/length/);
+    expect(completeFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports provider errors instead of hiding them as empty text', async () => {
+    const completeFn = vi.fn().mockResolvedValue({
+      content: [],
+      stopReason: 'error',
+      errorMessage: 'Provider unavailable',
+    });
+    await expect(
+      generateConversationTitle({ ...base, text: 'Fix titles', completeFn }),
+    ).rejects.toThrow(/Provider unavailable/);
+    expect(completeFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry an aborted completion', async () => {
+    const completeFn = vi.fn().mockResolvedValue({ content: [], stopReason: 'aborted' });
+    await expect(
+      generateConversationTitle({ ...base, text: 'Fix titles', completeFn }),
+    ).rejects.toThrow(/aborted/);
+    expect(completeFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries an empty response and recovers a useful title', async () => {
+    const completeFn = vi
+      .fn()
+      .mockResolvedValueOnce({ content: [], stopReason: 'stop' })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: 'Recovered title' }],
+        stopReason: 'stop',
+      });
+    await expect(
+      generateConversationTitle({ ...base, text: 'Fix titles', completeFn }),
+    ).resolves.toEqual({ title: 'Recovered title', projectKey: null });
+  });
+
+  it('respects the resolved model output limit across retries', async () => {
+    const completeFn = vi.fn().mockResolvedValue({ content: [], stopReason: 'length' });
+    await expect(
+      generateConversationTitle({
+        ...base,
+        text: 'Fix titles',
+        completeFn,
+        pluginModelCatalog: { resolve: () => ({ provider: 'anthropic', maxTokens: 1024 }) },
+      }),
+    ).rejects.toThrow(/length/);
+    expect(completeFn).toHaveBeenCalledTimes(2);
+    for (const call of completeFn.mock.calls) expect(call[2].maxTokens).toBe(1024);
+  });
+
+  it('does not start a retry after the shared deadline expires', async () => {
+    const controller = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal);
+    const completeFn = vi.fn(async () => {
+      controller.abort(new Error('Title deadline expired'));
+      return { content: [], stopReason: 'length' } as unknown as Awaited<ReturnType<CompleteFn>>;
+    });
+    try {
+      await expect(
+        generateConversationTitle({ ...base, text: 'Fix titles', completeFn }),
+      ).rejects.toThrow('Title deadline expired');
+      expect(timeout).toHaveBeenCalledWith(25_000);
+      expect(completeFn).toHaveBeenCalledTimes(1);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
   it('returns the sanitized model reply', async () => {
     const completeFn = makeCompleteFn('"Login bug investigation."');
     const result = await generateConversationTitle({

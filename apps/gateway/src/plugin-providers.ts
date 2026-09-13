@@ -98,8 +98,14 @@ export function createPluginModelCatalog(
           contextWindow: catalog.dynamicModelDefaults.contextWindow,
           maxTokens: catalog.dynamicModelDefaults.maxTokens,
           input: registered ? [...registered.input] : undefined,
+          reasoning: registered?.reasoning,
         };
-        return buildModel(catalog, synthesized);
+        return {
+          ...buildModel(catalog, synthesized),
+          // Some reasoning models cannot turn thinking off. Keep the SDK's
+          // level mapping with the capability so requests remain compatible.
+          thinkingLevelMap: registered?.thinkingLevelMap,
+        };
       }
 
       return null;
