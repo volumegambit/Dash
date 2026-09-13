@@ -371,7 +371,7 @@ struct ToolCardView: View {
   }
 
   private var header: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 6) {
+    HStack(alignment: .center, spacing: 6) {
       statusGlyph
       // Was `.callout` — the tool name is the least variable thing on the
       // row (it repeats down the whole run) and was set larger than the
@@ -437,28 +437,19 @@ struct ToolCardView: View {
 
   @ViewBuilder
   private var statusGlyph: some View {
-    Group {
-      switch tool.status {
-      case .running:
-        ProgressView()
-          .controlSize(.mini)
-          .frame(width: 12, height: 12)
-      case .succeeded:
-        Circle()
-          .fill(DashTheme.success)
-          .frame(width: 8, height: 8)
-      case .failed:
-        Image(systemName: "xmark.circle")
-          .font(.system(size: 10))
-          .foregroundStyle(DashTheme.danger)
-      }
-    }
-    .alignmentGuide(.firstTextBaseline) { dimensions in
-      // Non-text views (ProgressView, Circle, Image) have no text baseline;
-      // they align to their bottom edge by default, drooping below the text.
-      // Map the view's center onto the baseline so the glyph sits on the same
-      // line as the tool name text.
-      dimensions[VerticalAlignment.center]
+    switch tool.status {
+    case .running:
+      ProgressView()
+        .controlSize(.mini)
+        .frame(width: 12, height: 12)
+    case .succeeded:
+      Circle()
+        .fill(DashTheme.success)
+        .frame(width: 8, height: 8)
+    case .failed:
+      Image(systemName: "xmark.circle")
+        .font(.system(size: 10))
+        .foregroundStyle(DashTheme.danger)
     }
   }
 
