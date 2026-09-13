@@ -102,4 +102,92 @@ describe('resolveModelString', () => {
       );
     });
   });
+
+  describe('OpenRouter attribution headers', () => {
+    it('injects HTTP-Referer and X-Title on OpenRouter models from pi-ai', () => {
+      const resolved = resolveModelString('openrouter/anthropic/claude-opus-4.8', undefined);
+      expect(resolved.headers).toMatchObject({
+        'HTTP-Referer': 'https://github.com/DashSquad',
+        'X-Title': 'DashSquad',
+      });
+    });
+
+    it('injects attribution headers on OpenRouter models from the plugin catalog', () => {
+      const orModel = {
+        id: 'openai/gpt-6-astra',
+        name: 'GPT-6 Astra',
+        api: 'openai-completions',
+        provider: 'openrouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        reasoning: true,
+        input: ['text', 'image'],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+      };
+      const resolved = resolveModelString('openrouter/openai/gpt-6-astra', {
+        resolve: (provider, modelId) =>
+          provider === 'openrouter' && modelId === 'openai/gpt-6-astra' ? orModel : undefined,
+      });
+      expect(resolved.headers).toMatchObject({
+        'HTTP-Referer': 'https://github.com/DashSquad',
+        'X-Title': 'DashSquad',
+      });
+    });
+
+    it('preserves existing model headers, with attribution as defaults', () => {
+      const orModel = {
+        id: 'openai/gpt-6-astra',
+        name: 'GPT-6 Astra',
+        api: 'openai-completions',
+        provider: 'openrouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        reasoning: true,
+        input: ['text'],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+        headers: { 'X-Custom': 'custom-value', 'X-Title': 'Override' },
+      };
+      const resolved = resolveModelString('openrouter/openai/gpt-6-astra', {
+        resolve: (provider, modelId) =>
+          provider === 'openrouter' && modelId === 'openai/gpt-6-astra' ? orModel : undefined,
+      });
+      // Attribution headers are defaults; model's own headers override them.
+      expect(resolved.headers).toMatchObject({
+        'HTTP-Referer': 'https://github.com/DashSquad',
+        'X-Title': 'Override',
+        'X-Custom': 'custom-value',
+      });
+    });
+
+    it('does not inject attribution headers on non-OpenRouter models', () => {
+      const resolved = resolveModelString('anthropic/claude-opus-4-5', undefined);
+      expect(resolved.headers?.['HTTP-Referer']).toBeUndefined();
+      expect(resolved.headers?.['X-Title']).toBeUndefined();
+    });
+
+    it('injects attribution headers when baseUrl points to openrouter.ai even if provider is not "openrouter"', () => {
+      const proxyModel = {
+        id: 'some-model',
+        name: 'Proxy Model',
+        api: 'openai-completions',
+        provider: 'custom-proxy',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        reasoning: false,
+        input: ['text'],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 4096,
+      };
+      const resolved = resolveModelString('custom-proxy/some-model', {
+        resolve: (provider, modelId) =>
+          provider === 'custom-proxy' && modelId === 'some-model' ? proxyModel : undefined,
+      });
+      expect(resolved.headers).toMatchObject({
+        'HTTP-Referer': 'https://github.com/DashSquad',
+        'X-Title': 'DashSquad',
+      });
+    });
+  });
 });
