@@ -39,7 +39,7 @@ describe('MemoryConfigStrip', () => {
 });
 
 describe('MemoryList', () => {
-  it('groups memories by type and offers delete', () => {
+  it('groups memories by type with per-bucket counts', () => {
     const onRemove = vi.fn();
     render(
       <MemoryList
@@ -63,8 +63,12 @@ describe('MemoryList', () => {
     );
     expect(screen.getByText('User')).toBeInTheDocument();
     expect(screen.getByText('Project')).toBeInTheDocument();
-    fireEvent.click(screen.getAllByText('Delete')[0]);
-    expect(onRemove).toHaveBeenCalledWith('user-timezone');
+    // Per-bucket counts are shown in the heading
+    expect(screen.getByText('User')).toBeInTheDocument();
+    expect(screen.getByText('Project')).toBeInTheDocument();
+    // Each bucket has 1 item, shown as count in the heading
+    const counts = screen.getAllByText('(', { exact: false }).filter(el => el.textContent?.match(/\(1\)/));
+    expect(counts.length).toBeGreaterThanOrEqual(2);
   });
 
   it('omits empty groups and orders groups user, feedback, project, reference', () => {
@@ -80,11 +84,16 @@ describe('MemoryList', () => {
       />,
     );
     expect(screen.queryByText('User')).not.toBeInTheDocument();
-    const headings = screen.getAllByRole('heading').map((h) => h.textContent);
+    // Headings include the count suffix, so match on the heading role
+    const headings = screen.getAllByRole('heading').map((h) => {
+      const text = h.textContent ?? '';
+      // Strip the count suffix to get just the type label
+      return text.replace(/\s*\(\d+\)\s*$/, '').trim();
+    });
     expect(headings).toEqual(['Feedback', 'Project', 'Reference']);
   });
 
-  it('shows the source and updatedAt of each memory', () => {
+  it('shows the source of each memory', () => {
     render(
       <MemoryList
         memories={[memory({ name: 'user-timezone', type: 'user', source: 'sweep' })]}
@@ -93,25 +102,97 @@ describe('MemoryList', () => {
       />,
     );
     expect(screen.getByText(/sweep/)).toBeInTheDocument();
-    expect(screen.getByText(/2026-09-05T00:00:00.000Z/)).toBeInTheDocument();
   });
 
-  it('opens a memory when its row is clicked', () => {
+  it('expands a memory row to show updatedAt and edit/delete actions', () => {
     const onOpen = vi.fn();
+    const onRemove = vi.fn();
+    render(
+      <MemoryList
+        memories={[
+          memory({
+            name: 'user-timezone',
+            type: 'user',
+            source: 'agent',
+            updatedAt: '2026-09-05T00:00:00.000Z',
+          }),
+        ]}
+        onOpen={onOpen}
+        onRemove={onRemove}
+      />,
+    );
+    // Click the memory name to expand the row
+    fireEvent.click(screen.getByText('user-timezone'));
+    // Expanded state shows updatedAt, Edit, and Delete
+    expect(screen.getByText(/Updated/)).toBeInTheDocument();
+    expect(screen.getByText('Edit')).toBeInTheDocument();
+    expect(screen.getByText('Delete')).toBeInTheDocument();
+
+    // Edit calls onOpen
+    fireEvent.click(screen.getByText('Edit'));
+    expect(onOpen).toHaveBeenCalledWith('user-timezone');
+
+    // Delete calls onRemove
+    fireEvent.click(screen.getAllByText('Delete')[0]);
+    expect(onRemove).toHaveBeenCalledWith('user-timezone');
+  });
+
+  it('collapses an expanded row when clicked again', () => {
     render(
       <MemoryList
         memories={[memory({ name: 'user-timezone', type: 'user' })]}
-        onOpen={onOpen}
+        onOpen={vi.fn()}
         onRemove={vi.fn()}
       />,
     );
     fireEvent.click(screen.getByText('user-timezone'));
-    expect(onOpen).toHaveBeenCalledWith('user-timezone');
+    expect(screen.getByText('Edit')).toBeInTheDocument();
+    // Click again to collapse
+    fireEvent.click(screen.getByText('user-timezone'));
+    expect(screen.queryByText('Edit')).not.toBeInTheDocument();
   });
 
   it('renders an empty state when there are no memories', () => {
     render(<MemoryList memories={[]} onOpen={vi.fn()} onRemove={vi.fn()} />);
     expect(screen.getByText(/No memories yet/)).toBeInTheDocument();
+  });
+
+  it('shows a search filter when there are more than 5 memories', () => {
+    const many = Array.from({ length: 6 }, (_, i) =>
+      memory({ name: `mem-${i}`, type: 'user' }),
+    );
+    render(<MemoryList memories={many} onOpen={vi.fn()} onRemove={vi.fn()} />);
+    expect(screen.getByPlaceholderText('Filter memories…')).toBeInTheDocument();
+  });
+
+  it('does not show a search filter for 5 or fewer memories', () => {
+    render(
+      <MemoryList
+        memories={[memory({ name: 'mem-1', type: 'user' })]}
+        onOpen={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    expect(screen.queryByPlaceholderText('Filter memories…')).not.toBeInTheDocument();
+  });
+
+  it('filters memories by name and description', () => {
+    const many = Array.from({ length: 6 }, (_, i) =>
+      memory({ name: `mem-${i}`, description: `desc-${i}`, type: 'user' }),
+    );
+    many[0] = memory({ name: 'user-timezone', description: 'Singapore timezone', type: 'user' });
+    many[1] = memory({ name: 'repo-pnpm', description: 'Uses pnpm', type: 'project' });
+    render(
+      <MemoryList
+        memories={many}
+        onOpen={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    const search = screen.getByPlaceholderText('Filter memories…');
+    fireEvent.change(search, { target: { value: 'singapore' } });
+    expect(screen.getByText('user-timezone')).toBeInTheDocument();
+    expect(screen.queryByText('repo-pnpm')).not.toBeInTheDocument();
   });
 });
 
@@ -144,9 +225,15 @@ describe('MemoryTab', () => {
 
     render(<MemoryTab agentId="agent-a" />);
 
+    // Expand the row, then click Edit to open the modal
     fireEvent.click(await screen.findByText('user-timezone'));
+    fireEvent.click(screen.getByText('Edit'));
     expect(await screen.findByLabelText('Content')).toBeInTheDocument();
 
+    // Close the modal
+    fireEvent.click(screen.getByText('Cancel'));
+    // Modal is closed; the row is still expanded from earlier — Delete should be visible
+    await waitFor(() => expect(screen.queryByLabelText('Content')).not.toBeInTheDocument());
     fireEvent.click(screen.getByText('Delete'));
 
     await waitFor(() =>
