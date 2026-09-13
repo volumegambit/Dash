@@ -21,6 +21,6 @@ export function buildSnapshot(chat: ChatLike, agents: AgentsLike): CompanionSnap
     streamingFrames: chat.streamingFrames,
     sending: chat.sending,
     unreadConversations: chat.unreadConversations,
-    agentName: (id) => agents.agents.find((agent) => agent.id === id)?.name ?? 'Agent',
+    agentName: (id) => agents.agents.find((agent) => agent.id === id)?.name ?? 'Squad member',
   };
 }

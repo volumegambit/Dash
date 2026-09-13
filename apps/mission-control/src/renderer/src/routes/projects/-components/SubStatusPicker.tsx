@@ -2,7 +2,7 @@ import type { IssueSubStatus } from '../../../../../shared/projects-ipc.js';
 
 const OPTIONS: { value: Exclude<IssueSubStatus, null>; label: string }[] = [
   { value: 'waiting_on_human', label: 'Waiting on human' },
-  { value: 'agent_working', label: 'Agent working' },
+  { value: 'agent_working', label: 'Squad member working' },
   { value: 'blocked', label: 'Blocked' },
 ];
 

@@ -30,9 +30,9 @@ struct AgentPickerSheet: View {
       List {
         if availableAgents.isEmpty {
           ContentUnavailableView(
-            "No available agents",
+            "No available squad members",
             systemImage: "person.2.slash",
-            description: Text("Enable or create an agent before starting a conversation.")
+            description: Text("Enable or create a squad member before starting a conversation.")
           )
         } else {
           ForEach(availableAgents) { agent in
@@ -57,7 +57,7 @@ struct AgentPickerSheet: View {
           }
         }
       }
-      .navigationTitle("Choose Agent")
+      .navigationTitle("Choose Squad Member")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {

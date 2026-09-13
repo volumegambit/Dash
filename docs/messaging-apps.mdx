@@ -12,7 +12,7 @@ Messages flow through a simple chain:
 ```mermaid
 graph LR
     P["Messaging Platform<br/><small>Telegram, WhatsApp</small>"] -->|Bot API| GW["Gateway"]
-    GW --- A["Agents"]
+    GW --- A["Squad"]
     A -->|response| GW
     GW -->|Bot API| P
 ```
@@ -152,7 +152,7 @@ The Gateway hosts agents in-process and serves the channel server on port 9200. 
 ## What's next
 
 <CardGroup cols={2}>
-  <Card title="Agents" icon="robot" href="/agents">
+  <Card title="Squad" icon="robot" href="/agents">
     Learn how agents are configured and how they process messages.
   </Card>
   <Card title="Chat" icon="messages" href="/chat-with-your-agent">

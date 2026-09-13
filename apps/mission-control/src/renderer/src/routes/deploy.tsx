@@ -117,8 +117,8 @@ export function DeployWizard(): JSX.Element {
       <div className="flex-1 overflow-y-auto p-8">
         <div className="mx-auto max-w-2xl">
           <div className="mb-8">
-            <h1 className="text-2xl font-bold">Deploy Agent</h1>
-            <p className="mt-1 text-sm text-muted">Configure and launch a new Dash agent.</p>
+            <h1 className="text-2xl font-bold">Deploy Squad Member</h1>
+            <p className="mt-1 text-sm text-muted">Configure and launch a new Dash squad member.</p>
           </div>
 
           <StepIndicator current={step} />
@@ -127,7 +127,7 @@ export function DeployWizard(): JSX.Element {
             <div className="space-y-6">
               <label className="block">
                 <span className="mb-1 block font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-muted">
-                  Agent Name
+                  Squad Member Name
                 </span>
                 <input
                   type="text"
@@ -360,7 +360,7 @@ export function DeployWizard(): JSX.Element {
 
 function StepIndicator({ current }: { current: Step }): JSX.Element {
   const steps: { key: Step; label: string }[] = [
-    { key: 'agent', label: 'Agent' },
+    { key: 'agent', label: 'Squad Member' },
     { key: 'review', label: 'Review' },
   ];
 

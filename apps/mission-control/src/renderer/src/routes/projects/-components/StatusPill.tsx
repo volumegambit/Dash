@@ -20,7 +20,7 @@ const STATUS_LABEL: Record<IssueStatus, string> = {
 
 const SUB_LABEL: Record<Exclude<IssueSubStatus, null>, string> = {
   waiting_on_human: 'Waiting on human',
-  agent_working: 'Agent working',
+  agent_working: 'Squad member working',
   blocked: 'Blocked',
 };
 

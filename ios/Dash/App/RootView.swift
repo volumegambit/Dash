@@ -61,7 +61,7 @@ struct RootView: View {
     .onChange(of: navigationPresentation) { _, presentation in
       appModel.reconcileNavigation(for: presentation)
     }
-    .alert("Agent update failed", isPresented: agentMutationErrorPresented) {
+    .alert("Squad member update failed", isPresented: agentMutationErrorPresented) {
       Button("OK") { appModel.agentsFeature?.mutationError = nil }
     } message: {
       Text(appModel.agentsFeature?.mutationError ?? "Dash couldn't complete the update.")
@@ -138,7 +138,7 @@ struct RootView: View {
           }
       }
       .tabItem {
-        Label("Agents", systemImage: "person.2")
+        Label("Squad", systemImage: "person.2")
           .accessibilityIdentifier(AppTab.agents.accessibilityID)
       }
       .tag(AppTab.agents)
@@ -347,7 +347,7 @@ struct RootView: View {
         .environment(feature)
         .id(ObjectIdentifier(feature))
     } else {
-      FeatureSlotView(title: "Agents", systemImage: "person.2")
+      FeatureSlotView(title: "Squad", systemImage: "person.2")
     }
   }
 
@@ -434,7 +434,7 @@ struct RootView: View {
       .environment(feature)
       .id(route)
     } else {
-      FeatureSlotView(title: "Agent", systemImage: "person.crop.circle")
+      FeatureSlotView(title: "Squad member", systemImage: "person.crop.circle")
     }
   }
 }

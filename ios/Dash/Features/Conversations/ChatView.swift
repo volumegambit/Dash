@@ -463,7 +463,7 @@ struct ChatView: View {
       }
       .buttonStyle(.plain)
       .disabled(isSwitchingAgent)
-      .accessibilityLabel("Change agent")
+      .accessibilityLabel("Change squad member")
       .accessibilityValue(feature.state.conversation.agentName)
       .accessibilityIdentifier("chat.agentChip")
 

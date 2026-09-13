@@ -1787,7 +1787,7 @@ describe('ChatView notification rows (C7)', () => {
     '[SYSTEM NOTIFICATION - NOT USER INPUT]',
     '',
     '<task-notification>',
-    '<summary>Agent "Map gateway internals" finished</summary>',
+    '<summary>Squad member "Map gateway internals" finished</summary>',
     '</task-notification>',
   ].join('\n');
 
@@ -1805,7 +1805,7 @@ describe('ChatView notification rows (C7)', () => {
     await renderConnected({ messages: [notificationMessage()] });
 
     const row = screen.getByTestId('notification-row');
-    expect(row.textContent).toContain('Agent "Map gateway internals" finished');
+    expect(row.textContent).toContain('Squad member "Map gateway internals" finished');
     expect(row.textContent).not.toContain('[SYSTEM NOTIFICATION - NOT USER INPUT]');
     expect(screen.queryByTestId('chat-message')).toBeNull();
   });
