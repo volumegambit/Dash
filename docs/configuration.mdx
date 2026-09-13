@@ -421,10 +421,38 @@ Each catalog file is a single JSON object:
 | `baseUrl` | yes | API base URL the gateway calls. |
 | `api` | yes | Wire protocol: `openai-completions` or `anthropic-messages`. |
 | `credentialPrefix` | yes | Prefix the API key is stored under (e.g. `myllm-api-key`). |
-| `models[]` | yes | Statically-known models. Each needs `id`, `contextWindow`, `maxTokens`; `name`, `reasoning`, `cost`, `input`, `headers`, and `compat` are optional. |
+| `models[]` | yes | Statically-known models. Each needs `id`, `contextWindow`, `maxTokens`; `name`, `reasoning`, `thinkingLevelMap`, `cost`, `input`, `headers`, and `compat` are optional. |
 | `dynamicModels` | no | OpenRouter-style "accept any model id" — see below. |
 | `dynamicModelDefaults` | no | `{ "contextWindow", "maxTokens" }` applied to dynamically-accepted ids. |
 | `placeholderKey` | no | Stand-in key for keyless local servers — see below. |
+
+**Reasoning models.** Some models refuse a request that does not ask for
+reasoning, and others want a specific value. Add `thinkingLevelMap` to those
+models so the gateway sends something they accept:
+
+```json
+{
+  "id": "my-reasoner",
+  "contextWindow": 272000,
+  "maxTokens": 128000,
+  "reasoning": true,
+  "thinkingLevelMap": { "off": null, "high": "HIGH" }
+}
+```
+
+The keys are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`:
+
+- `"off": null` means the model **requires** reasoning. The gateway then picks
+  the lowest level it does support instead of turning reasoning off.
+- `"off": "none"` means reasoning can be turned off, but the provider wants to
+  be told so explicitly (the GPT-5 family works this way).
+- Any other string remaps that level to the value the provider expects, e.g.
+  `"high": "HIGH"`.
+- `null` on any other level means the model does not accept it.
+
+Leave `thinkingLevelMap` out if the model is happy either way. If you see an
+error complaining about a missing or invalid reasoning/`reasoning_effort` value,
+this field is what to set.
 
 **Storing the API key.** Save it in the credential store under `<id>-api-key:<name>`, for example `myllm-api-key:default`. The simplest way is Mission Control's **Settings → AI Providers** screen, which writes that key for you; you can also set it directly with the gateway's credentials API. The first key stored for a provider id wins.
 
