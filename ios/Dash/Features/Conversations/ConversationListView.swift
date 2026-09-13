@@ -486,7 +486,7 @@ struct ConversationListView: View {
       ContentUnavailableView(
         "No conversations",
         systemImage: "bubble.left.and.bubble.right",
-        description: Text("Start a conversation with one of your agents.")
+        description: Text("Start a conversation with one of your squad.")
       )
     } else {
       ContentUnavailableView(

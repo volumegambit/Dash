@@ -2001,7 +2001,7 @@ extension AppDependenciesFactory {
       let value = ConversationSummaryDTO(
         id: "conversation-\(request.agentId)",
         agentId: request.agentId,
-        agentName: agent?.name ?? "Agent",
+        agentName: agent?.name ?? "Squad member",
         // Final-review fix C2 (fixture-fidelity follow-up): the real gateway
         // ignores nothing here — `create(agentID:)` (ConversationListFeature.swift)
         // always sends `title: nil` for the compose-first flow, so the

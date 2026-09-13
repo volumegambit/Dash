@@ -356,7 +356,7 @@ class DashUITestCase: XCTestCase {
   /// see `tabBarFallback(_:in:)`.
   private static let tabTitles = [
     "tab.conversations": "Conversations",
-    "tab.agents": "Agents",
+    "tab.agents": "Squad",
     "tab.settings": "Settings",
   ]
 

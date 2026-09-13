@@ -151,7 +151,7 @@ describe('composeNotificationText', () => {
   it('renders the §7.3 task-notification block verbatim', () => {
     const text = composeNotificationText([item({ payload: finishedPayload() })]);
     expect(text).toBe(
-      `${NOTIFICATION_PREAMBLE}\n\n<task-notification>\n<task-id>sub_01</task-id>\n<agent-name>scout</agent-name>\n<status>completed</status>\n<summary>Agent "survey the repo" finished</summary>\n<result>\nall clear\n</result>\n</task-notification>`,
+      `${NOTIFICATION_PREAMBLE}\n\n<task-notification>\n<task-id>sub_01</task-id>\n<agent-name>scout</agent-name>\n<status>completed</status>\n<summary>Squad member "survey the repo" finished</summary>\n<result>\nall clear\n</result>\n</task-notification>`,
     );
   });
 

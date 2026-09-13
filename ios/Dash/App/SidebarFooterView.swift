@@ -21,7 +21,7 @@ struct SidebarFooterView: View {
         systemImage: "bubble.left.and.bubble.right",
         identifier: "tab.conversations"
       )
-      row(.agents, title: "Agents", systemImage: "person.2", identifier: "tab.agents")
+      row(.agents, title: "Squad", systemImage: "person.2", identifier: "tab.agents")
       row(.settings, title: "Settings", systemImage: "gearshape", identifier: "tab.settings")
     }
     .background(.bar)

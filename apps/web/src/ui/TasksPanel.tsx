@@ -51,7 +51,7 @@ type WebAppStore = UseBoundStore<StoreApi<WebAppState>>;
 
 /** Exact tooltip on a resume that cannot be sent, matching the block
  * composer's own copy (`ONE_SHOT_COMPOSER_TITLE`). */
-export const ONE_SHOT_RESUME_TITLE = 'One-shot agents cannot be resumed';
+export const ONE_SHOT_RESUME_TITLE = 'One-shot squad members cannot be resumed';
 
 /** Shown when a stop failed with nothing more specific to say. */
 export const TASKS_STOP_FAILED_COPY = 'Could not stop this agent. Try again.';

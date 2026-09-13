@@ -53,7 +53,7 @@ import {
 type WebAppStore = UseBoundStore<StoreApi<WebAppState>>;
 
 /** Exact tooltip on a composer that cannot send, per the design brief. */
-export const ONE_SHOT_COMPOSER_TITLE = 'One-shot agents cannot be resumed';
+export const ONE_SHOT_COMPOSER_TITLE = 'One-shot squad members cannot be resumed';
 
 /** Screen-reader-only status word for the row header's accessible name — the
  * glyph itself is `aria-hidden`, so without this a row announces only its type
@@ -280,7 +280,7 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
               {transcript ? (
                 <ChildTranscript transcript={transcript} renderContent={renderContent} />
               ) : (
-                <p className="subagent-transcript-empty">Loading this agent's transcript…</p>
+                <p className="subagent-transcript-empty">Loading this squad member's transcript…</p>
               )}
             </div>
           ) : null}
@@ -291,7 +291,7 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
           ) : null}
           {!nested && !group.report ? (
             <p className="subagent-transcript-empty">
-              Nested agents this deep are not opened here.
+              Nested squad members this deep are not opened here.
             </p>
           ) : null}
           {nested ? (
@@ -299,8 +299,8 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
               store={store}
               uiKey={bodyComposerKey(subagentId)}
               testId="subagent-composer"
-              label={`Message ${group.type || 'sub-agent'}`}
-              placeholder={oneShot ? ONE_SHOT_COMPOSER_TITLE : 'Type into this agent…'}
+              label={`Message ${group.type || 'squad member'}`}
+              placeholder={oneShot ? ONE_SHOT_COMPOSER_TITLE : 'Type into this squad member…'}
               disabled={!canSteer}
               title={oneShot ? ONE_SHOT_COMPOSER_TITLE : undefined}
               onSend={send}
@@ -324,7 +324,7 @@ function ChildTranscript({
   renderContent: (content: ConversationContent, streaming: boolean) => ReactNode;
 }): ReactNode {
   if (transcript.messages.length === 0 && !transcript.streaming) {
-    return <p className="subagent-transcript-empty">Nothing from this agent yet.</p>;
+    return <p className="subagent-transcript-empty">Nothing from this squad member yet.</p>;
   }
   return (
     <>

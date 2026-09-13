@@ -421,7 +421,8 @@ export function AgentConfigTab({
     return (
       <div className="flex items-center justify-center py-12">
         <p className="text-sm text-muted">
-          Agent configuration is not available. Start the agent to view and edit its configuration.
+          Squad member configuration is not available. Start the squad member to view and edit its
+          configuration.
         </p>
       </div>
     );
