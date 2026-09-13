@@ -116,7 +116,7 @@ export function composeNotificationText(items: PendingNotification[]): string {
       const scanned = scanSubagentOutput(String(report), { envelope: true });
       const resultText = scanned.text;
 
-      const block = `<task-notification>\n<task-id>${escapeAttribute(String(subagentId))}</task-id>\n<agent-name>${escapeAttribute(String(agentName))}</agent-name>\n<status>${escapeAttribute(statusValue)}</status>\n<summary>Agent "${escapeAttribute(String(description))}" finished</summary>\n<result>\n${resultText}\n</result>\n</task-notification>`;
+      const block = `<task-notification>\n<task-id>${escapeAttribute(String(subagentId))}</task-id>\n<agent-name>${escapeAttribute(String(agentName))}</agent-name>\n<status>${escapeAttribute(statusValue)}</status>\n<summary>Squad member "${escapeAttribute(String(description))}" finished</summary>\n<result>\n${resultText}\n</result>\n</task-notification>`;
       blocks.push(block);
     } else if (item.kind === 'subagent_message') {
       // §7.3's child→parent message envelope. The kind is part of the driver

@@ -75,7 +75,7 @@ export function Skills({ client }: SkillsProps): ReactElement {
     <section className="skills" aria-label="Skills">
       {agents.length > 1 && (
         <label className="skills-agent-picker">
-          Agent
+          Squad member
           <select value={agentId} onChange={(event) => setAgentId(event.target.value)}>
             {agents.map((agent) => (
               <option key={agent.id} value={agent.id}>

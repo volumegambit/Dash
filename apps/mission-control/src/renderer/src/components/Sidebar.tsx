@@ -36,7 +36,7 @@ const sections: NavSection[] = [
   {
     items: [
       { to: '/chat', label: 'Chat', icon: MessageCircle },
-      { to: '/agents', label: 'Agents', icon: Bot },
+      { to: '/agents', label: 'Squad', icon: Bot },
       { to: '/projects', label: 'Projects', icon: FolderKanban },
     ],
   },

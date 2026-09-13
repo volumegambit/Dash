@@ -49,11 +49,11 @@ func subagentRowIsNested(depth: Int) -> Bool {
 
 /// Exact copy shown where a grandchild's transcript would be. Byte-identical
 /// to web's dead-end line.
-let subagentDeadEndCopy = "Nested agents this deep are not opened here."
+let subagentDeadEndCopy = "Nested squad members this deep are not opened here."
 
 /// Exact copy on a body composer that cannot send. Byte-identical to web's
 /// `ONE_SHOT_COMPOSER_TITLE`.
-let oneShotComposerTitle = "One-shot agents cannot be resumed"
+let oneShotComposerTitle = "One-shot squad members cannot be resumed"
 
 /// Everything a rendered sub-agent row needs from outside the transcript.
 ///
@@ -324,7 +324,7 @@ struct SubagentCardView: View {
       in: RoundedRectangle(cornerRadius: DashTheme.Radius.medium)
     )
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Agent \(card.type), \(status.title)")
+    .accessibilityLabel("Squad member \(card.type), \(status.title)")
     .accessibilityIdentifier("chat.subagent.\(card.id)")
     .sensoryFeedback(.selection, trigger: isExpanded)
   }
@@ -334,7 +334,7 @@ struct SubagentCardView: View {
   private var header: some View {
     HStack(alignment: .firstTextBaseline, spacing: 6) {
       SubagentStatusGlyph(status: status)
-      Text(card.type.isEmpty ? "agent" : card.type)
+      Text(card.type.isEmpty ? "squad member" : card.type)
         .font(.callout.monospaced())
         .foregroundStyle(.primary)
       if let name = card.name, name.isEmpty == false {
@@ -428,7 +428,7 @@ struct SubagentCardView: View {
         SubagentComposer(
           identifier: "chat.subagent.\(card.id).composer",
           draftKey: "body:\(card.id)",
-          placeholder: ui.oneShot == true ? oneShotComposerTitle : "Type into this agent…",
+          placeholder: ui.oneShot == true ? oneShotComposerTitle : "Type into this squad member…",
           // `oneShot == nil` means NOT YET KNOWN (it rides REST, never an
           // event). Enabled on unknown, deliberately: refusing on a guess is
           // worse than letting the coordinator's own 409 text land on the
@@ -465,7 +465,7 @@ private struct SubagentTranscriptView: View {
   var body: some View {
     if let messages {
       if messages.isEmpty {
-        Text("Nothing from this agent yet.")
+        Text("Nothing from this squad member yet.")
           .font(.caption)
           .foregroundStyle(.secondary)
       } else {
@@ -481,7 +481,7 @@ private struct SubagentTranscriptView: View {
         }
       }
     } else {
-      Text("Loading this agent's transcript…")
+      Text("Loading this squad member's transcript…")
         .font(.caption)
         .foregroundStyle(.secondary)
         .accessibilityIdentifier("chat.subagent.\(childID).loading")
@@ -692,7 +692,7 @@ struct SubagentComposer: View {
       .buttonStyle(.plain)
       .disabled(canSend == false)
       .frame(minWidth: 44, minHeight: 44)
-      .accessibilityLabel("Send to agent")
+      .accessibilityLabel("Send to squad member")
       .accessibilityIdentifier("\(identifier).send")
     }
     .padding(8)

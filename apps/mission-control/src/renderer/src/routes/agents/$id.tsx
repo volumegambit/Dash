@@ -412,7 +412,7 @@ function OverviewTab({
             one height; the Tools card's header is a flex row for its count. */}
         <div className="px-5 py-3 border-b border-border flex items-center">
           <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
-            Agent Info
+            Squad Member Info
           </span>
         </div>
         <div className="p-5 flex flex-col gap-3">

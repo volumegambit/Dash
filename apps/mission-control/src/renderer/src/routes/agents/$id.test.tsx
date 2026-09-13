@@ -114,7 +114,7 @@ describe('AgentDetail', () => {
 
     it('has no permanent Recent Activity placeholder', async () => {
       render(<AgentDetail />);
-      expect(await screen.findByText('Agent Info')).toBeInTheDocument();
+      expect(await screen.findByText('Squad Member Info')).toBeInTheDocument();
       expect(screen.queryByText('Recent Activity')).not.toBeInTheDocument();
       expect(screen.queryByText('No activity recorded.')).not.toBeInTheDocument();
     });

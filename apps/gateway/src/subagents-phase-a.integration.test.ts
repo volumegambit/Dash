@@ -488,7 +488,7 @@ describe('Phase A sub-agents integration (default agent, no swarm/subagents bloc
 
     // 1) The tool told the model what actually happens now.
     expect(launched.content[0]?.text).toBe(
-      'Agent stray launched in the background. You will be notified when it completes.',
+      'Squad member stray launched in the background. You will be notified when it completes.',
     );
 
     // 2) It was genuinely still running when the turn ended (never reported).

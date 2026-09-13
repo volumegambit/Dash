@@ -44,7 +44,7 @@ phone's requests back down that connection.
 graph LR
     Phone["Phone<br/><small>anywhere</small>"] -->|HTTPS / WSS| Relay["Hosted relay<br/><small>run by Dash</small>"]
     Relay -.->|gateway dials out| Gateway["Gateway<br/><small>behind your router</small>"]
-    Gateway --- Agents["Your agents"]
+    Gateway --- Agents["Your squad"]
 ```
 
 TLS protects both network legs, while the hosted relay terminates each leg so it can

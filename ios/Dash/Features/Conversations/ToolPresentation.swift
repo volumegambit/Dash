@@ -52,7 +52,7 @@ enum ToolPresentation {
     // capitalize to "Agent" via the fallback below; it is listed explicitly so
     // the mapping is stated in one place on both platforms rather than
     // falling out of a rule.
-    "agent": "Agent",
+    "agent": "Squad member",
     "send_message": "Send Message",
   ]
 

@@ -105,7 +105,7 @@ struct AgentsListView: View {
       }
     }
     .listStyle(.plain)
-    .navigationTitle("Agents")
+    .navigationTitle("Squad")
     .accessibilityIdentifier("agent.list")
     .refreshable { await feature.refresh() }
     .toolbar {
@@ -116,7 +116,7 @@ struct AgentsListView: View {
             presentation: presentation
           )
         } label: {
-          Label("Create agent", systemImage: "person.badge.plus")
+          Label("Create squad member", systemImage: "person.badge.plus")
             .frame(minWidth: 44, minHeight: 44)
         }
         .disabled(feature.mutationsAllowed == false)

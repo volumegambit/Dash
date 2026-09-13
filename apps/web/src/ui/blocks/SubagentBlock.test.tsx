@@ -640,7 +640,7 @@ describe('SubagentBlock', () => {
       fireEvent.click(within(screen.getByTestId('subagent-block')).getByRole('button'));
 
       const composer = screen.getByTestId('subagent-composer');
-      expect(composer.getAttribute('title')).toBe('One-shot agents cannot be resumed');
+      expect(composer.getAttribute('title')).toBe('One-shot squad members cannot be resumed');
       expect((within(composer).getByRole('textbox') as HTMLInputElement).disabled).toBe(true);
       fireEvent.submit(composer);
       expect(scripted.sendToSubagent).not.toHaveBeenCalled();

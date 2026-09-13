@@ -490,7 +490,7 @@ describe('agent tool', () => {
     const r = await agent.execute('t', { prompt: 'p', description: 'd', run_in_background: true });
     expect(c.waitWorker).not.toHaveBeenCalled();
     expect(r.content[0].text).toBe(
-      'Agent w1 launched in the background. You will be notified when it completes.',
+      'Squad member w1 launched in the background. You will be notified when it completes.',
     );
     expect(r.content[0].text).not.toMatch(/wait_workers/);
   });

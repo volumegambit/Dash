@@ -55,6 +55,6 @@ describe('buildSnapshot', () => {
       },
       { agents: [] },
     );
-    expect(snap.agentName('missing')).toBe('Agent');
+    expect(snap.agentName('missing')).toBe('Squad member');
   });
 });

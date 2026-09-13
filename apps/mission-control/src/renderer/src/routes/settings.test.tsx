@@ -14,7 +14,7 @@ describe('Settings layout', () => {
     render(<SettingsLayout />);
     const expected: Array<[string, string]> = [
       ['General', '/settings'],
-      ['Agent Defaults', '/settings/agent-defaults'],
+      ['Squad Defaults', '/settings/agent-defaults'],
       ['AI Providers', '/settings/ai-providers'],
       ['Connectors (MCP)', '/settings/connectors'],
       ['Plugins', '/settings/plugins'],

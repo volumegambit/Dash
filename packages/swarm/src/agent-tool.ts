@@ -399,7 +399,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
 
   const agent: SwarmExtraTool = {
     name: 'agent',
-    label: 'Agent',
+    label: 'Squad member',
     description: AGENT_TOOL_DESCRIPTION,
     get parameters() {
       return buildParameters();
@@ -433,7 +433,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
           content: [
             {
               type: 'text',
-              text: `Agent ${name ?? workerId} launched in the background.${note}${statusText}`,
+              text: `Squad member ${name ?? workerId} launched in the background.${note}${statusText}`,
             },
           ],
           details: {

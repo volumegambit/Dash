@@ -1752,7 +1752,7 @@ final class ChatFeature {
       await applyReducerAction(
         .subagentTranscriptFailed(
           id: childID,
-          message: subagentFailureText(error, fallback: "Couldn't load this agent's transcript.")
+          message: subagentFailureText(error, fallback: "Couldn't load this squad member's transcript.")
         )
       )
     }
@@ -2259,7 +2259,7 @@ final class ChatFeature {
           // actionable text. Showing it verbatim is design 8.3's "shows the
           // reason"; collapsing it to a generic line throws the only useful
           // part away.
-          message: subagentFailureText(error, fallback: "Couldn't reach this agent.")
+          message: subagentFailureText(error, fallback: "Couldn't reach this squad member.")
         )
       )
       return false

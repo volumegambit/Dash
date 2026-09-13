@@ -73,13 +73,13 @@ function Agents(): JSX.Element {
       {/* Page header */}
       <div className="bg-surface px-8 py-4 border-b border-border flex justify-between items-center flex-shrink-0">
         <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
-          Agents
+          Squad
         </h1>
         <div className="flex gap-3 items-center">
           <div className="relative">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
             <input
-              placeholder="Search Agents..."
+              placeholder="Search Squad..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-56 bg-card-bg border border-border pl-9 pr-3 py-2 rounded-lg text-sm text-foreground placeholder:text-muted focus:outline-none focus:border-accent"
@@ -89,7 +89,7 @@ function Agents(): JSX.Element {
             to="/deploy"
             className="bg-accent text-white px-4 py-2 flex items-center gap-2 font-semibold text-[13px] hover:bg-primary-hover transition-colors"
           >
-            <Plus size={16} /> Deploy Agent
+            <Plus size={16} /> Deploy Squad Member
           </Link>
         </div>
       </div>
@@ -107,13 +107,13 @@ function Agents(): JSX.Element {
         ) : agents.length === 0 ? (
           <div className="border border-border bg-card-bg p-8 text-center">
             <Bot size={24} className="mx-auto mb-2 text-muted" />
-            <p className="text-sm text-muted">No agents deployed yet.</p>
+            <p className="text-sm text-muted">No squad members deployed yet.</p>
             <Link
               to="/deploy"
               className="mt-3 inline-flex items-center gap-1 text-sm text-accent hover:text-primary-hover"
             >
               <Plus size={14} />
-              Deploy your first agent
+              Deploy your first squad member
             </Link>
           </div>
         ) : (
@@ -147,7 +147,7 @@ function Agents(): JSX.Element {
               {/* Table rows */}
               {filtered.length === 0 ? (
                 <div className="px-5 py-6 text-center text-sm text-muted">
-                  No agents match your search.
+                  No squad members match your search.
                 </div>
               ) : (
                 filtered.map((agent) => (
@@ -177,7 +177,9 @@ function Agents(): JSX.Element {
             <h2 className="text-base font-semibold font-[family-name:var(--font-display)]">
               Remove {removeTarget.name}?
             </h2>
-            <p className="mt-1 text-sm text-muted">This will remove the agent from the gateway.</p>
+            <p className="mt-1 text-sm text-muted">
+              This will remove the squad member from the gateway.
+            </p>
 
             <div className="mt-6 flex justify-end gap-2">
               <button

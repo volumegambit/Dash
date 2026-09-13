@@ -7,7 +7,7 @@ Dash is configured through **Mission Control**. There are no config files to han
 
 This page explains what you can configure, where Dash stores its data, and the few environment variables and CLI flags available when you run the gateway on its own.
 
-## Agent settings
+## Squad member settings
 
 Each agent is configured in Mission Control's **Deploy** wizard (and editable later from the agent's **Configuration** tab). An agent has these settings:
 
@@ -18,7 +18,7 @@ Each agent is configured in Mission Control's **Deploy** wizard (and editable la
 | Tools | no | Which capabilities the agent can use. See [Tools](/tools) for the full list. |
 | Max tokens | no | Maximum response length in tokens (default: `4096`). |
 | Working directory | no | Where the agent's file and shell tools operate. Defaults to `~/.dash/workspaces/<agent-id>`. |
-| Fallback models | no | Backup models to try if the primary model is unavailable. See [Agents](/agents#fallback-models). |
+| Fallback models | no | Backup models to try if the primary model is unavailable. See [Squad](/agents#fallback-models). |
 | Extended thinking | no | Let the model reason before responding. See [Extended thinking](/extended-thinking). |
 | Skills | no | Reusable instructions the agent can discover and load. See [Skills](/skills). |
 
