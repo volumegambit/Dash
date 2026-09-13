@@ -33,14 +33,16 @@ struct AgentsListView: View {
             // so the badge meant to flag the unusual case cost a line on
             // every row where nothing was wrong. Three agents filled a
             // column that now holds eight.
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-              // `firstTextBaseline`, not centre: against a multi-line row the
-              // glyph used to float halfway down instead of sitting with the
-              // name it describes.
-              Image(systemName: agent.status.systemImage)
-                .foregroundStyle(agent.status.color)
-                .frame(width: 28)
-                .accessibilityHidden(true)
+            HStack(alignment: .center, spacing: 12) {
+              // Avatar (agents-list goal 2026-09-10): the status glyph
+              // column rendered `checkmark.circle` on every healthy agent,
+              // a decoration that said nothing. The avatar carries identity
+              // (initials + a colour stable per name), and status moved to
+              // a corner dot that only appears for the states worth
+              // reacting to — same rule as the text line below. Centre
+              // alignment, not `firstTextBaseline`: a 36pt circle has no
+              // baseline, it belongs optically centred on the two-line row.
+              AgentAvatar(name: agent.name, status: agent.status)
               VStack(alignment: .leading, spacing: 3) {
                 Text(agent.name)
                   .font(.headline)
@@ -142,14 +144,8 @@ extension RegisteredAgentStatus {
     }
   }
 
-  var systemImage: String {
-    switch self {
-    case .registered: "checkmark.circle"
-    case .active: "waveform.circle"
-    case .disabled: "pause.circle"
-    }
-  }
-
+  /// Colours the avatar's corner status dot (`AgentAvatar.status`), which
+  /// replaced the per-row status glyph — `systemImage` went with the glyph.
   var color: Color {
     switch self {
     case .registered: DashTheme.accent
