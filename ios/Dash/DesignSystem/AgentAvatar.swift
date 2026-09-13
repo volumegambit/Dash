@@ -56,12 +56,34 @@ struct AgentAvatar: View {
   /// than using `Hashable.hashValue` (seeded per-process since Swift 4.2).
   /// The palette leans on system colours so it adapts to both schemes.
   static func color(for name: String) -> Color {
-    let palette: [Color] = [
-      DashTheme.accent, .teal, .indigo, .orange, .pink, .mint, .purple, .cyan,
-    ]
-    let hash = name.unicodeScalars.reduce(into: UInt64(5381)) { result, scalar in
-      result = result &* 127 &+ UInt64(scalar.value)
-    }
-    return palette[Int(hash % UInt64(palette.count))]
+    AgentAvatarPalette.colors[paletteIndex(for: name)]
   }
+
+  /// The palette bucket a name maps to, as a stable `Int` index. Exposed
+  /// separately from `color(for:)` because SwiftUI `Color` is not safely
+  /// `Equatable` for test assertions — comparing two `Color` values crashes
+  /// the test process. The bucket index is the pure, deterministic thing to
+  /// pin in tests.
+  ///
+  /// Hashes `name.utf8` rather than `name.unicodeScalars`: the scalar view
+  /// is a lazily-bridged collection whose iteration crosses an executor
+  /// boundary and trips a dispatch-queue assertion under Swift 6.1's
+  /// strict-concurrency test runner. UTF-8 bytes are contiguous and give the
+  /// same deterministic, launch-stable result for the ASCII agent names in
+  /// practice.
+  static func paletteIndex(for name: String) -> Int {
+    var hash: UInt64 = 5381
+    for byte in name.utf8 {
+      hash = hash &* 127 &+ UInt64(byte)
+    }
+    return Int(hash % UInt64(AgentAvatarPalette.colors.count))
+  }
+}
+
+/// The fixed avatar palette. Kept separate from `AgentAvatar` so both the
+/// rendering path and the count used for modulo-indexing stay in one place.
+private enum AgentAvatarPalette {
+  static let colors: [Color] = [
+    DashTheme.accent, .teal, .indigo, .orange, .pink, .mint, .purple, .cyan,
+  ]
 }

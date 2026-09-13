@@ -9,6 +9,7 @@ import Testing
 /// not wherever registration order left it. Static and pure for the same
 /// reason `ComposeAgentSelection.resolve` is.
 @Suite("AgentPickerSheet ordering (agents-list goal 2026-09-10)")
+@MainActor
 struct AgentPickerSheetTests {
   @Test("current agent floats to the top, others keep their order")
   func currentAgentFirst() {

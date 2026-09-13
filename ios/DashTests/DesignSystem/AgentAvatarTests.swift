@@ -9,6 +9,7 @@ import Testing
 /// cannot ride on `Hashable.hashValue` (per-process seeded since Swift 4.2),
 /// and the initials must survive the name shapes agents actually have.
 @Suite("AgentAvatar derivations (agents-list goal 2026-09-10)")
+@MainActor
 struct AgentAvatarTests {
   @Test("initials: first and last word, uppercased")
   func initialsMultiWord() {
@@ -30,9 +31,12 @@ struct AgentAvatarTests {
 
   @Test("colour is deterministic per name and drawn from the fixed palette")
   func colourDeterministic() {
-    #expect(AgentAvatar.color(for: "Dev") == AgentAvatar.color(for: "Dev"))
+    #expect(AgentAvatar.paletteIndex(for: "Dev") == AgentAvatar.paletteIndex(for: "Dev"))
     // Not a strict guarantee for arbitrary pairs (8 buckets), but these two
     // must differ or the palette hash has collapsed.
-    #expect(AgentAvatar.color(for: "Dev") != AgentAvatar.color(for: "Chief of Staff"))
+    #expect(
+      AgentAvatar.paletteIndex(for: "Dev")
+        != AgentAvatar.paletteIndex(for: "Chief of Staff")
+    )
   }
 }
