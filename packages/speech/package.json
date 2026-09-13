@@ -1,0 +1,31 @@
+{
+  "name": "@dash/speech",
+  "version": "0.2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "dependencies": {
+    "@dash/agent": "*",
+    "@dash/mobile-contract": "*"
+  },
+  "tsup": {
+    "entry": ["src/index.ts"],
+    "format": ["esm"],
+    "dts": true,
+    "clean": true,
+    "sourcemap": true
+  }
+}
