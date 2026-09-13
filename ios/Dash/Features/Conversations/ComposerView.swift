@@ -167,8 +167,17 @@ struct ComposerView: View {
             )
           }
         } else {
+          // Left controls: all input-mode buttons sit on the left so the right
+          // side has only the send/cancel action. mic · voice · photo (in that
+          // order when all three are present) — ordered by how often each is
+          // used. Voice mode replaces the whole composer, so it belongs in the
+          // input cluster rather than stranded after the send button.
           if feature.dictation != nil {
             dictationButton
+          }
+
+          if feature.voiceModeAvailable {
+            voiceModeButton
           }
 
           photoPicker
@@ -238,10 +247,6 @@ struct ComposerView: View {
             }
 
           primaryAction
-
-          if feature.voiceModeAvailable {
-            voiceModeButton
-          }
         }
       }
 
@@ -261,9 +266,15 @@ struct ComposerView: View {
         draftStatus
       }
     }
+    // Content is capped at readableWidth to match the transcript column, but
+    // the bar material fills the full pane width so the bottom edge looks
+    // continuous rather than a floating island on wide iPad layouts. The same
+    // pattern the transcript VStack uses: constrain content, then expand to
+    // fill and paint the background on the outer frame.
     .frame(maxWidth: DashTheme.Layout.readableWidth)
     .padding(.horizontal)
     .padding(.vertical, 10)
+    .frame(maxWidth: .infinity)
     .background(.bar)
     // iPad goal Phase B, Task 8 review fix: a drag released over the
     // composer's own `TextField` never reaches `ChatView`'s outer
