@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '../../../../vitest.setup.js';
 import type { McAgentEvent } from '../../../shared/ipc.js';
 import { groupSubagentEvents } from '../routes/chat.swarm.js';
-import { conversationKey, initChatListeners, sortConversations, useChatStore } from './chat.js';
+import { conversationKey, initChatListeners, useChatStore } from './chat.js';
 
 const gatewayConversation: McConversationView = {
   id: 'shared-id',
@@ -103,62 +103,6 @@ beforeEach(() => {
     connectionIssue: null,
     subagents: [],
     subagentUi: {},
-  });
-});
-
-describe('sortConversations', () => {
-  function conv(id: string, overrides: Partial<McConversationView> = {}): McConversationView {
-    return {
-      ...gatewayConversation,
-      id,
-      updatedAt: `2026-07-12T00:00:0${id.slice(-1)}Z`,
-      ...overrides,
-    };
-  }
-
-  it('sorts running conversations above idle ones regardless of updatedAt', () => {
-    const idle = conv('a', { updatedAt: '2026-07-12T00:00:09Z', status: 'idle' });
-    const running = conv('b', { updatedAt: '2026-07-12T00:00:01Z', status: 'running' });
-    const sorted = sortConversations([idle, running]);
-    expect(sorted[0].id).toBe('b');
-    expect(sorted[1].id).toBe('a');
-  });
-
-  it('sorts multiple running conversations by updatedAt desc among themselves', () => {
-    const runningOlder = conv('a', { updatedAt: '2026-07-12T00:00:01Z', status: 'running' });
-    const runningNewer = conv('b', { updatedAt: '2026-07-12T00:00:05Z', status: 'running' });
-    const sorted = sortConversations([runningOlder, runningNewer]);
-    expect(sorted[0].id).toBe('b');
-    expect(sorted[1].id).toBe('a');
-  });
-
-  it('sorts idle conversations by updatedAt desc when no running ones exist', () => {
-    const older = conv('a', { updatedAt: '2026-07-12T00:00:01Z', status: 'idle' });
-    const newer = conv('b', { updatedAt: '2026-07-12T00:00:09Z', status: 'idle' });
-    const sorted = sortConversations([older, newer]);
-    expect(sorted[0].id).toBe('b');
-    expect(sorted[1].id).toBe('a');
-  });
-
-  it('moves a conversation to the top when it transitions to running via applyFrame', async () => {
-    const topConv = conv('top', { updatedAt: '2026-07-12T00:00:09Z', status: 'idle' });
-    const bottomConv = conv('bottom', { updatedAt: '2026-07-12T00:00:01Z', status: 'idle' });
-    useChatStore.setState({ conversations: [topConv, bottomConv] });
-
-    await useChatStore.getState().applyFrame({
-      type: 'accepted',
-      id: 'turn-1',
-      conversationId: 'bottom',
-      userMessageId: 'msg-1',
-      assistantMessageId: 'asst-1',
-      revision: 3,
-      seq: 1,
-    });
-
-    const sorted = useChatStore.getState().conversations;
-    expect(sorted[0].id).toBe('bottom');
-    expect(sorted[0].status).toBe('running');
-    expect(sorted[1].id).toBe('top');
   });
 });
 

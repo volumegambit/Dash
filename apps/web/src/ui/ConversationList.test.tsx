@@ -688,8 +688,8 @@ describe('ConversationList', () => {
 
       it('after a successful delete that leaves other conversations behind, focus moves to the search input', async () => {
         const { store } = buildStore([
-          summary({ id: 'conv-1', title: 'Mobile launch check', updatedAt: '2026-07-12T00:00:02.000Z' }),
-          summary({ id: 'conv-2', title: 'Second', updatedAt: '2026-07-12T00:00:01.000Z' }),
+          summary({ id: 'conv-1', title: 'Mobile launch check' }),
+          summary({ id: 'conv-2', title: 'Second' }),
         ]);
 
         render(

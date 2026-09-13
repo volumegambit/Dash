@@ -16,24 +16,6 @@ import { type Transcript, applyServerFrame } from './assemble';
 import { readClientLocation } from './location.js';
 
 /**
- * Sort conversations so that running ones appear on top, then by
- * `updatedAt` descending, then by `id` descending as a tiebreaker.
- *
- * A conversation whose agent is actively streaming a response
- * (`status === 'running'`) stays pinned to the top of the list so the
- * user can always see what's in progress, regardless of how recently
- * the conversation's `updatedAt` was bumped relative to others.
- */
-function sortConversations(items: ConversationSummary[]): ConversationSummary[] {
-  return [...items].sort(
-    (a, b) =>
-      Number(b.status === 'running') - Number(a.status === 'running') ||
-      b.updatedAt.localeCompare(a.updatedAt) ||
-      b.id.localeCompare(a.id),
-  );
-}
-
-/**
  * The per-child FACTS half of a {@link SubagentEntry}, as the gateway reports
  * them.
  *
@@ -1020,10 +1002,8 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         .getConversation(conversationId)
         .then((updated) => {
           set((state) => ({
-            conversations: sortConversations(
-              state.conversations.map((c) =>
-                c.id === conversationId && c.title === titleAtRefreshStart ? updated : c,
-              ),
+            conversations: state.conversations.map((c) =>
+              c.id === conversationId && c.title === titleAtRefreshStart ? updated : c,
             ),
           }));
         })
@@ -1092,7 +1072,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       if (known) return known;
       try {
         const page = await rest.listConversations();
-        set({ conversations: sortConversations(page.items) });
+        set({ conversations: page.items });
         return page.items.find((c) => c.id === conversationId)?.agentId ?? null;
       } catch (err) {
         if (isAuthError(err)) throw err;
@@ -1413,10 +1393,8 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         // untouched for `error` frames so partially-streamed content (and
         // the ability to resume it) is never discarded.
         set((state) => ({
-          conversations: sortConversations(
-            state.conversations.map((c) =>
-              c.id === conversationId ? { ...c, status: 'interrupted' as const } : c,
-            ),
+          conversations: state.conversations.map((c) =>
+            c.id === conversationId ? { ...c, status: 'interrupted' as const } : c,
           ),
         }));
         updateTranscript(conversationId, (t) => ({
@@ -1456,12 +1434,8 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       // handling below).
       if (frame.type === 'accepted') {
         set((state) => ({
-          conversations: sortConversations(
-            state.conversations.map((c) =>
-              c.id === conversationId
-                ? { ...c, revision: frame.revision, status: 'running' as const }
-                : c,
-            ),
+          conversations: state.conversations.map((c) =>
+            c.id === conversationId ? { ...c, revision: frame.revision } : c,
           ),
         }));
         // Round-1 ruling 5, the earlier half of the `done` trigger below. A
@@ -1735,7 +1709,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           requestId: crypto.randomUUID(),
           title,
         });
-        set((state) => ({ conversations: sortConversations([created, ...state.conversations]) }));
+        set((state) => ({ conversations: [created, ...state.conversations] }));
         await get().openConversation(created.id);
         return created;
       },
@@ -1743,7 +1717,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       async loadConversations() {
         try {
           const page = await rest.listConversations();
-          set({ conversations: sortConversations(page.items) });
+          set({ conversations: page.items });
         } catch (err) {
           if (isAuthError(err)) {
             enterUnauthorized();
@@ -1994,9 +1968,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
             updated = await rest.patchConversation(conversationId, { title }, fresh.revision);
           }
           set((state) => ({
-            conversations: sortConversations(
-              state.conversations.map((c) => (c.id === conversationId ? updated : c)),
-            ),
+            conversations: state.conversations.map((c) => (c.id === conversationId ? updated : c)),
           }));
         } catch (err) {
           set({ conversations: previous });

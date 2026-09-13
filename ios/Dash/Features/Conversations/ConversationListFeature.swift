@@ -845,21 +845,6 @@ final class ConversationListFeature {
     return conversationID
   }
 
-  /// Comparator for conversation list ordering: running conversations first,
-  /// then by `updatedAt` descending, then by `id` descending as a tiebreaker.
-  /// Used by `consume()` for both the merged sort and the retained-item
-  /// binary-scan insertion.
-  private static func compareConversations(
-    _ a: ConversationSummaryDTO,
-    _ b: ConversationSummaryDTO
-  ) -> Bool {
-    if (a.status == .running) != (b.status == .running) {
-      return a.status == .running
-    }
-    if a.updatedAt != b.updatedAt { return a.updatedAt > b.updatedAt }
-    return a.id > b.id
-  }
-
   func consume(_ snapshot: SyncSnapshot?) {
     guard let snapshot else { return }
     let wasOnline = mutationsAllowed
@@ -914,10 +899,7 @@ final class ConversationListFeature {
     // placement; this also matches the invariant the retained-item insertion
     // below already assumes (it binary-scans `merged` for the first row older
     // than each retained value).
-    //
-    // Running conversations are pinned to the top so the user can always see
-    // which agents are actively working, regardless of `updatedAt` recency.
-    merged.sort { ConversationListFeature.compareConversations($0.summary, $1.summary) }
+    merged.sort { $0.summary.updatedAt > $1.summary.updatedAt }
     let incomingIDs = Set(scopedCanonical.map(\.id))
     let retained = allConversations.filter {
       incomingIDs.contains($0.id) == false
@@ -925,7 +907,7 @@ final class ConversationListFeature {
     }
     for value in retained {
       let insertionIndex = merged.firstIndex {
-        ConversationListFeature.compareConversations(value.summary, $0.summary)
+        $0.summary.updatedAt < value.summary.updatedAt
       }
       merged.insert(value, at: insertionIndex ?? merged.endIndex)
     }
@@ -1014,9 +996,7 @@ final class ConversationListFeature {
         if mutationsAllowed { await refresh() }
         return
       }
-      allConversations = cachedConversations.sorted {
-        ConversationListFeature.compareConversations($0.summary, $1.summary)
-      }
+      allConversations = cachedConversations
       agents = cachedAgents
       isAuthoritative = false
       applyFilter()
@@ -1073,9 +1053,7 @@ final class ConversationListFeature {
             currentByID[incoming.id] = nil
           }
         }
-        allConversations = refreshed.sorted {
-          ConversationListFeature.compareConversations($0.summary, $1.summary)
-        }
+        allConversations = refreshed
         agents = refreshedAgents
         nextCursor = page.nextCursor
         isAuthoritative = true
