@@ -380,8 +380,8 @@
 		C7BEAF348A753A9EDAD735C9 /* RelativeTimestamp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelativeTimestamp.swift; sourceTree = "<group>"; };
 		CA1C551808B7993EB48681D2 /* PCMFramer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCMFramer.swift; sourceTree = "<group>"; };
 		CAB1AE50FD88C16D8C7EAFB3 /* MarkdownBlocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlocks.swift; sourceTree = "<group>"; };
-		CB766211D04775ECAB7D192C /* DictationFeatureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationFeatureTests.swift; sourceTree = "<group>"; };
 		CAC44965C9563A5332832D18 /* AgentAvatarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentAvatarTests.swift; sourceTree = "<group>"; };
+		CB766211D04775ECAB7D192C /* DictationFeatureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationFeatureTests.swift; sourceTree = "<group>"; };
 		CB8B2BDE8BE9C3EB8A0C71F6 /* LiveAccountFlowEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveAccountFlowEnvironment.swift; sourceTree = "<group>"; };
 		CC0DF34C0AB00CC7EE97C319 /* SystemWebAuthPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemWebAuthPresenter.swift; sourceTree = "<group>"; };
 		CE855A3D49D0EA45859EF93E /* SignerIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignerIdentity.swift; sourceTree = "<group>"; };
