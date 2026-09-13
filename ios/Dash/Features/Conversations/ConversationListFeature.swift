@@ -854,7 +854,9 @@ final class ConversationListFeature {
     if isRefreshing, mutationsAllowed {
       refreshQueued = true
     }
-    let scopedCanonical = snapshot.conversations.filter { $0.gatewayID == gatewayID }
+    let scopedCanonical = snapshot.conversations.filter {
+      $0.gatewayID == gatewayID && $0.summary.conversationKind != .subagent
+    }
     var currentByID = Dictionary(
       uniqueKeysWithValues: allConversations.map { ($0.id, $0.summary) }
     )

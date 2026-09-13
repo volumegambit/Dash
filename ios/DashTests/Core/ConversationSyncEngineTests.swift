@@ -37,6 +37,39 @@ struct ConversationSyncEngineTests {
     #expect(canonical.mutationsAllowed)
   }
 
+  @Test("refreshConversation skips subagent conversations from SSE invalidation")
+  func refreshConversationSkipsSubagent() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversationPage(
+      .success(.init(items: [summary(id: "user-1", title: "User Chat")], nextCursor: nil))
+    )
+    // SSE invalidation fires for a subagent conversation.
+    await api.enqueueConversation(
+      id: "sub_01",
+      result: .success(summary(id: "sub_01", title: "Child Worker", kind: "subagent"))
+    )
+    let engine = makeEngine(store: store, api: api)
+    let stream = await engine.snapshots()
+    var snapshots = stream.makeAsyncIterator()
+    let bootstrap = Task { await engine.bootstrap() }
+    await bootstrap.value
+    // Drain the bootstrap snapshot.
+    _ = try #require(await snapshots.next())
+    let online = try #require(await snapshots.next())
+    #expect(online.conversations.map(\.id) == ["user-1"])
+
+    // Simulate an SSE conversation:changed event for the subagent.
+    await engine.refreshConversation(id: "sub_01")
+    // No new snapshot should contain the subagent.  The engine may not
+    // publish a new snapshot at all (it returns early), so just verify
+    // the cache doesn't contain it.
+    let cached = try await store.conversations(gatewayID: "gw", limit: 100)
+    #expect(cached.contains(where: { $0.id == "sub_01" }) == false)
+    await engine.shutdown()
+  }
+
   @Test("transport reconnect retries the full authoritative bootstrap")
   func reconnectRetriesAgentsAndConversations() async throws {
     let store = try PersistenceStore.inMemory()
@@ -1869,7 +1902,8 @@ struct ConversationSyncEngineTests {
     status: ConversationStatus = .idle,
     activeTurnID: String? = nil,
     updatedAt: Date = instant(10),
-    deletedAt: Date? = nil
+    deletedAt: Date? = nil,
+    kind: String? = nil
   ) -> ConversationSummaryDTO {
     ConversationSummaryDTO(
       id: id,
@@ -1885,7 +1919,11 @@ struct ConversationSyncEngineTests {
       lastMessagePreview: title,
       createdAt: instant(0),
       updatedAt: updatedAt,
-      deletedAt: deletedAt
+      deletedAt: deletedAt,
+      kind: kind,
+      parentConversationId: nil,
+      parentTurnId: nil,
+      subagent: nil
     )
   }
 

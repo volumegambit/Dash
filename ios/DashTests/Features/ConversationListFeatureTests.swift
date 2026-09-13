@@ -46,6 +46,20 @@ struct ConversationListFeatureTests {
     #expect(await recoveryService.discarded == [recovery])
   }
 
+  @Test("subagent conversations are excluded from the conversation list")
+  func subagentConversationsExcludedFromList() async {
+    let feature = makeFeature(service: FakeConversationListService())
+    let userConv = cachedConversation(summary(id: "user-1", title: "My Chat"))
+    let subagentConv = cachedConversation(
+      summary(id: "sub_01", title: "Child Worker", kind: "subagent")
+    )
+    feature.consume(
+      snapshot(connection: .online, conversations: [userConv, subagentConv])
+    )
+    #expect(feature.conversations.count == 1)
+    #expect(feature.conversations.first?.id == "user-1")
+  }
+
   @Test("last-used agent is nil until recorded, then persists per gateway")
   func lastUsedAgentPersistsPerGateway() async {
     let store = FakeLastUsedAgentStore()
@@ -2036,7 +2050,8 @@ struct ConversationListFeatureTests {
     title: String = "Conversation",
     revision: Int = 1,
     status: ConversationStatus = .idle,
-    updatedAt: Int = 20
+    updatedAt: Int = 20,
+    kind: String? = nil
   ) -> ConversationSummaryDTO {
     ConversationSummaryDTO(
       id: id,
@@ -2052,7 +2067,11 @@ struct ConversationListFeatureTests {
       lastMessagePreview: "Preview",
       createdAt: Date(timeIntervalSince1970: 10),
       updatedAt: Date(timeIntervalSince1970: TimeInterval(updatedAt)),
-      deletedAt: status == .deleted ? Date(timeIntervalSince1970: 30) : nil
+      deletedAt: status == .deleted ? Date(timeIntervalSince1970: 30) : nil,
+      kind: kind,
+      parentConversationId: nil,
+      parentTurnId: nil,
+      subagent: nil
     )
   }
 
