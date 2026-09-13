@@ -98,7 +98,7 @@ export function createOpenRouterSpeechProvider(
   function headers(): Record<string, string> {
     return {
       Authorization: `Bearer ${opts.apiKey}`,
-      'HTTP-Referer': 'https://github.com/DashSquad',
+      'HTTP-Referer': 'https://dashsquad.ai',
       'X-Title': 'DashSquad',
       'Content-Type': 'application/json',
     };

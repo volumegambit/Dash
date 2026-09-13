@@ -15,7 +15,7 @@ import type { PluginModelCatalog } from '../types.js';
  * preserved.
  */
 const OPENROUTER_ATTRIBUTION_HEADERS: Record<string, string> = {
-  'HTTP-Referer': 'https://github.com/DashSquad',
+  'HTTP-Referer': 'https://dashsquad.ai',
   'X-Title': 'DashSquad',
 };
 

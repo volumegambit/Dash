@@ -1454,6 +1454,66 @@ struct ChatReducerTests {
     #expect(effects.isEmpty)
   }
 
+  @Test("conversation_busy without activeTurnId shows a retryable banner and removes the optimistic send")
+  func busyWithoutActiveTurnId() {
+    var state = chatState()
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .cachedMessagesLoaded(
+        [
+          message(
+            id: "existing-user",
+            turnID: "existing-turn",
+            ordinal: 1,
+            role: .user,
+            status: .completed,
+            content: .user(text: "Existing", images: nil)
+          ),
+          message(
+            id: "existing-assistant",
+            turnID: "existing-turn",
+            ordinal: 2,
+            role: .assistant,
+            status: .completed,
+            content: .assistant(events: [.textDelta(text: "Canonical")])
+          ),
+        ],
+        cursor: 0
+      )
+    )
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .sendStarted(
+        turnID: "local-turn",
+        localUserID: "local-user",
+        text: "Rejected message",
+        images: []
+      )
+    )
+    let frame = MobileWSServerFrame.error(
+      id: "local-turn",
+      conversationId: nil,
+      seq: nil,
+      error: "Agent is being disabled. Try again shortly.",
+      code: "conversation_busy",
+      retryable: true,
+      activeTurnId: nil
+    )
+
+    let effects = ChatReducer.reduce(state: &state, action: .frame(frame))
+
+    // The optimistic user message is removed.
+    #expect(state.messages.map(\.id) == ["existing-user", "existing-assistant"])
+    // No failed assistant message is created.
+    #expect(state.messages.allSatisfy { $0.role != .assistant || $0.status != .failed })
+    // A user-friendly error banner is shown.
+    #expect(state.errorBanner == "A response is already in progress. Try again shortly.")
+    // The composer is NOT blocked (no activeTurnId to block with).
+    #expect(state.composerBlock == nil)
+    #expect(state.activeTurnID == nil)
+    #expect(effects.isEmpty)
+  }
+
   @Test("a stale local terminal cannot clear an authoritative remote active turn")
   func staleTerminalPreservesRemoteTurn() {
     var state = chatState()

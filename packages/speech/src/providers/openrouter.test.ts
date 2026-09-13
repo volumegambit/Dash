@@ -90,7 +90,7 @@ describe('createOpenRouterSpeechProvider', () => {
       );
       expect(calls[0]?.method).toBe('GET');
       expect(calls[0]?.headers.Authorization).toBe('Bearer sk-or-test');
-      expect(calls[0]?.headers['HTTP-Referer']).toBe('https://github.com/DashSquad');
+      expect(calls[0]?.headers['HTTP-Referer']).toBe('https://dashsquad.ai');
       expect(calls[0]?.headers['X-Title']).toBe('DashSquad');
     });
 
@@ -133,7 +133,7 @@ describe('createOpenRouterSpeechProvider', () => {
       expect(calls[0]?.url).toBe('https://openrouter.ai/api/v1/audio/transcriptions');
       expect(calls[0]?.method).toBe('POST');
       expect(calls[0]?.headers.Authorization).toBe('Bearer sk-or-test');
-      expect(calls[0]?.headers['HTTP-Referer']).toBe('https://github.com/DashSquad');
+      expect(calls[0]?.headers['HTTP-Referer']).toBe('https://dashsquad.ai');
       expect(calls[0]?.headers['X-Title']).toBe('DashSquad');
       expect(calls[0]?.body).toEqual({
         model: 'openai/whisper-large-v3',
@@ -202,7 +202,7 @@ describe('createOpenRouterSpeechProvider', () => {
       expect(calls[0]?.url).toBe('https://openrouter.ai/api/v1/audio/speech');
       expect(calls[0]?.method).toBe('POST');
       expect(calls[0]?.headers.Authorization).toBe('Bearer sk-or-test');
-      expect(calls[0]?.headers['HTTP-Referer']).toBe('https://github.com/DashSquad');
+      expect(calls[0]?.headers['HTTP-Referer']).toBe('https://dashsquad.ai');
       expect(calls[0]?.headers['X-Title']).toBe('DashSquad');
       expect(calls[0]?.body).toMatchObject({
         model: 'minimax/speech-2.8-turbo',

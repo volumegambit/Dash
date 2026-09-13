@@ -40,18 +40,50 @@ struct AgentPickerSheet: View {
               onSelect(agent)
               dismiss()
             } label: {
-              HStack {
-                Text(agent.name)
-                  .foregroundStyle(.primary)
+              // Two-line row mirroring `AgentsListView` (agents-list goal
+              // 2026-09-10) — this sheet was bare accent-blue text rows,
+              // which read as links rather than choices, with nothing to
+              // tell two agents on the same model apart at a glance. Name
+              // carries `.primary` (not accent), the model's short name
+              // sits under it, and the avatar gives each agent a stable
+              // identity mark shared with the Agents tab.
+              HStack(spacing: 12) {
+                AgentAvatar(name: agent.name)
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(agent.name)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                  Text(agent.config.model.split(separator: "/").last.map(String.init)
+                    ?? agent.config.model)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                }
                 Spacer()
                 if agent.id == currentAgentID {
                   Image(systemName: "checkmark")
+                    .font(.body.weight(.semibold))
                     .foregroundStyle(DashTheme.accent)
+                    .accessibilityHidden(true)
                 }
               }
               .frame(minHeight: 44)
               .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            // The faint wash the conversation and agent lists use for their
+            // selected row, so "which one is current" reads the same way on
+            // every list surface — the checkmark alone had to carry it before.
+            .listRowBackground(
+              agent.id == currentAgentID
+                ? DashTheme.accent.opacity(DashTheme.Opacity.fillMuted)
+                : Color.clear
+            )
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(agent.name), \(agent.config.model)")
             .accessibilityIdentifier("chat.agentPicker.row.\(agent.id)")
             .accessibilityAddTraits(agent.id == currentAgentID ? .isSelected : [])
           }
@@ -68,7 +100,26 @@ struct AgentPickerSheet: View {
     .accessibilityIdentifier("chat.agentPicker.sheet")
   }
 
+  /// Enabled agents, current one first (the default you are most likely
+  /// re-confirming or switching away from belongs at the top, not wherever
+  /// registration order left it). Pure and static so the ordering rule is
+  /// unit-testable the way `ComposeAgentSelection.resolve` is.
   private var availableAgents: [RegisteredAgentDTO] {
-    agents.filter { $0.status != .disabled }
+    Self.availableAgents(agents, currentAgentID: currentAgentID)
+  }
+
+  static func availableAgents(
+    _ agents: [RegisteredAgentDTO],
+    currentAgentID: String?
+  ) -> [RegisteredAgentDTO] {
+    let enabled = agents.filter { $0.status != .disabled }
+    guard let currentAgentID,
+      let currentIndex = enabled.firstIndex(where: { $0.id == currentAgentID }),
+      currentIndex != 0
+    else { return enabled }
+    var reordered = enabled
+    let current = reordered.remove(at: currentIndex)
+    reordered.insert(current, at: 0)
+    return reordered
   }
 }

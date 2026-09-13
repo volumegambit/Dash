@@ -73,6 +73,68 @@ describe('createModelsRoute', () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
+  it('refreshes an expired list on mobile GET and retains the last good list on provider failure', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const discover = vi.fn().mockResolvedValue({
+        models: [{ value: 'anthropic/new', label: 'New', provider: 'anthropic' }],
+        errors: {},
+        providersConfigured: 1,
+      });
+      const controller = createModelsController({
+        store,
+        credentialStore: makeCredentialStore({ anthropic: 'key' }),
+        getProviderConfigs: () => makeConfigs([anthropicCatalog]),
+        discover,
+      });
+      const first = await controller.get();
+      vi.setSystemTime(Date.now() + 6 * 60 * 60 * 1000);
+      discover.mockResolvedValue({
+        models: [],
+        errors: { anthropic: 'temporary outage' },
+        providersConfigured: 1,
+      });
+      const stale = await controller.get();
+      expect(discover).toHaveBeenCalledTimes(2);
+      expect(stale.models).toContainEqual(first.models[0]);
+      expect(stale.fetchedAt).toBe(first.fetchedAt);
+      expect(stale.errors.anthropic).toBe('temporary outage');
+      await controller.get();
+      expect(discover).toHaveBeenCalledTimes(2); // bounded retry, not every picker open
+      vi.setSystemTime(Date.now() + 5 * 60 * 1000);
+      discover.mockResolvedValue({
+        models: [{ value: 'anthropic/newer', label: 'Newer', provider: 'anthropic' }],
+        errors: {},
+        providersConfigured: 1,
+      });
+      expect((await controller.get()).models[0].value).toBe('anthropic/newer');
+      expect(discover).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('invalidates same-day catalog changes even when another catalog has the newest review date', async () => {
+    const discover = vi.fn().mockResolvedValue({
+      models: [{ value: 'anthropic/a', label: 'A', provider: 'anthropic' }],
+      errors: {},
+      providersConfigured: 1,
+    });
+    let catalog = anthropicCatalog;
+    const controller = createModelsController({
+      store,
+      credentialStore: makeCredentialStore({ anthropic: 'key' }),
+      getProviderConfigs: () =>
+        makeConfigs([catalog, { ...myllmCatalog, reviewedAt: '2026-07-20' }]),
+      discover,
+    });
+    await controller.get();
+    catalog = { ...catalog, supportedPatterns: [{ pattern: 'claude-*', tier: 1 }] };
+    const result = await controller.get();
+    expect(discover).toHaveBeenCalledTimes(2);
+    expect(result.supportedModelsReviewedAt).toBe('2026-07-20'); // wire remains an ISO date
+  });
+
   it('GET /models with no credentials serves source=bootstrap: the catalogs’ static models in sortOrder, not persisted', async () => {
     const discover = vi.fn().mockResolvedValue({ models: [], errors: {}, providersConfigured: 0 });
     const app = createModelsRoute({

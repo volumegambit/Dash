@@ -69,6 +69,15 @@ describe('bundled catalogs served to the mobile model picker', () => {
     const ids = [
       'openai/gpt-6-astra',
       'openai/gpt-6-astra-pro',
+      'z-ai/glm-5.3',
+      'z-ai/glm-5.3-flash',
+      'deepseek/deepseek-v4.1-flash',
+      'qwen/qwen3.8-max-0902',
+      'google/gemini-3.8-flash',
+      'anthropic/claude-fable-5.1',
+      'x-ai/grok-4.6',
+      'minimax/minimax-m3',
+      'meta/muse-spark-1.3',
       'openai/gpt-5.6-sol',
       'openai/gpt-5.6-sol-pro',
       'openai/gpt-5.6-terra',
@@ -120,7 +129,9 @@ describe('bundled catalogs served to the mobile model picker', () => {
       catalogs.map((catalog) => ({ pluginName: 'dash-core-providers', catalog })),
     );
     for (const id of ids) {
-      expect(runtime.resolve('openrouter', id)).toMatchObject({ input: ['text', 'image'] });
+      expect(runtime.resolve('openrouter', id)).toMatchObject({
+        input: id === 'z-ai/glm-5.3' ? ['text'] : ['text', 'image'],
+      });
     }
   });
 });

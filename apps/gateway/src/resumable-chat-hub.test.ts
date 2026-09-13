@@ -894,7 +894,7 @@ describe('ResumableChatHub', () => {
     try {
       expect(() =>
         hub.start(sendFrame(duringCancellation, 'turn-during-cancel'), makeSink()),
-      ).toThrow('Agent agent-01 is not accepting new turns');
+      ).toThrow('Agent is being disabled. Try again shortly.');
       expect(accepted).not.toHaveBeenCalled();
       expect(autoTitle.schedule).not.toHaveBeenCalled();
       expect(harness.chat).not.toHaveBeenCalled();
@@ -903,7 +903,7 @@ describe('ResumableChatHub', () => {
       await cancellation;
       expect(() =>
         hub.start(sendFrame(afterCancellation, 'turn-after-cancel'), makeSink()),
-      ).toThrow('Agent agent-01 is not accepting new turns');
+      ).toThrow('Agent is being disabled. Try again shortly.');
 
       hub.allowAgent('agent-01');
       register(afterAllow.id).finish();

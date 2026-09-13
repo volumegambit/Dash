@@ -1438,7 +1438,7 @@ describe('createGatewayManagementApp', () => {
             },
             sink,
           ),
-        ).toThrow('Agent a1 is not accepting new turns');
+        ).toThrow('Agent is being disabled. Try again shortly.');
         expect(acceptTurn).toHaveBeenCalledOnce();
         expect(agents.chat).toHaveBeenCalledOnce();
         expect(autoTitle.schedule).toHaveBeenCalledOnce();
@@ -1470,7 +1470,7 @@ describe('createGatewayManagementApp', () => {
             },
             sink,
           ),
-        ).toThrow('Agent a1 is not accepting new turns');
+        ).toThrow('Agent is being disabled. Try again shortly.');
         expect(acceptTurn).toHaveBeenCalledOnce();
         expect(agents.chat).toHaveBeenCalledOnce();
         expect(autoTitle.schedule).toHaveBeenCalledOnce();
