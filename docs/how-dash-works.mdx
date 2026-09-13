@@ -9,69 +9,69 @@ description: "A complete overview of how Dash's components fit together — agen
 
 ## The Big Picture
 
-You define AI agents, deploy them through Mission Control, optionally connect them to messaging apps like Telegram, and interact with them through chat. Agents run autonomously — thinking, using tools, and responding to messages. The whole system runs on your machine, and you stay in control of every piece.
+You define AI squad members, deploy them through Mission Control, optionally connect them to messaging apps like Telegram, and interact with them through chat. Squad members run autonomously — thinking, using tools, and responding to messages. The whole system runs on your machine, and you stay in control of every piece.
 
 ```mermaid
 graph LR
     User -->|manages| MC[Mission Control]
     MC -->|deploys & chats| GW[Gateway]
-    GW --- A1[Agents]
+    GW --- A1[Squad]
     MA[Messaging Apps] -->|messages| GW
 ```
 
-## Agents
+## Squad
 
-An agent is an AI model paired with a system prompt, tools, and skills. Agents run autonomously: they receive messages, reason about them, use tools to take action, and respond. Each agent is configured independently — different models, different tools, different instructions. Agents persist conversations as sessions so they maintain context across messages.
+A squad member is an AI model paired with a system prompt, tools, and skills. Squad members run autonomously: they receive messages, reason about them, use tools to take action, and respond. Each squad member is configured independently — different models, different tools, different instructions. Squad members persist conversations as sessions so they maintain context across messages.
 
-[Learn more about Agents](/agents)
+[Learn more about the Squad](/agents)
 
 ## Mission Control
 
-Mission Control is your command center for the entire system. It's a desktop app that spawns a background gateway process and gives you a UI to deploy agents, chat with them, monitor activity, and connect messaging platforms. Mission Control is also available as a CLI for terminal users and automation.
+Mission Control is your command center for the entire system. It's a desktop app that spawns a background gateway process and gives you a UI to deploy squad members, chat with them, monitor activity, and connect messaging platforms. Mission Control is also available as a CLI for terminal users and automation.
 
 [Learn more about Mission Control](/mission-control)
 
 ## AI Providers
 
-Agents need an AI model to think — you bring your own API key. Dash supports Anthropic (Claude), OpenAI (GPT), and Google (Gemini). Each agent can use a different provider, and you can set fallback models in case one is unavailable.
+Squad members need an AI model to think — you bring your own API key. Dash supports Anthropic (Claude), OpenAI (GPT), and Google (Gemini). Each squad member can use a different provider, and you can set fallback models in case one is unavailable.
 
 [Learn more about AI Providers](/ai-providers)
 
-## Deploying an Agent
+## Deploying a Squad Member
 
-When you deploy an agent through Mission Control, the gateway creates it in-process with its own workspace. You can start, stop, restart, and remove deployments at any time. Configuration changes — model, tools, system prompt — can be made on the fly.
+When you deploy a squad member through Mission Control, the gateway creates it in-process with its own workspace. You can start, stop, restart, and remove deployments at any time. Configuration changes — model, tools, system prompt — can be made on the fly.
 
-[Deploy Your First Agent](/deploy-your-first-agent)
+[Deploy Your First Squad Member](/deploy-your-first-agent)
 
 ## Messaging Apps
 
-Connect your agents to external chat platforms like Telegram and WhatsApp. The Gateway sits between messaging platforms and your agents, routing conversations based on rules you define. One agent can serve multiple messaging apps, and one app can route to different agents.
+Connect your squad members to external chat platforms like Telegram and WhatsApp. The Gateway sits between messaging platforms and your squad members, routing conversations based on rules you define. One squad member can serve multiple messaging apps, and one app can route to different squad members.
 
 [Learn more about Messaging Apps](/messaging-apps)
 
 ## Skills
 
-Skills are reusable instruction sets that extend what an agent knows how to do. Agents discover skills automatically from local directories or remote URLs, and load them on demand. You can create custom skills through Mission Control or let agents create their own.
+Skills are reusable instruction sets that extend what a squad member knows how to do. Squad members discover skills automatically from local directories or remote URLs, and load them on demand. You can create custom skills through Mission Control or let squad members create their own.
 
 [Learn more about Skills](/skills)
 
 ## Tools
 
-Tools are capabilities agents use to interact with the outside world — run shell commands, read files, edit code, search directories. Each tool is sandboxed to the agent's workspace directory for safety. You choose which tools each agent has access to in its configuration.
+Tools are capabilities squad members use to interact with the outside world — run shell commands, read files, edit code, search directories. Each tool is sandboxed to the squad member's workspace directory for safety. You choose which tools each squad member has access to in its configuration.
 
 [Learn more about Tools](/tools)
 
 ## Secrets & Security
 
-API keys and sensitive credentials are encrypted at rest using AES-256-GCM. The encryption key is derived from a password you set and cached in your OS keychain. Gateway management tokens also live in the OS keychain, never in plaintext files. Agents run in sandboxed workspace directories, and your data never leaves your machine except to your chosen AI provider.
+API keys and sensitive credentials are encrypted at rest using AES-256-GCM. The encryption key is derived from a password you set and cached in your OS keychain. Gateway management tokens also live in the OS keychain, never in plaintext files. Squad members run in sandboxed workspace directories, and your data never leaves your machine except to your chosen AI provider.
 
 [Learn more about Secrets](/secrets)
 
 ## Chat
 
-Talk to your agents through Mission Control's built-in tabbed chat, through connected messaging apps like Telegram, or programmatically via the WebSocket API. Messages stream in real time — you see the agent thinking, using tools, and building its response as it goes. Conversations persist as sessions, so agents remember previous context.
+Talk to your squad members through Mission Control's built-in tabbed chat, through connected messaging apps like Telegram, or programmatically via the WebSocket API. Messages stream in real time — you see the squad member thinking, using tools, and building its response as it goes. Conversations persist as sessions, so squad members remember previous context.
 
-[Chat with Your Agent](/chat-with-your-agent)
+[Chat with Your Squad Member](/chat-with-your-agent)
 
 ## What's Next
 

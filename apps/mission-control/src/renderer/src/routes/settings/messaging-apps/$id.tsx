@@ -381,10 +381,10 @@ function RuleCard({
             {agentMissing && (
               <span
                 className="ml-1.5 inline-flex items-center gap-1 text-amber-400"
-                title="Agent not found — messages matching this rule will be dropped"
+                title="Squad member not found — messages matching this rule will be dropped"
               >
                 <AlertTriangle size={11} />
-                Agent not found
+                Squad member not found
               </span>
             )}
             {rule.allowList.length > 0 && ` · Allow: ${rule.allowList.join(', ')}`}

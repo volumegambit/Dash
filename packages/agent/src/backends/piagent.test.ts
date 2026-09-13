@@ -2046,3 +2046,91 @@ describe('PiAgentBackend memory event bridge', () => {
     expect(normalize(backend, { type: 'agent_start' })).toEqual([]);
   });
 });
+
+describe('PiAgentBackend isStreaming race guard', () => {
+  it('awaits session.abort() before prompting when session.isStreaming is true on run() entry', async () => {
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+
+    // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
+    let subscribeCb: ((event: any) => void) | null = null;
+    const activeTools = ['read'];
+
+    // Simulate a pi session that starts isStreaming:true (left over from a
+    // previous aborted run). abort() resolves immediately (the abort has
+    // already happened, but finishRun is still pending microtask — we model
+    // this by having abort() flip isStreaming). Then prompt() succeeds normally.
+    let isStreaming = true;
+    const abortFn = vi.fn(async () => {
+      isStreaming = false;
+    });
+
+    const mockSession = {
+      dispose: vi.fn(),
+      // biome-ignore lint/suspicious/noExplicitAny: test mock callback type
+      subscribe: vi.fn((cb: any) => {
+        subscribeCb = cb;
+        return vi.fn();
+      }),
+      prompt: vi.fn(async () => {
+        subscribeCb?.({
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            usage: {
+              input: 1,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 2,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+          },
+        });
+        subscribeCb?.({ type: 'agent_end', messages: [] });
+      }),
+      abort: abortFn,
+      setModel: vi.fn().mockResolvedValue(undefined),
+      getActiveToolNames: vi.fn(() => activeTools),
+      setActiveToolsByName: vi.fn(),
+      // biome-ignore lint/suspicious/noExplicitAny: test mock agent
+      agent: { setSystemPrompt: vi.fn() } as any,
+      get isStreaming() {
+        return isStreaming;
+      },
+    };
+
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
+      session: mockSession as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      extensionsResult: {} as any,
+    });
+
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'Test' },
+      { anthropic: 'test-key' },
+    );
+    await backend.start('/tmp/test');
+
+    const events: AgentEvent[] = [];
+    for await (const ev of backend.run(
+      {
+        channelId: 'ch-1',
+        conversationId: 'conv-1',
+        model: 'anthropic/claude-sonnet-4-20250514',
+        message: 'hello',
+        systemPrompt: 'Test',
+      },
+      {},
+    )) {
+      events.push(ev);
+    }
+
+    // abort() was called because isStreaming was true at run() entry
+    expect(abortFn).toHaveBeenCalledOnce();
+    // The run still succeeded and yielded a response
+    expect(events.some((e) => e.type === 'response')).toBe(true);
+
+    await backend.stop();
+  });
+});

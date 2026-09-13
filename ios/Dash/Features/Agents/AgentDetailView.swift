@@ -84,13 +84,13 @@ struct AgentDetailView: View {
         .frame(maxWidth: .infinity)
       } else {
         ContentUnavailableView(
-          "Agent unavailable",
+          "Squad member unavailable",
           systemImage: "person.crop.circle.badge.questionmark",
-          description: Text("Refresh the agent list and try again.")
+          description: Text("Refresh the squad list and try again.")
         )
       }
     }
-    .navigationTitle(agent?.name ?? "Agent")
+    .navigationTitle(agent?.name ?? "Squad member")
     // Loaded from the view root, not from `memorySection`: a `.task` attached
     // to a `Section` restarts every time the section is rebuilt, and the load
     // itself writes `feature.memories`, so it re-triggers itself forever.
@@ -118,8 +118,8 @@ struct AgentDetailView: View {
         }
       }
     }
-    .alert("Delete \(agent?.name ?? "agent")?", isPresented: $showDeleteConfirmation) {
-      TextField("Type the agent name", text: $deleteName)
+    .alert("Delete \(agent?.name ?? "squad member")?", isPresented: $showDeleteConfirmation) {
+      TextField("Type the squad member name", text: $deleteName)
         .textInputAutocapitalization(.never)
       Button("Cancel", role: .cancel) {}
       Button("Delete", role: .destructive) {
@@ -127,7 +127,7 @@ struct AgentDetailView: View {
       }
       .disabled(deleteName != agent?.name)
     } message: {
-      Text("Type the exact agent name. Its conversations stay archived and read-only.")
+      Text("Type the exact squad member name. Its conversations stay archived and read-only.")
     }
   }
 
@@ -156,7 +156,7 @@ struct AgentDetailView: View {
         Label("Delete", systemImage: "trash")
       }
     } label: {
-      Label("Agent actions", systemImage: "ellipsis.circle")
+      Label("Squad member actions", systemImage: "ellipsis.circle")
         .frame(minWidth: 44, minHeight: 44)
     }
     .disabled(feature.mutationsAllowed == false || isWorking)
@@ -204,7 +204,7 @@ struct AgentDetailView: View {
       }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text("Disabling this agent stops its active work. Existing conversations remain available.")
+      Text("Disabling this squad member stops its active work. Existing conversations remain available.")
     }
   }
 

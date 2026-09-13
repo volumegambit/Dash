@@ -9,7 +9,7 @@ final class IPadUITests: DashUITestCase {
     try XCTSkipUnless(app.windows.firstMatch.frame.width >= 700, "iPad-only")
 
     XCTAssertTrue(element("conversation.list", in: app).waitForExistence(timeout: 5))
-    XCTAssertTrue(element("tab.agents", in: app).exists, "Agents lives in the sidebar footer")
+    XCTAssertTrue(element("tab.agents", in: app).exists, "Squad lives in the sidebar footer")
     XCTAssertTrue(element("tab.settings", in: app).exists, "Settings lives in the sidebar footer")
     XCTAssertTrue(element("detail.newConversation", in: app).exists, "empty detail is actionable")
 

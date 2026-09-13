@@ -195,10 +195,45 @@ describe('createPluginModelCatalog', () => {
     expect(model?.api).toBe('openai-completions');
     expect(model?.provider).toBe('openrouter');
     expect(model?.baseUrl).toBe('https://catalog.example/v1');
-    expect(model?.reasoning).toBe(false);
+    expect(model?.reasoning).toBe(true);
     expect(model?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
     expect(model?.contextWindow).toBe(8000);
     expect(model?.maxTokens).toBe(2000);
+  });
+
+  it('preserves reasoning support for dynamically resolved GLM titles', () => {
+    const catalog = createPluginModelCatalog([
+      entry({
+        id: 'openrouter',
+        label: 'OpenRouter',
+        credentialPrefix: 'openrouter-api-key',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        api: 'openai-completions',
+        models: [],
+        dynamicModels: true,
+        dynamicModelDefaults: { contextWindow: 8000, maxTokens: 4096 },
+      }),
+    ]);
+    const model = catalog.resolve('openrouter', 'z-ai/glm-5.2') as Model<Api>;
+    expect(model.reasoning).toBe(true);
+  });
+
+  it('preserves reasoning levels for models that cannot disable thinking', () => {
+    const catalog = createPluginModelCatalog([
+      entry({
+        id: 'openrouter',
+        label: 'OpenRouter',
+        credentialPrefix: 'openrouter-api-key',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        api: 'openai-completions',
+        models: [],
+        dynamicModels: true,
+        dynamicModelDefaults: { contextWindow: 8000, maxTokens: 4096 },
+      }),
+    ]);
+    const model = catalog.resolve('openrouter', 'openai/gpt-5.5-pro') as Model<Api>;
+    expect(model.reasoning).toBe(true);
+    expect(model.thinkingLevelMap?.off).toBeNull();
   });
 
   it('keeps a dynamic model text-only when pi-ai declares it text-only', () => {

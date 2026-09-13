@@ -35,7 +35,7 @@ enum KeyboardCommand: CaseIterable, Sendable {
     case .nextConversation: "Next Conversation"
     case .settings: "Settings…"
     case .showConversations: "Conversations"
-    case .showAgents: "Agents"
+    case .showAgents: "Squad"
     case .closeConversation: "Close Conversation"
     case .send: "Send"
     case .stop: "Stop Response"

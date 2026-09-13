@@ -1,38 +1,15 @@
 #!/usr/bin/env npx tsx
 /**
- * Audit script for the bundled provider catalogs in
- * apps/gateway/plugins/dash-core-providers/providers/.
+ * Audit the bundled provider catalogs using one live snapshot per provider.
+ * OpenRouter's public API needs no key. Its reviewed frontier families produce
+ * concrete model/metadata additions; unfamiliar families remain review signals.
+ * Other providers report unmatched ids for manual curation and require keys
+ * from the environment or this checkout's .env.local.
  *
- * What it does:
- *   1. Loads provider credentials from process.env (then .env.local at
- *      repo root via a tiny inline parser).
- *   2. For each catalog JSON with a credential, fetches its live /models
- *      list via the same declarative fetcher the gateway uses
- *      (`fetchCatalogModels`).
- *   3. Diffs the live response against the catalog:
- *        - newUnmatched  = live ids matching no supportedPattern (findCatalogPattern → null)
- *        - staleStatics  = catalog.models ids no longer present in the live list
- *        - name drift    = still-live static models whose live label differs from models[].name
- *   4. Prints a human-readable report (or --json for machine output).
- *   5. With --apply, walks each credentialed catalog interactively:
- *        - refreshes names of still-live static models from the live label,
- *        - DROPS static models no longer live,
- *        - does NOT auto-add unmatched ids (curation stays human — prints them),
- *        - bumps that catalog's reviewedAt to today on every audited catalog
- *          (even when unchanged — reviewedAt means "a human looked"),
- *        - writes the JSON back deterministically,
- *      then runs `npm test` + `npm run models:check` and prints the git diff.
- *
- * Usage:
- *   npm run models:audit                   # read-only report
- *   npm run models:audit -- --json         # machine-readable output
- *   npm run models:audit:apply             # interactive update mode
- *
- * Credentials:
- *   The script looks for ANTHROPIC_API_KEY / OPENAI_API_KEY /
- *   GOOGLE_API_KEY / MOONSHOT_API_KEY / OPENROUTER_API_KEY in process.env
- *   first. If not found, loads from .env.local at the repo root. Missing
- *   credentials = catalog is skipped (reported as such, not audited).
+ * --json: complete report; --provider <id>: scoped audit; --check: fail on drift.
+ * --apply: review/apply the displayed snapshot, then run tests/freshness checks.
+ * --yes: accept an already-authorized update without interactive prompts.
+ * Never deletes OpenRouter compatibility entries. Does not commit or deploy.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -51,6 +28,12 @@ import {
   validateProviderCatalog,
 } from '@dash/plugins';
 import { localDateStamp } from './local-date.js';
+import {
+  type OpenRouterAudit,
+  applyOpenRouterAudit,
+  auditOpenRouter,
+  fetchOpenRouterSnapshot,
+} from './openrouter-audit.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -59,6 +42,12 @@ const CATALOG_DIR = join(REPO_ROOT, 'apps/gateway/plugins/dash-core-providers/pr
 const args = process.argv.slice(2);
 const jsonOutput = args.includes('--json');
 const apply = args.includes('--apply');
+const check = args.includes('--check');
+const assumeYes = args.includes('--yes');
+const providerArg = args.indexOf('--provider');
+const providerFilter = providerArg >= 0 ? args[providerArg + 1] : undefined;
+const snapshots = new Map<string, LiveModel[]>();
+const openRouterReports = new Map<string, OpenRouterAudit>();
 
 // ---------------------------------------------------------------------------
 // Credential loading
@@ -169,6 +158,7 @@ interface ProviderReport {
   staleStatics: string[];
   /** Still-live static models whose name differs from the live label (refreshed on --apply). */
   nameDrift: DriftEntry[];
+  frontier?: OpenRouterAudit;
 }
 
 async function gatherReport(catalogs: LoadedCatalog[]): Promise<ProviderReport[]> {
@@ -177,7 +167,7 @@ async function gatherReport(catalogs: LoadedCatalog[]): Promise<ProviderReport[]
 
   for (const { catalog } of catalogs) {
     const apiKey = resolveCredential(catalog.id, env);
-    if (!apiKey) {
+    if (!apiKey && catalog.id !== 'openrouter') {
       reports.push({
         provider: catalog.id,
         configured: false,
@@ -193,7 +183,16 @@ async function gatherReport(catalogs: LoadedCatalog[]): Promise<ProviderReport[]
     let live: LiveModel[] = [];
     let fetchError: string | undefined;
     try {
-      live = await fetchCatalogModels(catalog, apiKey);
+      if (catalog.id === 'openrouter') {
+        const snapshot = await fetchOpenRouterSnapshot();
+        const frontier = auditOpenRouter(catalog, snapshot);
+        openRouterReports.set(catalog.id, frontier);
+        live = await fetchCatalogModels(catalog, apiKey ?? '', async () => Response.json(snapshot));
+      } else {
+        live = await fetchCatalogModels(catalog, apiKey as string);
+      }
+      if (live.length === 0) throw new Error('Refusing an empty model snapshot');
+      snapshots.set(catalog.id, live);
     } catch (err) {
       fetchError = err instanceof Error ? err.message : String(err);
     }
@@ -240,6 +239,7 @@ async function gatherReport(catalogs: LoadedCatalog[]): Promise<ProviderReport[]
       excluded,
       staleStatics,
       nameDrift,
+      frontier: openRouterReports.get(catalog.id),
     });
   }
 
@@ -280,6 +280,20 @@ function printReport(catalogs: LoadedCatalog[], reports: ProviderReport[]): void
       continue;
     }
     console.log(`  Total returned by API: ${report.liveCount}`);
+    if (report.frontier) {
+      console.log(`  Frontier family selections: ${report.frontier.selected.length}`);
+      console.log(
+        `  New families requiring review: ${report.frontier.newFamilyCandidates.join(', ') || 'none'}`,
+      );
+      console.log(`  Missing coverage: ${report.frontier.missing.join(', ') || 'none'}`);
+      console.log(`  Metadata drift: ${report.frontier.metadataDrift.join(', ') || 'none'}`);
+      console.log(
+        `  Families without eligible stable model: ${report.frontier.missingFamilies.join(', ') || 'none'}`,
+      );
+      console.log(
+        `  Other eligible models requiring family review: ${report.frontier.reviewCandidates.join(', ') || 'none'}`,
+      );
+    }
     console.log(`  Static models in catalog: ${catalog?.models.length ?? 0}`);
     console.log(`  Unmatched (no pattern; potential additions): ${report.unmatched.length}`);
     const shown = report.unmatched.slice(0, 20);
@@ -326,11 +340,11 @@ function printReport(catalogs: LoadedCatalog[], reports: ProviderReport[]): void
 async function applyChanges(catalogs: LoadedCatalog[], reports: ProviderReport[]): Promise<void> {
   const rl = createInterface({ input, output });
   const ask = async (q: string): Promise<boolean> => {
+    if (assumeYes) return true;
     const a = await rl.question(`${q} [y/N] `);
     return a.toLowerCase().startsWith('y');
   };
 
-  const env = loadEnvLocal();
   const today = localDateStamp();
   const byId = new Map(reports.map((r) => [r.provider, r]));
 
@@ -344,17 +358,25 @@ async function applyChanges(catalogs: LoadedCatalog[], reports: ProviderReport[]
     console.log();
     console.log(`── ${catalog.id.toUpperCase()} (${file}) ──`);
 
-    // Re-fetch live labels for the name refresh + drop set. We already have the
-    // diff in the report, but need the live labels keyed by id to refresh names.
-    const apiKey = resolveCredential(catalog.id, env);
-    let live: LiveModel[] = [];
-    if (apiKey) {
-      try {
-        live = await fetchCatalogModels(catalog, apiKey);
-      } catch (err) {
-        console.log(`  Re-fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+    // Apply exactly the successfully audited snapshot: a second fetch can fail
+    // or change between review and application. Never turn that into deletions.
+    const live = snapshots.get(catalog.id);
+    if (!live?.length) throw new Error(`No audited snapshot for ${catalog.id}`);
+    const frontier = openRouterReports.get(catalog.id);
+    if (frontier) {
+      const next = applyOpenRouterAudit(catalog, frontier, today);
+      validateProviderCatalog(next);
+      if (
+        await ask(
+          `Apply ${frontier.selected.length} reviewed-family selections and metadata to ${file}?`,
+        )
+      ) {
+        writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
+        console.log(`  Wrote ${file}; retained existing compatibility entries.`);
       }
+      continue;
     }
+
     const liveById = new Map(live.map((m) => [m.id, m]));
 
     if (report.staleStatics.length > 0) {
@@ -392,6 +414,7 @@ async function applyChanges(catalogs: LoadedCatalog[], reports: ProviderReport[]
       models: nextModels,
       reviewedAt: today,
     };
+    validateProviderCatalog(nextCatalog);
     writeFileSync(path, `${JSON.stringify(nextCatalog, null, 2)}\n`);
     console.log(`  Wrote ${file} (reviewedAt → ${today}, ${nextModels.length} static models).`);
   }
@@ -404,6 +427,7 @@ async function applyChanges(catalogs: LoadedCatalog[], reports: ProviderReport[]
     execFileSync('npm', ['run', 'models:check'], { stdio: 'inherit', cwd: REPO_ROOT });
   } catch {
     console.error('Verification failed. Review the diff and revert if needed.');
+    process.exitCode = 1;
   }
 
   console.log();
@@ -425,8 +449,37 @@ async function applyChanges(catalogs: LoadedCatalog[], reports: ProviderReport[]
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const catalogs = loadCatalogs();
+  const allowed = new Set(['--json', '--apply', '--yes', '--check', '--provider']);
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!allowed.has(arg) || seen.has(arg)) throw new Error(`Unknown or repeated option: ${arg}`);
+    seen.add(arg);
+    if (arg === '--provider') i++;
+  }
+  if (assumeYes && !apply) throw new Error('--yes requires --apply');
+  if (providerArg >= 0 && (!providerFilter || providerFilter.startsWith('--')))
+    throw new Error('--provider requires a catalog id');
+  if (apply && (jsonOutput || check))
+    throw new Error('--apply cannot be combined with --json or --check');
+  const catalogs = loadCatalogs().filter((c) => !providerFilter || c.catalog.id === providerFilter);
+  if (catalogs.length === 0) throw new Error('No catalog matches --provider');
   const reports = await gatherReport(catalogs);
+  if (
+    reports.some((r) => r.fetchError) ||
+    (check &&
+      reports.some(
+        (r) =>
+          !r.configured ||
+          (r.frontier
+            ? r.frontier.missing.length > 0 ||
+              r.frontier.metadataDrift.length > 0 ||
+              r.frontier.unavailableFamilies.length > 0 ||
+              r.frontier.newFamilyCandidates.length > 0
+            : r.unmatched.length > 0 || r.staleStatics.length > 0 || r.nameDrift.length > 0),
+      ))
+  )
+    process.exitCode = 1;
 
   if (jsonOutput) {
     console.log(
@@ -456,7 +509,9 @@ async function main(): Promise<void> {
       (r) => r.unmatched.length > 0 || r.staleStatics.length > 0 || r.nameDrift.length > 0,
     );
     if (hasChanges) {
-      console.log('Run with --apply (or `npm run models:audit:apply`) to update.');
+      console.log(
+        'Review the complete report before applying additions; unmatched families require curation.',
+      );
     }
   }
 }

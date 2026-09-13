@@ -15,7 +15,7 @@ const BULLETS = [
   {
     Icon: Timer,
     title: 'Always-on execution',
-    description: 'Agents run autonomously in the background — check in when you want',
+    description: 'Squad members run autonomously in the background — check in when you want',
   },
 ];
 

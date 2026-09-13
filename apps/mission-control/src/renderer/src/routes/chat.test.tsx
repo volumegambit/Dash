@@ -535,7 +535,7 @@ describe('canonical conversation UI', () => {
       '[SYSTEM NOTIFICATION - NOT USER INPUT]\n\n' +
       '<task-notification>\n<task-id>sub_01M21PVS</task-id>\n' +
       '<agent-name>writer</agent-name>\n<status>done</status>\n' +
-      '<summary>Agent "reply with WRITTEN" finished</summary>\n' +
+      '<summary>Squad member "reply with WRITTEN" finished</summary>\n' +
       '<result>\nWRITTEN\n</result>\n</task-notification>';
     setCanonicalState([gatewayConversation], ref);
     useChatStore.setState({
@@ -566,7 +566,7 @@ describe('canonical conversation UI', () => {
     render(<Chat />);
 
     expect(screen.getByTestId('notification-row')).toHaveTextContent(
-      'Agent "reply with WRITTEN" finished',
+      'Squad member "reply with WRITTEN" finished',
     );
     expect(screen.queryByText(/SYSTEM NOTIFICATION - NOT USER INPUT/)).toBeNull();
     // §8.5's other row: `origin: 'parent'` keeps its TEXT, because that text is

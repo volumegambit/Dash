@@ -223,25 +223,25 @@ struct NotificationRowTests {
       "<task-notification>",
       "<task-id>sub_01</task-id>",
       "<status>completed</status>",
-      #"<summary>Agent "Map gateway internals" finished</summary>"#,
+      #"<summary>Squad member "Map gateway internals" finished</summary>"#,
       "<result>",
       "It is all wired through the hub.",
       "</result>",
       "</task-notification>",
     ].joined(separator: "\n")
 
-    #expect(notificationRowLabel(text) == #"Agent "Map gateway internals" finished"#)
+    #expect(notificationRowLabel(text) == #"Squad member "Map gateway internals" finished"#)
   }
 
   @Test("coalesced notifications riding one turn all appear, in order")
   func labelJoinsCoalescedSummaries() {
     let text = """
-      <task-notification><summary>Agent "A" finished</summary></task-notification>
+      <task-notification><summary>Squad member "A" finished</summary></task-notification>
 
-      <task-notification><summary>Agent "B" finished</summary></task-notification>
+      <task-notification><summary>Squad member "B" finished</summary></task-notification>
       """
 
-    #expect(notificationRowLabel(text) == #"Agent "A" finished · Agent "B" finished"#)
+    #expect(notificationRowLabel(text) == #"Squad member "A" finished · Squad member "B" finished"#)
   }
 
   @Test("a child-to-main message names its sender, with the attribute unescaped")

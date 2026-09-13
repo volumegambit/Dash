@@ -78,7 +78,7 @@ While a task is **In Progress**, it also carries a sub-status that tells you who
 
 | Sub-status | Meaning |
 |------------|---------|
-| **Agent working** | An agent is actively on it |
+| **Squad member working** | A squad member is actively on it |
 | **Waiting on human** | The agent needs something from you — this puts the task in your Inbox |
 | **Blocked** | Stuck on something else |
 
@@ -89,8 +89,8 @@ To change a task's status, open the task and use the dropdown in the top-right c
 Click any task to open its detail page. You'll see:
 
 - **Description** — the task's write-up, rendered as markdown
-- **Timeline** — a running history of everything that happened: status changes, comments, subtasks created, and agent activity. Agent-run entries can be expanded to see exactly what the agent did
-- **Comments** — add a comment at the bottom of the timeline. Agents can comment too; their comments are marked with 🤖. You can delete your own comments — a deleted comment shows as "deleted" in the timeline rather than vanishing, so the history stays complete
+- **Timeline** — a running history of everything that happened: status changes, comments, subtasks created, and squad member activity. Squad member-run entries can be expanded to see exactly what happened
+- **Comments** — add a comment at the bottom of the timeline. Squad members can comment too; their comments are marked with 🤖. You can delete your own comments — a deleted comment shows as "deleted" in the timeline rather than vanishing, so the history stays complete
 - **Details panel** (right side) — assignee, sub-status, project, who created the task, linked chat sessions, and subtasks
 
 ### Subtasks
@@ -116,10 +116,10 @@ Each project page shows a description you can edit (click **Edit**, write markdo
 
 ## How agents use Projects
 
-Agents don't just appear in the timeline — they're full participants. In any chat, you can ask an agent to plan work, and it can:
+Squad members don't just appear in the timeline — they're full participants. In any chat, you can ask a squad member to plan work, and it can:
 
 - **Create projects and tasks** — ask "break this feature down into tasks and track them" and the agent will set up the board for you. Tasks created by an agent are marked with 🤖
-- **Update tasks as it works** — an agent picking up a task sets it to **In Progress** with sub-status **Agent working**, and moves it along as it makes progress
+- **Update tasks as it works** — a squad member picking up a task sets it to **In Progress** with sub-status **Squad member working**, and moves it along as it makes progress
 - **Comment on progress** — agents post markdown comments to the timeline, so the task page tells the whole story
 - **Ask for your input** — when an agent hits a question only you can answer, it sets the task to **Waiting on human**. The task lands in your Inbox
 
@@ -143,7 +143,7 @@ Tasks and projects are stored locally on your machine, in a database under the g
   <Card title="Tools" icon="wrench" href="/tools">
     Everything agents can do, including the project tools.
   </Card>
-  <Card title="Agents" icon="robot" href="/agents">
+  <Card title="Squad" icon="robot" href="/agents">
     How agents are configured and how they work.
   </Card>
 </CardGroup>

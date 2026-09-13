@@ -196,9 +196,9 @@ struct TasksSheet: View {
       List {
         if rows.isEmpty {
           ContentUnavailableView(
-            "No agents yet",
+            "No squad members yet",
             systemImage: "person.2.slash",
-            description: Text("Agents this conversation starts appear here.")
+            description: Text("Squad members this conversation starts appear here.")
           )
         } else {
           ForEach(rows) { row in

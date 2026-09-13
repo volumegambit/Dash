@@ -231,7 +231,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     if (quiescingAgents.has(agentId)) {
       throw new ConversationServiceError(
         'conversation_busy',
-        `Agent ${agentId} is not accepting new turns`,
+        'Agent is being disabled. Try again shortly.',
         409,
         true,
       );

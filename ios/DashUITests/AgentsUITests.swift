@@ -76,7 +76,7 @@ final class AgentsUITests: DashUITestCase {
     XCTAssertTrue(sleepingActions.waitForExistence(timeout: 5))
     sleepingActions.tap()
     app.buttons["Enable"].tap()
-    let failureAlert = app.alerts["Agent update failed"]
+    let failureAlert = app.alerts["Squad member update failed"]
     XCTAssertTrue(failureAlert.waitForExistence(timeout: 5))
     let ok = failureAlert.buttons["OK"]
     XCTAssertTrue(waitUntilHittable(ok, timeout: 3))
@@ -104,7 +104,7 @@ final class AgentsUITests: DashUITestCase {
 
     let alert = app.alerts["Delete Delete Me?"]
     XCTAssertTrue(alert.waitForExistence(timeout: 3))
-    replaceText(in: alert.textFields["Type the agent name"], with: "wrong")
+    replaceText(in: alert.textFields["Type the squad member name"], with: "wrong")
     XCTAssertFalse(alert.buttons["Delete"].isEnabled)
     alert.buttons["Cancel"].tap()
     XCTAssertFalse(alert.waitForExistence(timeout: 2))
@@ -113,7 +113,7 @@ final class AgentsUITests: DashUITestCase {
     app.buttons["Delete"].tap()
     XCTAssertTrue(alert.waitForExistence(timeout: 3))
     replaceText(
-      in: alert.textFields["Type the agent name"],
+      in: alert.textFields["Type the squad member name"],
       with: "Delete Me",
       clearExisting: false
     )

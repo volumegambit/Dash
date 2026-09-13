@@ -99,15 +99,15 @@ From the agent's **Skills** tab in Mission Control, you can add extra directorie
 
 Dash ships a curated library of ready-made skills covering assistant, dev, creative, and communication tasks. These are available to every agent by default and are read-only. To stop using one, install a same-named skill to shadow it — or turn the whole bundled library off from the agent's **Skills** tab.
 
-## Agent skill creation
+## Squad member skill creation
 
-Agents can create their own skills when given the `create_skill` tool. This is opt-in — include `create_skill` in the agent's tool list when deploying.
+Squad members can create their own skills when given the `create_skill` tool. This is opt-in — include `create_skill` in the squad member's tool list when deploying.
 
 When a user says something like "remember how to deploy to staging", the agent uses `create_skill` to write a `SKILL.md` to the managed directory. The skill is available in future conversations.
 
-Agent-created skills:
+Squad member-created skills:
 - Are saved to the managed directory (outside the workspace)
-- Are labeled "Agent" in Mission Control so you can distinguish them from skills you pushed
+- Are labeled "Squad member" in Mission Control so you can distinguish them from skills you pushed
 - Cannot overwrite existing skills — the agent can only create new ones
 - Can be reviewed, edited, or deleted by the operator through Mission Control
 
@@ -117,7 +117,7 @@ The `create_skill` tool lets the agent write persistent instructions that affect
 
 ## Learning from experience
 
-Agents also pick up skills on their own. After a turn where the agent did real work, Dash runs a short review that asks the agent's own model one question: did this session teach anything worth keeping? Anything it finds is written into a skill the agent owns, so the next conversation starts already knowing it.
+Squad members also pick up skills on their own. After a turn where the squad member did real work, Dash runs a short review that asks the squad member's own model one question: did this session teach anything worth keeping? Anything it finds is written into a skill the squad member owns, so the next conversation starts already knowing it.
 
 You don't have to do anything to switch this on — it is on by default.
 
@@ -140,7 +140,7 @@ When the review records something, a small chip appears in the conversation wher
 
 ### Where it lives
 
-Learned skills sit in the same managed directory as any other agent skill, are labelled **Agent** in Mission Control, and can be read, edited, or deleted there like the rest. Beside each one is a `lessons.json` file holding the individual lessons.
+Learned skills sit in the same managed directory as any other squad member skill, are labelled **Squad member** in Mission Control, and can be read, edited, or deleted there like the rest. Beside each one is a `lessons.json` file holding the individual lessons.
 
 Open a learned skill in Mission Control and you see its lessons one by one, each with how often the agent has judged it helpful or harmful, and a **Retire** button. On iPhone and on the web the list is read-only — you can see what an agent knows and read the lessons, but changing them is done from Mission Control.
 
@@ -210,7 +210,7 @@ Natural language works too — "what skills do you have?" or "install the arxiv 
 
 The agent detail page has a **Skills** tab where you can manage an agent's skills directly:
 
-- **View** every skill the agent can use, with a source badge (Bundled / Managed / Agent / Remote). Click a skill to read its `SKILL.md`.
+- **View** every skill the squad member can use, with a source badge (Bundled / Managed / Squad member / Remote). Click a skill to read its `SKILL.md`.
 - **Create** a new skill from a name, description, and content.
 - **Edit** the body of a managed, installed, or agent-created skill (bundled skills are read-only).
 - **Install** a skill from a git repo, URL, or local path — security-scanned, dangerous skills refused.

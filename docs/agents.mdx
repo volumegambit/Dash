@@ -1,24 +1,24 @@
 ---
-title: "Agents"
-description: "What an agent is, how to configure one, and how agents work in Dash."
+title: "Squad"
+description: "What a squad member is, how to configure one, and how they work in Dash."
 ---
 
-An agent is a member of your AI team. It has a model to think with, instructions to follow, and tools to get work done. You tell it what to do, and it figures out how.
+A squad member is part of your AI team. It has a model to think with, instructions to follow, and tools to get work done. You tell it what to do, and it figures out how.
 
-## What is an agent?
+## What is a squad member?
 
-An agent combines four things:
+A squad member combines four things:
 
 1. **A model** — the AI brain (Claude, GPT, Gemini, etc.)
 2. **A system prompt** — instructions that shape the agent's personality and behavior
 3. **Tools** — capabilities like running commands, reading files, or searching the web
 4. **Skills** — reusable workflows the agent can discover and use on demand
 
-When you send a message, the agent reads it, reasons about what to do, uses tools if needed, and responds. It does this autonomously — no hand-holding required.
+When you send a message, the squad member reads it, reasons about what to do, uses tools if needed, and responds. It does this autonomously — no hand-holding required.
 
-## Agent configuration
+## Squad member configuration
 
-You configure each agent in Mission Control's **Deploy** wizard (and edit it later from the agent's **Configuration** tab). Behind the scenes, an agent's saved configuration looks like this:
+You configure each squad member in Mission Control's **Deploy** wizard (and edit it later from the squad member's **Configuration** tab). Behind the scenes, a squad member's saved configuration looks like this:
 
 ```json
 {
@@ -40,7 +40,7 @@ You configure each agent in Mission Control's **Deploy** wizard (and edit it lat
 | `workspace` | `string` | no | Directory where the agent operates (default: `~/.dash/workspaces/<agent-id>`) |
 | `fallbackModels` | `string[]` | no | Backup models to try if the primary model fails |
 
-Mission Control saves your agents to `~/.dash/gateway/agents.json` and the gateway restores them on restart.
+Mission Control saves your squad members to `~/.dash/gateway/agents.json` and the gateway restores them on restart.
 
 ## Available models
 
@@ -74,7 +74,7 @@ See [AI Providers](/ai-providers) for credentials setup and model routing detail
 
 ## Available tools
 
-Pick the tools your agent needs. Each tool gives a specific capability:
+Pick the tools your squad member needs. Each tool gives a specific capability:
 
 | Tool | What it does |
 |------|-------------|
@@ -94,7 +94,7 @@ See [Tools](/tools) for detailed descriptions and sandboxing behavior.
 
 ## Fallback models
 
-If your primary model is unavailable or hits a rate limit, the agent automatically tries the next model in the chain.
+If your primary model is unavailable or hits a rate limit, the squad member automatically tries the next model in the chain.
 
 ```json
 {
@@ -103,11 +103,11 @@ If your primary model is unavailable or hits a rate limit, the agent automatical
 }
 ```
 
-The agent tries models in order: primary first, then each fallback. This keeps your agent running even if one provider has an outage. Each model can be from a different provider — just make sure you have the right API keys set up.
+The squad member tries models in order: primary first, then each fallback. This keeps your squad member running even if one provider has an outage. Each model can be from a different provider — just make sure you have the right API keys set up.
 
 ## Workspace
 
-Every agent gets its own workspace directory. This is where tool operations happen. By default it's `~/.dash/workspaces/<agent-id>` — you can open that folder in Finder or your editor to drop in files for the agent to work with, or set a custom path in the deploy wizard.
+Every squad member gets its own workspace directory. This is where tool operations happen. By default it's `~/.dash/workspaces/<agent-id>` — you can open that folder in Finder or your editor to drop in files for the squad member to work with, or set a custom path in the deploy wizard.
 
 The workspace directory is created automatically if it does not exist. Tools operate within this directory:
 
@@ -116,35 +116,35 @@ The workspace directory is created automatically if it does not exist. Tools ope
 - **File tools** are sandboxed — they cannot access files outside the workspace boundary
 
 <Warning>
-  If no workspace is configured, tools operate without path restrictions. Always set a workspace for agents that use file or shell tools.
+  If no workspace is configured, tools operate without path restrictions. Always set a workspace for squad members that use file or shell tools.
 </Warning>
 
 ## Lifecycle
 
-Agents are deployed as background processes. Each agent goes through these states:
+Squad members are deployed as background processes. Each squad member goes through these states:
 
 | State | Meaning |
 |-------|---------|
-| `provisioning` | The agent is starting up |
-| `running` | The agent is live and accepting messages |
-| `stopped` | The agent has been stopped (manually or by the system) |
+| `provisioning` | The squad member is starting up |
+| `running` | The squad member is live and accepting messages |
+| `stopped` | The squad member has been stopped (manually or by the system) |
 | `error` | Something went wrong during startup or runtime |
 
-You can **start**, **stop**, **restart**, and **remove** agents at any time from Mission Control's **Agents** page — click an agent to manage it. For automation, the same operations are available on the [Management API](/api-reference#agents).
+You can **start**, **stop**, **restart**, and **remove** squad members at any time from Mission Control's **Squad** page — click a squad member to manage it. For automation, the same operations are available on the [Management API](/api-reference#agents).
 
 ## Sessions
 
-Every conversation with an agent is saved as a session. Sessions are stored as append-only JSONL files (one event per line) so they are easy to inspect and crash-safe.
+Every conversation with a squad member is saved as a session. Sessions are stored as append-only JSONL files (one event per line) so they are easy to inspect and crash-safe.
 
 ```
 ~/.dash/gateway/sessions/{agent-name}/{conversationId}/
 ```
 
-When you send a new message, the agent loads the session history first. This means it remembers everything from the conversation — previous messages, tool results, and its own responses. Context carries across messages automatically.
+When you send a new message, the squad member loads the session history first. This means it remembers everything from the conversation — previous messages, tool results, and its own responses. Context carries across messages automatically.
 
-## Multiple agents
+## Multiple squad members
 
-You can run as many agents as you need. Each one is independent — different model, different instructions, different tools. Deploy each from Mission Control; their configurations look like this:
+You can run as many squad members as you need. Each one is independent — different model, different instructions, different tools. Deploy each from Mission Control; their configurations look like this:
 
 ```json
 [
@@ -169,7 +169,7 @@ You can run as many agents as you need. Each one is independent — different mo
 ]
 ```
 
-Each agent gets its own workspace, session history, and set of tools. Route messages to the right agent through [Messaging Apps](/messaging-apps) or by name in the [Chat API](/chat-with-your-agent).
+Each squad member gets its own workspace, session history, and set of tools. Route messages to the right squad member through [Messaging Apps](/messaging-apps) or by name in the [Chat API](/chat-with-your-agent).
 
 ## What's next
 
@@ -181,9 +181,9 @@ Each agent gets its own workspace, session history, and set of tools. Route mess
     Set up API keys for Anthropic, OpenAI, and Google.
   </Card>
   <Card title="Mission Control" icon="grid-2" href="/mission-control">
-    Deploy and manage agents from the desktop app or CLI.
+    Deploy and manage squad members from the desktop app or CLI.
   </Card>
   <Card title="Configuration" icon="gear" href="/configuration">
-    Agent settings, the data directory layout, and standalone gateway flags.
+    Squad member settings, the data directory layout, and standalone gateway flags.
   </Card>
 </CardGroup>

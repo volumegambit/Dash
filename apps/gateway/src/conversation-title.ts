@@ -122,23 +122,55 @@ export async function generateConversationTitle(options: {
     throw new Error(`No API key stored for provider "${model.provider}"`);
   }
 
-  const message = await completeFn(
-    model,
-    {
-      systemPrompt: projects.length ? titleAndProjectPrompt(projects) : TITLE_ONLY_PROMPT,
-      messages: [{ role: 'user', content: text.slice(0, MAX_INPUT_CHARS), timestamp: Date.now() }],
-    },
-    { apiKey, maxTokens: 128, temperature: 0.2 },
-  );
-
-  const raw = message.content
-    .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
-    .map((block) => block.text)
-    .join(' ');
-
-  const result = projects.length
-    ? parseTitleReply(raw, projects)
-    : { title: sanitizeTitle(raw), projectKey: null };
-  if (!result.title) throw new Error('Title model returned no usable text');
-  return result;
+  // Reasoning tokens share the output budget. A 128-token request can finish
+  // without emitting any title text. Bound both the budget and total latency,
+  // including the retry, below Mission Control's 30-second request deadline.
+  const signal = AbortSignal.timeout(25_000);
+  let failure = new Error('Title model returned no usable text');
+  for (const budget of [2048, 4096]) {
+    try {
+      signal.throwIfAborted();
+      const message = await completeFn(
+        model,
+        {
+          systemPrompt: projects.length ? titleAndProjectPrompt(projects) : TITLE_ONLY_PROMPT,
+          messages: [
+            { role: 'user', content: text.slice(0, MAX_INPUT_CHARS), timestamp: Date.now() },
+          ],
+        },
+        { apiKey, maxTokens: Math.min(budget, model.maxTokens), temperature: 0.2, signal },
+      );
+      if (message.stopReason === 'aborted') {
+        throw new Error('Title generation aborted');
+      }
+      if (message.stopReason === 'error' || message.stopReason === 'length') {
+        failure = new Error(
+          `Title generation failed (stopReason=${message.stopReason})${
+            message.errorMessage ? `: ${message.errorMessage}` : ''
+          }`,
+        );
+        continue;
+      }
+      const raw = message.content
+        .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+        .map((block) => block.text)
+        .join(' ');
+      const result = projects.length
+        ? parseTitleReply(raw, projects)
+        : { title: sanitizeTitle(raw), projectKey: null };
+      if (result.title) return result;
+      failure = new Error(`Title model returned no usable text (stopReason=${message.stopReason})`);
+    } catch (error) {
+      // The SDK normally returns errors as AssistantMessages. Thrown transport
+      // failures must be bounded too, but cancellation must never start a retry.
+      if (
+        signal.aborted ||
+        (error instanceof Error && error.message === 'Title generation aborted')
+      ) {
+        throw error;
+      }
+      failure = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  throw failure;
 }

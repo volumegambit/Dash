@@ -60,9 +60,21 @@ function sameConversation(conversation: McConversationView, ref: ConversationRef
   return conversation.id === ref.id && conversation.origin === ref.origin;
 }
 
+/**
+ * Sort conversations so that running ones appear on top, then by
+ * `updatedAt` descending, then by `id` descending as a tiebreaker.
+ *
+ * A conversation whose agent is actively streaming a response
+ * (`status === 'running'`) stays pinned to the top of the list so the
+ * user can always see what's in progress, regardless of how recently
+ * the conversation's `updatedAt` was bumped relative to others.
+ */
 export function sortConversations(items: McConversationView[]): McConversationView[] {
   return [...items].sort(
-    (a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id),
+    (a, b) =>
+      Number(b.status === 'running') - Number(a.status === 'running') ||
+      b.updatedAt.localeCompare(a.updatedAt) ||
+      b.id.localeCompare(a.id),
   );
 }
 
@@ -1171,16 +1183,18 @@ export const useChatStore = create<ChatState>((set, get) => {
           },
           streamingFrames: { ...state.streamingFrames, [key]: applied.state.frames },
           lastSeq: { ...state.lastSeq, [key]: applied.state.lastSeq },
-          conversations: state.conversations.map((conversation) =>
-            sameConversation(conversation, ref)
-              ? {
-                  ...conversation,
-                  revision: frame.revision,
-                  activeTurnId: frame.id,
-                  status: 'running',
-                  lastSeq: frame.seq,
-                }
-              : conversation,
+          conversations: sortConversations(
+            state.conversations.map((conversation) =>
+              sameConversation(conversation, ref)
+                ? {
+                    ...conversation,
+                    revision: frame.revision,
+                    activeTurnId: frame.id,
+                    status: 'running',
+                    lastSeq: frame.seq,
+                  }
+                : conversation,
+            ),
           ),
         }));
         return;
@@ -1189,15 +1203,17 @@ export const useChatStore = create<ChatState>((set, get) => {
       set((state) => ({
         streamingFrames: { ...state.streamingFrames, [key]: applied.state.frames },
         lastSeq: { ...state.lastSeq, [key]: applied.state.lastSeq },
-        conversations: state.conversations.map((conversation) =>
-          sameConversation(conversation, ref)
-            ? {
-                ...conversation,
-                activeTurnId: conversation.activeTurnId ?? frame.id,
-                status: 'running',
-                lastSeq: applied.state.lastSeq,
-              }
-            : conversation,
+        conversations: sortConversations(
+          state.conversations.map((conversation) =>
+            sameConversation(conversation, ref)
+              ? {
+                  ...conversation,
+                  activeTurnId: conversation.activeTurnId ?? frame.id,
+                  status: 'running',
+                  lastSeq: applied.state.lastSeq,
+                }
+              : conversation,
+          ),
         ),
       }));
       if ((frame.type === 'done' || frame.type === 'error') && recoverable) {

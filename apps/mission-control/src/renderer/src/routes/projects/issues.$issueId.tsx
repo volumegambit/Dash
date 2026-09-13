@@ -36,9 +36,9 @@ function eventSummary(event: IssueEvent): string {
     case 'assignee_change':
       return `Assignee → ${String(data.to ?? '?')}`;
     case 'agent_run_started':
-      return 'Agent run started';
+      return 'Squad member run started';
     case 'agent_run_completed':
-      return `Agent ran: ${String(data.tool_calls ?? '?')} tool calls`;
+      return `Squad member ran: ${String(data.tool_calls ?? '?')} tool calls`;
     case 'session_linked':
       return `Linked session ${String(data.session_id ?? '')}`;
     case 'subtask_added':
@@ -239,11 +239,11 @@ export function TaskDetail(): JSX.Element {
   );
   const agentLabelCounts = new Map<string, number>();
   for (const l of orderedMcSessions) {
-    const key = l.agent_id ?? 'Agent';
+    const key = l.agent_id ?? 'Squad member';
     agentLabelCounts.set(key, (agentLabelCounts.get(key) ?? 0) + 1);
   }
   const sessionTabLabel = (l: (typeof orderedMcSessions)[number]): string => {
-    const name = l.agent_id ?? 'Agent';
+    const name = l.agent_id ?? 'Squad member';
     return (agentLabelCounts.get(name) ?? 0) > 1
       ? `🤖 ${name} · ${l.session_id.slice(0, 4)}`
       : `🤖 ${name}`;
@@ -266,7 +266,7 @@ export function TaskDetail(): JSX.Element {
       // ignore
     }
     const agent = detail.linked_sessions.find((l) => l.session_id === sessionId)?.agent_id;
-    return `🤖 ${agent ?? 'Agent'} session linked`;
+    return `🤖 ${agent ?? 'Squad member'} session linked`;
   };
 
   const activeSessionRef = activeSessionId ? (resolvedSessions.get(activeSessionId) ?? null) : null;
@@ -578,8 +578,8 @@ export function TaskDetail(): JSX.Element {
                   <span className="text-[10px] text-muted">
                     {activeSessionId
                       ? activeSessionBusy
-                        ? 'Agent is mid-run — comment stays on the task'
-                        : 'Also sent to the agent session'
+                        ? 'Squad member is mid-run — comment stays on the task'
+                        : 'Also sent to the squad member session'
                       : ''}
                   </span>
                   <button

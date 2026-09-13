@@ -36,7 +36,7 @@ Something not working? Here are the most common issues and how to fix them.
     { "type": "error", "id": "...", "error": "Unknown agent: myagent" }
     ```
 
-    **Fix:** The message references an agent that doesn't exist. Open Mission Control's **Agents** page (or call `GET /agents` on the [Management API](/api-reference#agents)) and make sure the name matches a deployed agent.
+    **Fix:** The message references a squad member that doesn't exist. Open Mission Control's **Squad** page (or call `GET /agents` on the [Management API](/api-reference#agents)) and make sure the name matches a deployed squad member.
   </Accordion>
 </AccordionGroup>
 
@@ -424,6 +424,20 @@ Something not working? Here are the most common issues and how to fix them.
     Typing `/<plugin>:<command>` doesn't resolve.
 
     **Fix:** Commands are namespaced as `/<plugin>:<command>` — a plugin named `research` with `commands/triage.md` is `/research:triage`, not `/triage`. Confirm the plugin is **enabled** (commands need only `enabled`, not trust) and **Loaded** on the Plugins screen, and that the file lives in the plugin's `commands/` directory. See [Invoking each component](/plugins#invoking-each-component).
+  </Accordion>
+
+  <Accordion title="OpenRouter model list looks outdated">
+    Open the model picker again after updating your gateway. The gateway refreshes
+    its provider list on the first request after six hours, and sooner when its
+    bundled catalog changes. Mission Control's refresh action can fetch it immediately.
+
+    Dash curates models for chat and tool use. A newly released model may need a
+    catalog update before it appears. Free/batch variants and unreviewed previews
+    are not automatically included. Make sure you are viewing **OpenRouter**;
+    a model under a direct provider is a separate entry.
+
+    If OpenRouter is temporarily unavailable, Dash keeps the last successful list
+    and retries when the picker is opened after five minutes.
   </Accordion>
 
   <Accordion title="Plugin provider model not in the dropdown">

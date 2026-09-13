@@ -30,7 +30,7 @@ describe('Sidebar', () => {
   it('renders the primary nav items and a Settings entry', () => {
     render(<Sidebar />);
     expect(screen.getByText('Chat')).toBeInTheDocument();
-    expect(screen.getByText('Agents')).toBeInTheDocument();
+    expect(screen.getByText('Squad')).toBeInTheDocument();
     expect(screen.getByText('Projects')).toBeInTheDocument();
     expect(screen.getByText('Settings')).toBeInTheDocument();
   });
@@ -83,7 +83,7 @@ describe('Sidebar', () => {
     useUIStore.setState({ sidebarCollapsed: true });
     render(<Sidebar />);
     expect(screen.queryByText('Chat')).not.toBeInTheDocument();
-    expect(screen.queryByText('Agents')).not.toBeInTheDocument();
+    expect(screen.queryByText('Squad')).not.toBeInTheDocument();
   });
 
   it('hides the Mission Control wordmark when collapsed', () => {
