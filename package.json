@@ -42,7 +42,7 @@
     "web:build": "npm run build --workspace=apps/web",
     "models:audit": "tsx scripts/audit-models.ts",
     "models:audit:apply": "tsx scripts/audit-models.ts --apply",
-    "models:check": "tsx scripts/check-models-freshness.ts",
+    "models:check": "tsx scripts/check-models-freshness.ts && tsx scripts/audit-models.ts --provider openrouter --check",
     "mobile:contract-check": "npm test --workspace=@dash/mobile-contract",
     "mobile:e2e": "node --import tsx scripts/mobile-v1-e2e.mjs",
     "mobile:test-harness": "node --import tsx apps/gateway/src/mobile-test-harness-cli.ts",

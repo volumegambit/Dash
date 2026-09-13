@@ -191,7 +191,9 @@ GitHub Actions runs on every push to `main` and on PRs. The workflow (`.github/w
 
 The agent model dropdown is populated by querying provider `/v1/models` endpoints, then filtering through the curated provider catalogs bundled with the `dash-core-providers` plugin at `apps/gateway/plugins/dash-core-providers/providers/*.json`. Each catalog carries a `supportedPatterns` allow-list, a static `models[]` (the bootstrap/offline list), and a per-catalog `reviewedAt` date. The gateway loads these catalogs via `@dash/plugins` and owns all model logic at runtime; MC just renders what the gateway returns.
 
-`npm run models:check` gates on the **oldest** `reviewedAt` across all catalogs: it warns when that is more than 30 days old and CI hard-fails the build at 60 days.
+`npm run models:check` also checks live OpenRouter frontier-family coverage and metadata without credentials; missing models, drift, or a failed audit cause a nonzero exit. Read [scripts/MODEL_UPDATES.md](scripts/MODEL_UPDATES.md) for the current update procedure and selection policy.
+
+The date gate checks the **oldest** `reviewedAt` across all catalogs: it warns when that is more than 30 days old and CI hard-fails the build at 60 days.
 
 **Before any of the following actions, check the catalogs' `reviewedAt` (or run `npm run models:check`):**
 

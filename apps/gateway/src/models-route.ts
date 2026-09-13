@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { FilteredModel } from '@dash/plugin-sdk';
 import {
   type CatalogCredentialResolver,
@@ -7,8 +8,18 @@ import {
 } from '@dash/plugins';
 import { Hono } from 'hono';
 import type { GatewayCredentialStore } from './credential-store.js';
-import type { ModelsStore } from './models-store.js';
+import type { ModelsStore, ModelsStoreFile } from './models-store.js';
 import { appendPluginModels, expandPluginModelsForRoute } from './plugin-providers.js';
+
+// The wire review field remains a date; cache identity covers the full catalog,
+// including same-day edits and changes to a provider with an older review date.
+function catalogFingerprint(configs: ProviderConfigEntry[]): string {
+  return createHash('sha256')
+    .update(JSON.stringify(configs.map((p) => p.catalog).sort((a, b) => a.id.localeCompare(b.id))))
+    .digest('hex');
+}
+const MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const MODEL_RETRY_MS = 5 * 60 * 1000;
 
 /**
  * Response shape returned by `GET /models` and `POST /models/refresh`.
@@ -63,7 +74,7 @@ export interface ModelsRouteOptions extends ModelsControllerOptions {
  * HTTP route views.
  *
  * `GET /models` reads the persisted store and returns immediately on a hit. On
- * a miss (no file, the catalog fingerprint moved, or after an explicit
+ * a miss (no file, six-hour expiry, the catalog fingerprint moved, or after an explicit
  * invalidation), it triggers a live fetch via `discoverCatalogModels` against
  * the loaded provider catalogs, persists the result, and returns. When no
  * provider credentials are configured at all, returns `source: 'bootstrap'`
@@ -114,11 +125,15 @@ export function createModelsController(options: ModelsControllerOptions): Models
   async function discoverAndRender(
     providerConfigs: ProviderConfigEntry[],
     operationGeneration: number,
+    stored?: ModelsStoreFile | null,
   ): Promise<ModelsRouteResponse> {
     const catalogs = providerConfigs.map((provider) => provider.catalog);
     const fingerprint = newestCatalogReviewedAt(catalogs);
+    const contentFingerprint = catalogFingerprint(providerConfigs);
+    const previous =
+      stored === undefined ? await store.load(fingerprint, contentFingerprint) : stored;
     const result = await discover(catalogs, credentialResolver);
-    const fetchedAt = new Date().toISOString();
+    let fetchedAt = new Date().toISOString();
     if (result.providersConfigured === 0) {
       if (operationGeneration === generation) {
         // A credential-less replacement must still own the final persisted
@@ -137,12 +152,27 @@ export function createModelsController(options: ModelsControllerOptions): Models
         providerConfigs,
       );
     }
+    const failed = new Set(Object.keys(result.errors));
+    // Preserve only failed providers' last good rows. Successful providers can
+    // remove retired models; removed credentials never become failure rows.
+    const models = [
+      ...result.models,
+      ...(previous?.models ?? []).filter((m) => failed.has(m.provider)),
+    ];
+    if (failed.size > 0 && previous) fetchedAt = previous.fetchedAt;
     if (operationGeneration === generation) {
-      await store.save(result.models, fingerprint);
+      await store.save(models, fingerprint, {
+        catalogFingerprint: contentFingerprint,
+        fetchedAt,
+        errors: result.errors,
+        ...(failed.size > 0
+          ? { retryAfter: new Date(Date.now() + MODEL_RETRY_MS).toISOString() }
+          : {}),
+      });
     }
     return withStaticModels(
       {
-        models: result.models,
+        models,
         source: 'live',
         errors: result.errors,
         fetchedAt,
@@ -160,21 +190,28 @@ export function createModelsController(options: ModelsControllerOptions): Models
         const fingerprint = newestCatalogReviewedAt(
           providerConfigs.map((provider) => provider.catalog),
         );
-        const stored = await store.load(fingerprint);
+        const stored = await store.load(fingerprint, catalogFingerprint(providerConfigs));
         if (operationGeneration !== generation) return controller.get();
-        if (stored && stored.models.length > 0) {
+        const hasErrors = stored && Object.keys(stored.errors ?? {}).length > 0;
+        const fresh =
+          stored &&
+          (hasErrors
+            ? Date.parse(stored.retryAfter ?? '') > Date.now()
+            : Date.now() - Date.parse(stored.fetchedAt) >= 0 &&
+              Date.now() - Date.parse(stored.fetchedAt) < MODEL_CACHE_TTL_MS);
+        if (stored && fresh && (stored.models.length > 0 || hasErrors)) {
           return withStaticModels(
             {
               models: stored.models,
               source: 'live',
-              errors: {},
+              errors: stored.errors ?? {},
               fetchedAt: stored.fetchedAt,
               supportedModelsReviewedAt: stored.supportedModelsReviewedAt,
             },
             providerConfigs,
           );
         }
-        return discoverAndRender(providerConfigs, operationGeneration);
+        return discoverAndRender(providerConfigs, operationGeneration, stored);
       });
     },
 

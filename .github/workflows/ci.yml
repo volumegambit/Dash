@@ -26,6 +26,8 @@ jobs:
 
       - run: npm run lint
 
+      # Also audits live OpenRouter frontier coverage/metadata without secrets.
+      # Fails on drift or an unavailable audit; a new review date alone is insufficient.
       # Hard-fails the build at 60 days since the oldest catalog `reviewedAt`.
       # Warns at 30 days. To unblock, run `/update-models` (or
       # `npm run models:audit:apply`) and commit the refreshed bundled
