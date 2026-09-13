@@ -1116,6 +1116,21 @@ export class PiAgentBackend implements AgentBackend {
         mimeType: img.mediaType,
       }));
 
+      // Guard against a race where the gateway's turn lock (active_turn_id)
+      // is cleared before the pi session's internal isStreaming flag is reset.
+      // This happens when a turn is aborted: backend.abort() is fire-and-forget,
+      // so the gateway may clear the DB lock and allow a new turn before
+      // session.abort() has finished awaiting agent.waitForIdle(). If we call
+      // session.prompt() while isStreaming is still true, pi throws
+      // "Agent is already processing. Specify streamingBehavior ...", which
+      // surfaces as "Response failed" on the client.
+      if (this.session.isStreaming) {
+        this.logger?.warn(
+          '[PiAgent] session.isStreaming=true at run() start; awaiting abort before proceeding',
+        );
+        await this.session.abort();
+      }
+
       // Fire prompt (runs concurrently with event consumption). The prompt
       // promise settling is the authoritative end-of-turn signal: it resolves
       // only after retries, compaction continuations, and queued follow-ups
