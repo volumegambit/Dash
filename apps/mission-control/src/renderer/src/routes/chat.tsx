@@ -50,6 +50,7 @@ import {
   useChatStore,
 } from '../stores/chat.js';
 import { useConnectorsStore } from '../stores/connectors.js';
+import { useUIStore } from '../stores/ui.js';
 import {
   CompactionDivider,
   CompactionToast,
@@ -2263,6 +2264,7 @@ export function Chat(): JSX.Element {
   } = useChatStore();
 
   const connectors = useConnectorsStore((s) => s.connectors);
+  const composerReturnKeySends = useUIStore((s) => s.composerReturnKeySends);
 
   const navigate = useNavigate();
   const activeAgents = agents.filter((a) => a.status === 'active' || a.status === 'registered');
@@ -3269,7 +3271,12 @@ export function Chat(): JSX.Element {
                     // Through the contract, so the declaration in
                     // chat.helpers.ts is load-bearing rather than a comment
                     // that can drift from this handler.
-                    const keyAction = composerKeyAction(e.key, e.shiftKey, e.metaKey);
+                    const keyAction = composerKeyAction(
+                      e.key,
+                      e.shiftKey,
+                      e.metaKey,
+                      composerReturnKeySends,
+                    );
                     if (e.key === 'Tab' && keyAction === 'newline') {
                       e.preventDefault();
                       const field = e.currentTarget;

@@ -1202,6 +1202,31 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(value.contains("second"), "Composer value: \(value)")
   }
 
+  /// Hardware Return must insert a newline (the 2026-09-13 fix). The composer
+  /// used to rely on `TextField` splicing Return natively once `.onSubmit` was
+  /// gone, but a hardware-keyboard Return on iPad never produced the newline —
+  /// the key was silently swallowed. This pins the onKeyPress splice: a Return
+  /// key event lands in the draft as a line break and does NOT send.
+  func testHardwareReturnInsertsANewlineByDefault() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    let composer = element("chat.composer", in: app)
+    XCTAssertTrue(waitUntilHittable(composer, timeout: 5))
+    composer.tap()
+    composer.typeText("first")
+    composer.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
+    composer.typeText("second")
+
+    let value = composer.value as? String ?? ""
+    XCTAssertTrue(
+      value.contains("\n"),
+      "Expected hardware Return to insert a newline. Composer value: \(value)"
+    )
+    XCTAssertTrue(value.contains("first"), "Composer value: \(value)")
+    XCTAssertTrue(value.contains("second"), "Composer value: \(value)")
+  }
+
   func testConversationListSearchFiltersByTitleAndPreview() {
     let app = launch(scenario: "paired-online")
     selectTab("tab.conversations", in: app)
