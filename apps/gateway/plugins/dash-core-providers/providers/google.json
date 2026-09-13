@@ -20,6 +20,13 @@
         "output": 12,
         "cacheRead": 0.2,
         "cacheWrite": 0
+      },
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "LOW",
+        "medium": null,
+        "high": "HIGH"
       }
     },
     {
@@ -37,6 +44,13 @@
         "output": 3.75,
         "cacheRead": 0.075,
         "cacheWrite": 0
+      },
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "LOW",
+        "medium": null,
+        "high": "HIGH"
       }
     }
   ],
