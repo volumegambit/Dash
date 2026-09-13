@@ -116,13 +116,21 @@ enum ComposeAgentSelection {
 
   /// The accessibility hint explaining why `isUnavailable` is `true` — empty
   /// when compose is available, so it can be attached unconditionally.
+  ///
+  /// `isConnecting` distinguishes the liminal `.connecting` state from a
+  /// genuinely broken connection: while connecting, the app is already doing
+  /// the thing "Connect to the gateway…" would ask the user to do, so the
+  /// hint says so instead of issuing an instruction that can't be acted on.
   static func unavailableHint(
     _ agents: [RegisteredAgentDTO],
     filteredAgentID: String?,
-    mutationsAllowed: Bool
+    mutationsAllowed: Bool,
+    isConnecting: Bool
   ) -> String {
     if mutationsAllowed == false {
-      return "Connect to the gateway to create a conversation"
+      return isConnecting
+        ? "Connecting to the gateway"
+        : "Connect to the gateway to create a conversation"
     }
     if availableAgents(agents, filteredAgentID: filteredAgentID).isEmpty {
       return "Enable or create an agent before starting a conversation"
@@ -217,7 +225,14 @@ struct ConversationListView: View {
         Button {
           Task { await startCompose() }
         } label: {
-          if isComposing {
+          // A spinner rather than a greyed pencil while the sync engine is
+          // still `.connecting`: that state deliberately shows no offline
+          // banner (`AppModel.consume` maps it to `banner = nil` to avoid
+          // flicker on every cold start), so without this the button reads
+          // as inexplicably dead — the list underneath renders cached rows
+          // and looks perfectly healthy. Every OTHER non-online state has
+          // a banner explaining itself.
+          if isComposing || feature.isConnecting {
             ProgressView()
               .frame(minWidth: 44, minHeight: 44)
           } else {
@@ -373,7 +388,8 @@ struct ConversationListView: View {
     ComposeAgentSelection.unavailableHint(
       feature.agents,
       filteredAgentID: feature.selectedAgentID,
-      mutationsAllowed: feature.mutationsAllowed
+      mutationsAllowed: feature.mutationsAllowed,
+      isConnecting: feature.isConnecting
     )
   }
 

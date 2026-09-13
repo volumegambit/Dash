@@ -46,6 +46,20 @@ struct ConversationListFeatureTests {
     #expect(await recoveryService.discarded == [recovery])
   }
 
+  @Test("subagent conversations are excluded from the conversation list")
+  func subagentConversationsExcludedFromList() async {
+    let feature = makeFeature(service: FakeConversationListService())
+    let userConv = cachedConversation(summary(id: "user-1", title: "My Chat"))
+    let subagentConv = cachedConversation(
+      summary(id: "sub_01", title: "Child Worker", kind: "subagent")
+    )
+    feature.consume(
+      snapshot(connection: .online, conversations: [userConv, subagentConv])
+    )
+    #expect(feature.conversations.count == 1)
+    #expect(feature.conversations.first?.id == "user-1")
+  }
+
   @Test("last-used agent is nil until recorded, then persists per gateway")
   func lastUsedAgentPersistsPerGateway() async {
     let store = FakeLastUsedAgentStore()
@@ -512,6 +526,28 @@ struct ConversationListFeatureTests {
     #expect(feature.agents == [freshAgent])
     #expect(feature.nextCursor == "next")
     #expect(feature.isAuthoritative)
+  }
+
+  /// `.connecting` blocks mutations like every other non-online state, but
+  /// shows no offline banner — `isConnecting` is what lets compose surfaces
+  /// render a progress affordance instead of an unexplained disabled button.
+  @Test("isConnecting tracks the liminal connecting state and nothing else")
+  func isConnectingTracksConnectingOnly() {
+    let feature = makeFeature(service: FakeConversationListService())
+    #expect(feature.isConnecting)
+    #expect(feature.mutationsAllowed == false)
+
+    feature.consume(snapshot(connection: .online, conversations: []))
+    #expect(feature.isConnecting == false)
+    #expect(feature.mutationsAllowed)
+
+    feature.consume(snapshot(connection: .offline, conversations: []))
+    #expect(feature.isConnecting == false)
+    #expect(feature.mutationsAllowed == false)
+
+    feature.consume(snapshot(connection: .connecting, conversations: []))
+    #expect(feature.isConnecting)
+    #expect(feature.mutationsAllowed == false)
   }
 
   @Test("becoming online after cache load fetches the first canonical page")
@@ -2014,7 +2050,8 @@ struct ConversationListFeatureTests {
     title: String = "Conversation",
     revision: Int = 1,
     status: ConversationStatus = .idle,
-    updatedAt: Int = 20
+    updatedAt: Int = 20,
+    kind: String? = nil
   ) -> ConversationSummaryDTO {
     ConversationSummaryDTO(
       id: id,
@@ -2030,7 +2067,11 @@ struct ConversationListFeatureTests {
       lastMessagePreview: "Preview",
       createdAt: Date(timeIntervalSince1970: 10),
       updatedAt: Date(timeIntervalSince1970: TimeInterval(updatedAt)),
-      deletedAt: status == .deleted ? Date(timeIntervalSince1970: 30) : nil
+      deletedAt: status == .deleted ? Date(timeIntervalSince1970: 30) : nil,
+      kind: kind,
+      parentConversationId: nil,
+      parentTurnId: nil,
+      subagent: nil
     )
   }
 
@@ -2225,6 +2266,31 @@ struct ComposeAgentSelectionTests {
     #expect(
       ComposeAgentSelection.availableAgents(agents, filteredAgentID: nil).map(\.id)
         == ["agent-a", "agent-c"]
+    )
+  }
+
+  /// The `.connecting` state shows no offline banner (`AppModel.consume`
+  /// deliberately maps it to `banner = nil`), so the hint is the only text
+  /// explaining the disabled compose button — it must describe what the app
+  /// is DOING (connecting), not instruct the user to do something the app
+  /// is already doing.
+  @Test("the unavailable hint reports in-progress connection instead of instructing to connect")
+  func hintDistinguishesConnectingFromDisconnected() {
+    let agents = [agentFixture(id: "agent-a", name: "Agent A")]
+    #expect(
+      ComposeAgentSelection.unavailableHint(
+        agents, filteredAgentID: nil, mutationsAllowed: false, isConnecting: true
+      ) == "Connecting to the gateway"
+    )
+    #expect(
+      ComposeAgentSelection.unavailableHint(
+        agents, filteredAgentID: nil, mutationsAllowed: false, isConnecting: false
+      ) == "Connect to the gateway to create a conversation"
+    )
+    #expect(
+      ComposeAgentSelection.unavailableHint(
+        agents, filteredAgentID: nil, mutationsAllowed: true, isConnecting: false
+      ) == ""
     )
   }
 

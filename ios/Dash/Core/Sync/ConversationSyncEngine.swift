@@ -261,6 +261,15 @@ actor ConversationSyncEngine {
       try validate(lifecycle: lifecycle, conversations: conversations)
       do {
         let summary = try await api.conversation(id: id)
+        // Subagent (child) conversations are not part of the user's
+        // conversation list — the gateway excludes them from GET
+        // /conversations by defaulting kind='user'.  SSE invalidation
+        // events, however, fire for child turns too (they run through
+        // the same ResumableChatHub), and refreshConversation(id:) is
+        // the handler for those events.  Without this guard the child
+        // would be cached, added to conversationOrder, and surfaced in
+        // the conversation list.
+        guard summary.conversationKind != .subagent else { return }
         try validate(lifecycle: lifecycle, conversations: conversations)
         _ = try await persist(summary, lifecycle: lifecycle, conversations: conversations)
         try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
@@ -475,6 +484,20 @@ actor ConversationSyncEngine {
         lifecycle: lifecycle,
         conversations: conversations
       )
+      // Publish `.online` as soon as the conversation LIST is canonical —
+      // before the per-conversation transcript reloads below. Those reloads
+      // are a round-trip per active conversation, and holding `.online`
+      // hostage to all of them kept `mutationsAllowed` false (compose
+      // disabled, sends blocked) for the whole window even though the
+      // gateway was demonstrably reachable and authenticated. A transcript
+      // failure below still routes to `handle(error:)`, which downgrades
+      // the connection and shows its banner — failures are preserved, they
+      // just no longer retroactively veto list-level availability.
+      try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
+      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
+      publish(.online)
       for canonical in activeConversations {
         let messageReset = beginMessageReset(conversationID: canonical.id)
         messages = messageReset
@@ -498,11 +521,15 @@ actor ConversationSyncEngine {
           throw authoritativeFailure
         }
       }
-      try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
-      try validate(lifecycle: lifecycle, conversations: conversations)
-      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
-      try validate(lifecycle: lifecycle, conversations: conversations)
-      publish(.online)
+      // Second `.online` publish: surfaces any summary changes the
+      // transcript reloads persisted (e.g. a running conversation that
+      // completed while backgrounded). Skipped when there was nothing to
+      // reload — the first publish already carried the canonical list.
+      if activeConversations.isEmpty == false {
+        try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+        try validate(lifecycle: lifecycle, conversations: conversations)
+        publish(.online)
+      }
     } catch is CancellationError {
       return
     } catch {
@@ -810,8 +837,13 @@ actor ConversationSyncEngine {
 
   private func reloadSnapshot(lifecycle: Int, conversations: Int? = nil) async throws {
     try validate(lifecycle: lifecycle, conversations: conversations)
-    let cached = try await store.conversations(gatewayID: gatewayID, limit: 1_000)
+    let rawCached = try await store.conversations(gatewayID: gatewayID, limit: 1_000)
     try validate(lifecycle: lifecycle, conversations: conversations)
+    // Filter out subagent conversations that may have been cached before
+    // the guard in refreshConversation(id:) was added (or that entered the
+    // cache through any other path).  Subagents are displayed inline in
+    // the parent conversation's swarm panel, not in the conversation list.
+    let cached = rawCached.filter { $0.summary.conversationKind != .subagent }
     let ordered: [CachedConversation]
     if conversationOrder.isEmpty {
       ordered = cached

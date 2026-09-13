@@ -37,6 +37,39 @@ struct ConversationSyncEngineTests {
     #expect(canonical.mutationsAllowed)
   }
 
+  @Test("refreshConversation skips subagent conversations from SSE invalidation")
+  func refreshConversationSkipsSubagent() async throws {
+    let store = try PersistenceStore.inMemory()
+    let api = FakeConversationSyncAPI()
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversationPage(
+      .success(.init(items: [summary(id: "user-1", title: "User Chat")], nextCursor: nil))
+    )
+    // SSE invalidation fires for a subagent conversation.
+    await api.enqueueConversation(
+      id: "sub_01",
+      result: .success(summary(id: "sub_01", title: "Child Worker", kind: "subagent"))
+    )
+    let engine = makeEngine(store: store, api: api)
+    let stream = await engine.snapshots()
+    var snapshots = stream.makeAsyncIterator()
+    let bootstrap = Task { await engine.bootstrap() }
+    await bootstrap.value
+    // Drain the bootstrap snapshot.
+    _ = try #require(await snapshots.next())
+    let online = try #require(await snapshots.next())
+    #expect(online.conversations.map(\.id) == ["user-1"])
+
+    // Simulate an SSE conversation:changed event for the subagent.
+    await engine.refreshConversation(id: "sub_01")
+    // No new snapshot should contain the subagent.  The engine may not
+    // publish a new snapshot at all (it returns early), so just verify
+    // the cache doesn't contain it.
+    let cached = try await store.conversations(gatewayID: "gw", limit: 100)
+    #expect(cached.contains(where: { $0.id == "sub_01" }) == false)
+    await engine.shutdown()
+  }
+
   @Test("transport reconnect retries the full authoritative bootstrap")
   func reconnectRetriesAgentsAndConversations() async throws {
     let store = try PersistenceStore.inMemory()
@@ -1117,8 +1150,17 @@ struct ConversationSyncEngineTests {
     await eventually { await recorder.last?.connection == expected }
     await settleSyncWork()
 
+    // The canonical LIST sync succeeded before the transcript reload failed,
+    // so `.online` is published for that window — and then the transcript
+    // failure downgrades it. The failure must be the FINAL state; `.online`
+    // may only precede it.
     #expect(await recorder.last?.connection == expected)
-    #expect(await recorder.connections.contains(.online) == false)
+    let connections = await recorder.connections
+    if let onlineIndex = connections.lastIndex(of: .online),
+      let failureIndex = connections.lastIndex(of: expected)
+    {
+      #expect(onlineIndex < failureIndex)
+    }
     #expect(await api.messageListCalls.map(\.conversationID) == [running.id])
     collector.cancel()
     await engine.shutdown()
@@ -1170,7 +1212,64 @@ struct ConversationSyncEngineTests {
     await settleSyncWork()
 
     #expect(await recorder.last?.connection == expected)
-    #expect(await recorder.connections.contains(.online) == false)
+    switch point {
+    case .omittedDetail:
+      // The failure happens INSIDE list reconciliation, before `.online`
+      // could be published.
+      #expect(await recorder.connections.contains(.online) == false)
+    case .activeTranscript:
+      // List reconciliation succeeded, so `.online` is published before the
+      // transcript failure downgrades it — the failure must come after.
+      let connections = await recorder.connections
+      if let onlineIndex = connections.lastIndex(of: .online),
+        let failureIndex = connections.lastIndex(of: expected)
+      {
+        #expect(onlineIndex < failureIndex)
+      }
+    }
+    collector.cancel()
+    await engine.shutdown()
+  }
+
+  @Test("foreground publishes online after list reconciliation before transcript reloads")
+  func foregroundPublishesOnlineBeforeTranscriptReloads() async throws {
+    let store = try PersistenceStore.inMemory()
+    let running = summary(
+      id: "running",
+      title: "Running",
+      status: .running,
+      activeTurnID: "turn-running"
+    )
+    let api = FakeConversationSyncAPI()
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversationPage(.success(.init(items: [running], nextCursor: nil)))
+    let gate = TestGate()
+    await api.enqueueMessages(
+      conversationID: running.id,
+      result: .success(.init(items: [], nextCursor: nil, throughSeq: 0)),
+      waitingOn: gate
+    )
+    let engine = makeEngine(store: store, api: api)
+    let recorder = SnapshotRecorder()
+    let collector = Task {
+      for await snapshot in await engine.snapshots() {
+        await recorder.append(snapshot)
+      }
+    }
+
+    await engine.sceneDidEnterBackground()
+    let foreground = Task { await engine.sceneWillEnterForeground() }
+    // While the transcript reload is still suspended on the gate, the list
+    // reconciliation has already completed — `.online` (and with it
+    // `mutationsAllowed`) must not wait for per-conversation transcripts.
+    await gate.waitUntilWaiting()
+    await eventually { await recorder.last?.connection == .online }
+    #expect(await recorder.last?.connection == .online)
+    #expect(await recorder.last?.mutationsAllowed == true)
+
+    await gate.release()
+    await foreground.value
+    #expect(await recorder.last?.connection == .online)
     collector.cancel()
     await engine.shutdown()
   }
@@ -1803,7 +1902,8 @@ struct ConversationSyncEngineTests {
     status: ConversationStatus = .idle,
     activeTurnID: String? = nil,
     updatedAt: Date = instant(10),
-    deletedAt: Date? = nil
+    deletedAt: Date? = nil,
+    kind: String? = nil
   ) -> ConversationSummaryDTO {
     ConversationSummaryDTO(
       id: id,
@@ -1819,7 +1919,11 @@ struct ConversationSyncEngineTests {
       lastMessagePreview: title,
       createdAt: instant(0),
       updatedAt: updatedAt,
-      deletedAt: deletedAt
+      deletedAt: deletedAt,
+      kind: kind,
+      parentConversationId: nil,
+      parentTurnId: nil,
+      subagent: nil
     )
   }
 
