@@ -314,7 +314,27 @@ describe('createWebAppStore', () => {
 
       await store.getState().loadConversations();
 
-      expect(store.getState().conversations).toEqual(page.items);
+      // Both idle with the same updatedAt → sorted by id descending
+      expect(store.getState().conversations.map((c) => c.id)).toEqual(['conv-2', 'conv-1']);
+    });
+
+    it('pins running conversations above idle ones regardless of updatedAt', async () => {
+      const idle = summary({ id: 'idle-1', updatedAt: '2026-07-12T00:00:09.000Z', status: 'idle' });
+      const running = summary({
+        id: 'running-1',
+        updatedAt: '2026-07-12T00:00:01.000Z',
+        status: 'running',
+      });
+      const { rest } = fakeRest({
+        conversationPage: { items: [idle, running], nextCursor: null },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      await store.getState().loadConversations();
+
+      expect(store.getState().conversations[0].id).toBe('running-1');
+      expect(store.getState().conversations[1].id).toBe('idle-1');
     });
   });
 
@@ -918,6 +938,44 @@ describe('createWebAppStore', () => {
         code: 'conversation_busy',
         retryable: true,
       });
+    });
+
+    it('sets status to running on accepted frame and pins the conversation to the top', async () => {
+      const other = summary({
+        id: 'other-conv',
+        updatedAt: '2026-07-12T00:00:09.000Z',
+        status: 'idle' as const,
+      });
+      const target = summary({
+        id: CONVERSATION_ID,
+        updatedAt: '2026-07-12T00:00:01.000Z',
+        status: 'idle' as const,
+      });
+      const { rest } = fakeRest({
+        conversationPage: { items: [other, target], nextCursor: null },
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendMessage(CONVERSATION_ID, 'hello there');
+      const turnId = sockets[0].turnFrames[0].id;
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'real-user-msg-id',
+        assistantMessageId: 'real-assistant-msg-id',
+        revision: 2,
+        seq: 1,
+      });
+
+      const convs = store.getState().conversations;
+      expect(convs[0].id).toBe(CONVERSATION_ID);
+      expect(convs[0].status).toBe('running');
+      expect(convs[1].id).toBe('other-conv');
+      expect(convs[1].status).toBe('idle');
     });
 
     it('re-fetches the conversation summary when a turn completes on a conversation whose title is still the default (chat-ux Phase 3 Task 1, audit #8)', async () => {
@@ -2255,7 +2313,7 @@ describe('createWebAppStore', () => {
         '[SYSTEM NOTIFICATION - NOT USER INPUT]',
         '',
         '<task-notification>',
-        '<summary>Agent "Map gateway internals" finished</summary>',
+        '<summary>Squad member "Map gateway internals" finished</summary>',
         '</task-notification>',
       ].join('\n');
       const replayed = message({

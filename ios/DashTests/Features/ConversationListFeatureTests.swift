@@ -1909,6 +1909,50 @@ struct ConversationListFeatureTests {
     )
   }
 
+  @Test("a running conversation sorts above idle ones regardless of updatedAt")
+  func runningConversationPinnedToTop() async {
+    // A conversation with status .running must appear above all idle ones,
+    // even if its updatedAt is older than every idle conversation's.
+    let idleNew = summary(id: "idle-new", updatedAt: 500)
+    let idleMid = summary(id: "idle-mid", updatedAt: 300)
+    let runningOld = summary(id: "running-old", status: .running, updatedAt: 100)
+    let feature = makeFeature(service: FakeConversationListService())
+
+    feature.consume(
+      snapshot(
+        connection: .online,
+        conversations: [idleNew, idleMid, runningOld].map(cachedConversation)
+      )
+    )
+
+    #expect(feature.conversations.first?.id == "running-old")
+    #expect(
+      feature.conversations.map(\.id)
+        == ["running-old", "idle-new", "idle-mid"]
+    )
+  }
+
+  @Test("multiple running conversations sort by updatedAt desc among themselves")
+  func multipleRunningSortByUpdatedAt() async {
+    let runningA = summary(id: "running-a", status: .running, updatedAt: 100)
+    let runningB = summary(id: "running-b", status: .running, updatedAt: 300)
+    let idle = summary(id: "idle", updatedAt: 500)
+    let feature = makeFeature(service: FakeConversationListService())
+
+    feature.consume(
+      snapshot(
+        connection: .online,
+        conversations: [runningA, runningB, idle].map(cachedConversation)
+      )
+    )
+
+    // Both running sort above idle; between the two, newer updatedAt wins
+    #expect(
+      feature.conversations.map(\.id)
+        == ["running-b", "running-a", "idle"]
+    )
+  }
+
   @Test("an explicit sync removal wins over an active row in the same snapshot")
   func explicitSyncRemovalWinsOverSameSnapshotRow() async {
     let local = summary(id: "removed", revision: 2)

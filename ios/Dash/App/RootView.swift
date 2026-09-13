@@ -138,7 +138,7 @@ struct RootView: View {
           }
       }
       .tabItem {
-        Label("Agents", systemImage: "person.2")
+        Label("Squad", systemImage: "person.2")
           .accessibilityIdentifier(AppTab.agents.accessibilityID)
       }
       .tag(AppTab.agents)
