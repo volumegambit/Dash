@@ -1,10 +1,13 @@
 {
   "name": "@dash/gateway",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "plugins"],
+  "files": [
+    "dist",
+    "plugins"
+  ],
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -49,8 +52,12 @@
     "tsx": "^4.19.0"
   },
   "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": [
+      "esm"
+    ],
     "dts": true,
     "clean": true,
     "sourcemap": true,

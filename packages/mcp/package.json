@@ -1,6 +1,6 @@
 {
   "name": "@dash/mcp",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
@@ -23,8 +23,12 @@
     "@sinclair/typebox": "^0.34.0"
   },
   "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": [
+      "esm"
+    ],
     "dts": true,
     "clean": true,
     "sourcemap": true

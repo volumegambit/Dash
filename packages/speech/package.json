@@ -1,6 +1,6 @@
 {
   "name": "@dash/speech",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
@@ -22,8 +22,12 @@
     "@dash/mobile-contract": "*"
   },
   "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": [
+      "esm"
+    ],
     "dts": true,
     "clean": true,
     "sourcemap": true

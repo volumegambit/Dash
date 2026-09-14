@@ -1,10 +1,13 @@
 {
   "name": "@dash/skills",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "plugins"],
+  "files": [
+    "dist",
+    "plugins"
+  ],
   "exports": {
     ".": {
       "import": "./dist/index.js",
