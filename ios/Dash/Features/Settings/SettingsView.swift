@@ -214,6 +214,21 @@ struct SettingsView: View {
           "Connection secrets, offline cache, drafts, and attachments for this gateway are removed from this device."
         )
       }
+
+      Section {
+        LabeledContent("Version") {
+          // Middle-dot join so the build number — the only thing that changes
+          // between two OTA installs of the same marketing version — is
+          // always visible next to it, which is what confirms which build is
+          // actually running.
+          Text(Self.versionDisplay)
+            .textSelection(.enabled)
+            .accessibilityIdentifier("settings.version.value")
+        }
+        .frame(minHeight: 44)
+      } header: {
+        Text("About")
+      }
     }
     .accessibilityIdentifier("settings.list")
     .navigationTitle("Settings")
@@ -241,6 +256,17 @@ struct SettingsView: View {
         ApproveDeviceView(viewModel: approveDeviceViewModel)
       }
     }
+  }
+
+  /// The marketing version and build number as `1.2.3 (456)`, read from the
+  /// app's Info.plist. The build number is what distinguishes two OTA installs
+  /// of the same version, so it is always shown — this row exists to confirm
+  /// which build is actually running on the device.
+  static var versionDisplay: String {
+    let info = Bundle.main.infoDictionary
+    let short = info?["CFBundleShortVersionString"] as? String ?? "—"
+    let build = info?["CFBundleVersion"] as? String ?? "—"
+    return "\(short) (\(build))"
   }
 
   /// Tap to copy the full key (settings clarity 2026-09-05).
