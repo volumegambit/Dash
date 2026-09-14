@@ -79,6 +79,16 @@ assert.match(
   /<key>bundle-version<\/key><string>\$\{BUILD_NUM\}<\/string>/,
   'OTA manifest bundle-version must match CFBundleVersion, not MARKETING_VERSION.CURRENT_PROJECT_VERSION',
 );
+assert.match(
+  deployTailnetSource,
+  /<key>kind<\/key><string>display-image<\/string>/,
+  'OTA manifest should include the small install display image asset',
+);
+assert.match(
+  deployTailnetSource,
+  /<key>kind<\/key><string>full-size-image<\/string>/,
+  'OTA manifest should include the full-size install image asset',
+);
 
 for (const target of ['DashTests', 'DashContractTests', 'DashIntegrationTests', 'DashUITests']) {
   assert.equal(
