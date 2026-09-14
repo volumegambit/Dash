@@ -21,6 +21,7 @@ const accessibilityUITestSource = await readFile(
   'utf8',
 );
 const deployTailnetSource = await readFile('ios/scripts/deploy-tailnet.sh', 'utf8');
+const tailnetServerSource = await readFile('ios/scripts/tailnet-httpd.mjs', 'utf8');
 const composerSource = await readFile('ios/Dash/Features/Conversations/ComposerView.swift', 'utf8');
 const chatFeatureSource = await readFile(
   'ios/Dash/Features/Conversations/ChatFeature.swift',
@@ -88,6 +89,11 @@ assert.match(
   deployTailnetSource,
   /<key>kind<\/key><string>full-size-image<\/string>/,
   'OTA manifest should include the full-size install image asset',
+);
+assert.match(
+  tailnetServerSource,
+  /\['\.png', 'image\/png'\]/,
+  'OTA install icon assets must be served with image/png content type',
 );
 
 for (const target of ['DashTests', 'DashContractTests', 'DashIntegrationTests', 'DashUITests']) {

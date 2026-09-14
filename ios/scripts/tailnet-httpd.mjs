@@ -22,6 +22,7 @@ const mimeTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.ipa', 'application/octet-stream'],
   ['.plist', 'application/xml; charset=utf-8'],
+  ['.png', 'image/png'],
 ]);
 
 function fileFor(url) {
