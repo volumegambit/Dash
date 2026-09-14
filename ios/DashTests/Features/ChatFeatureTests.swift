@@ -802,6 +802,59 @@ struct ChatFeatureTests {
     )
   }
 
+  @Test("live refresh fetches the page when the stored canonical drifted at the SAME revision")
+  func liveRefreshFetchesPageOnSameRevisionDrift() async throws {
+    // The device bug: an already-populated cache holds this conversation at
+    // the current revision, but a benign field drifted from what the server
+    // now sends (here `lastMessagePreview`, which the gateway DERIVES from the
+    // latest user message and so changes without a revision bump). The store
+    // keeps its same-revision row, so `persisted.summary != summary`. The old
+    // byte-equality guard then suppressed the message fetch forever and left
+    // "No messages yet" on a conversation the gateway HAS messages for —
+    // observed in the gateway log as summary+subagents fetched but never
+    // `GET .../messages`.
+    URLProtocolStub.reset()
+    let store = try PersistenceStore.inMemory()
+    func summaryWithPreview(_ preview: String) -> ConversationSummaryDTO {
+      ConversationSummaryDTO(
+        id: "conv-1",
+        agentId: "agent-1",
+        agentName: "Dash",
+        title: "Test conversation",
+        revision: 6,
+        status: .running,
+        activeTurnId: "turn-1",
+        owningIssueId: nil,
+        projectId: nil,
+        lastSeq: 8,
+        lastMessagePreview: preview,
+        createdAt: Date(timeIntervalSince1970: 1),
+        updatedAt: Date(timeIntervalSince1970: 1),
+        deletedAt: nil
+      )
+    }
+    let stored = summaryWithPreview("stale preview from an older user message")
+    try await store.upsertConversations([stored], gatewayID: "gateway-1")
+
+    let fromServer = summaryWithPreview("the newest user message")
+    URLProtocolStub.enqueue(status: 200, data: try ContractCoding.encoder().encode(fromServer))
+    let serverMessage = message(id: "m1", text: "Hello from the gateway", ordinal: 1)
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: try ContractCoding.encoder().encode(
+        ConversationMessagePageDTO(items: [serverMessage], nextCursor: nil, throughSeq: 8)
+      )
+    )
+    let api = makeChatGatewayAPI()
+    let synchronizer = LiveChatSynchronizer(gatewayID: "gateway-1", store: store, makeAPI: { api })
+
+    let snapshot = try await synchronizer.refresh(conversationID: stored.id, before: nil)
+
+    // The whole point: the page IS fetched and carried, not suppressed.
+    #expect(snapshot.hasCanonicalMessagePage == true)
+    #expect(snapshot.messages == [serverMessage])
+  }
+
   @Test("a delayed summary 404 cannot remove a newer canonical conversation or its content")
   func liveSummaryNotFoundRetainsNewerCanonical() async throws {
     URLProtocolStub.reset()
