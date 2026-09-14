@@ -108,6 +108,14 @@ mv "$IPA" "$STAGE/Dash.ipa"
 find "$STAGE" -maxdepth 1 -type f ! -name 'Dash.ipa' -delete
 
 VERSION="$(grep -E '^MARKETING_VERSION' Config/Base.xcconfig | sed 's/.*= *//')"
+# The manifest's `bundle-version` is how iOS decides whether an OTA payload is
+# an UPGRADE. If it only advertises the marketing version (which never changes
+# between builds), iOS sees the installed app already at that version and
+# silently no-ops the install — the device keeps running the old binary. So
+# advertise the unique, incrementing build number here (the same value baked
+# into the archive's CFBundleVersion), which makes every deploy a distinct,
+# newer version and forces the reinstall.
+MANIFEST_VERSION="${VERSION}.${BUILD_NUM}"
 
 log "writing OTA manifest"
 cat > "$STAGE/manifest.plist" <<PLIST
@@ -128,7 +136,7 @@ cat > "$STAGE/manifest.plist" <<PLIST
 			<key>metadata</key>
 			<dict>
 				<key>bundle-identifier</key><string>${BUNDLE_ID}</string>
-				<key>bundle-version</key><string>${VERSION}</string>
+				<key>bundle-version</key><string>${MANIFEST_VERSION}</string>
 				<key>kind</key><string>software</string>
 				<key>title</key><string>Dash</string>
 			</dict>
