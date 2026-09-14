@@ -476,7 +476,27 @@ actor LiveChatSynchronizer: ChatFeatureSynchronizing {
       gatewayID: gatewayID
     )
     try validate(lifecycle)
-    guard persisted.summary == summary, persisted.summary.status != .deleted else {
+    // Fetch the page unless the store is holding something we must NOT fetch
+    // against: a deleted conversation, or a canonical STRICTLY NEWER than the
+    // summary the server just handed us (the store won a race or a fence, so
+    // that summary is stale and its page would regress the live projection).
+    //
+    // This used to require `persisted.summary == summary` byte-for-byte. That
+    // was too strict: whenever the persisted canonical drifted from the server
+    // in ANY benign field — a cache written by an older build, the
+    // server-DERIVED `lastMessagePreview`, a same-revision refresh — the guard
+    // failed and the message fetch was suppressed FOREVER, leaving
+    // "No messages yet" on a conversation the gateway has messages for.
+    // Verified on device from the gateway log: iOS fetched the summary and
+    // subagents but never `GET .../messages`, because this equality could not
+    // hold for an already-populated cache. Comparing revisions keeps the
+    // original intent (never let a stale server summary overwrite a newer
+    // local one — see `liveRefreshReturnsEffectiveStoredCanonical`) without
+    // depending on every field round-tripping identically.
+    guard
+      persisted.summary.status != .deleted,
+      persisted.summary.revision <= summary.revision
+    else {
       return ChatCanonicalSnapshot(
         summary: persisted.summary,
         messages: [],
