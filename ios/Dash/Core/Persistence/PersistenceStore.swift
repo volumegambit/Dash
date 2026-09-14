@@ -955,8 +955,25 @@ actor PersistenceStore {
       return false
     }
     if let record {
-      guard value.revision > record.revision else { return false }
-      apply(value, to: record)
+      // A newer revision always wins.
+      if value.revision > record.revision {
+        apply(value, to: record)
+      } else if value.revision == record.revision,
+        recordIsMissingKindMetadata(record, presentIn: value),
+        cachedSummary(from: record)?.withKindMetadata(from: value) == value {
+        // Narrow backfill for caches written before #158: that build dropped
+        // `kind`, `parentConversationID`, `parentTurnID` and the sub-agent
+        // block to nil, so the same-revision row the server re-sends differs
+        // ONLY in those fields. `LiveChatSynchronizer.refresh` compares the
+        // persisted summary to the server's byte-for-byte before it will fetch
+        // messages, so that drift keeps the screen permanently empty. We apply
+        // ONLY when the sole difference is this now-present metadata — never
+        // when status, title or anything else regressed, so a stale
+        // same-revision tombstone still cannot overwrite live content.
+        apply(value, to: record)
+      } else {
+        return false
+      }
     } else {
       modelContext.insert(
         ConversationRecord(
@@ -1101,33 +1118,59 @@ actor PersistenceStore {
   }
 
   private func cachedConversation(from record: ConversationRecord) throws -> CachedConversation {
-    guard let status = ConversationStatus(rawValue: record.statusRaw) else {
+    guard let summary = cachedSummary(from: record) else {
       throw PersistenceStoreError.invalidStoredValue(
         "conversation status \(record.statusRaw)"
       )
     }
-    return CachedConversation(
-      gatewayID: record.gatewayID,
-      summary: ConversationSummaryDTO(
-        id: record.conversationID,
-        agentId: record.agentID,
-        agentName: record.agentName,
-        title: record.title,
-        revision: record.revision,
-        status: status,
-        activeTurnId: record.activeTurnID,
-        owningIssueId: record.owningIssueID,
-        projectId: record.projectID,
-        lastSeq: record.lastSeq,
-        lastMessagePreview: record.lastMessagePreview,
-        createdAt: record.createdAt,
-        updatedAt: record.updatedAt,
-        deletedAt: record.deletedAt,
-        kind: record.kind,
-        parentConversationId: record.parentConversationID,
-        parentTurnId: record.parentTurnID,
-        subagent: Self.decodedSubagent(record.subagentJSON)
-      )
+    return CachedConversation(gatewayID: record.gatewayID, summary: summary)
+  }
+
+  /// True when the stored row has none of the #158 metadata but the incoming
+  /// value carries at least one field of it — the fingerprint of a cache
+  /// written by an older build. Used to keep the same-revision backfill narrow.
+  private func recordIsMissingKindMetadata(
+    _ record: ConversationRecord,
+    presentIn value: ConversationSummaryDTO
+  ) -> Bool {
+    let recordHasNone = record.kind == nil
+      && record.parentConversationID == nil
+      && record.parentTurnID == nil
+      && record.subagentJSON == nil
+    let valueHasSome = value.kind != nil
+      || value.parentConversationId != nil
+      || value.parentTurnId != nil
+      || value.subagent != nil
+    return recordHasNone && valueHasSome
+  }
+
+  /// Reconstruct the summary a record represents, or `nil` if its stored status
+  /// is unreadable. Non-throwing on purpose: `upsertConversation` uses it only
+  /// to decide whether a same-revision row has drifted, and a row it cannot
+  /// reconstruct should simply be re-applied, not crash the write.
+  private func cachedSummary(from record: ConversationRecord) -> ConversationSummaryDTO? {
+    guard let status = ConversationStatus(rawValue: record.statusRaw) else {
+      return nil
+    }
+    return ConversationSummaryDTO(
+      id: record.conversationID,
+      agentId: record.agentID,
+      agentName: record.agentName,
+      title: record.title,
+      revision: record.revision,
+      status: status,
+      activeTurnId: record.activeTurnID,
+      owningIssueId: record.owningIssueID,
+      projectId: record.projectID,
+      lastSeq: record.lastSeq,
+      lastMessagePreview: record.lastMessagePreview,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      deletedAt: record.deletedAt,
+      kind: record.kind,
+      parentConversationId: record.parentConversationID,
+      parentTurnId: record.parentTurnID,
+      subagent: Self.decodedSubagent(record.subagentJSON)
     )
   }
 
@@ -1286,5 +1329,21 @@ actor PersistenceStore {
 
   private func scopedID(gatewayID: String, resourceID: String) -> String {
     "\(gatewayID)|\(resourceID)"
+  }
+}
+
+private extension ConversationSummaryDTO {
+  /// A copy with only the #158 metadata replaced by `other`'s. Used to test
+  /// whether a same-revision persisted row differs from the server ONLY in
+  /// that metadata: if `reconstructed.withKindMetadata(from: server) == server`
+  /// then every other field already matches and the drift is purely the
+  /// now-present `kind`/parent/sub-agent block a pre-fix cache had dropped.
+  func withKindMetadata(from other: ConversationSummaryDTO) -> ConversationSummaryDTO {
+    var copy = self
+    copy.kind = other.kind
+    copy.parentConversationId = other.parentConversationId
+    copy.parentTurnId = other.parentTurnId
+    copy.subagent = other.subagent
+    return copy
   }
 }
