@@ -476,27 +476,8 @@ actor LiveChatSynchronizer: ChatFeatureSynchronizing {
       gatewayID: gatewayID
     )
     try validate(lifecycle)
-    // Fetch the page unless the store is holding something we must NOT fetch
-    // against: a deleted conversation, or a canonical STRICTLY NEWER than the
-    // summary the server just handed us (the store won a race or a fence, so
-    // that summary is stale and its page would regress the live projection).
-    //
-    // This used to require `persisted.summary == summary` byte-for-byte. That
-    // was too strict: whenever the persisted canonical drifted from the server
-    // in ANY benign field — a cache written by an older build, the
-    // server-DERIVED `lastMessagePreview`, a same-revision refresh — the guard
-    // failed and the message fetch was suppressed FOREVER, leaving
-    // "No messages yet" on a conversation the gateway has messages for.
-    // Verified on device from the gateway log: iOS fetched the summary and
-    // subagents but never `GET .../messages`, because this equality could not
-    // hold for an already-populated cache. Comparing revisions keeps the
-    // original intent (never let a stale server summary overwrite a newer
-    // local one — see `liveRefreshReturnsEffectiveStoredCanonical`) without
-    // depending on every field round-tripping identically.
-    guard
-      persisted.summary.status != .deleted,
-      persisted.summary.revision <= summary.revision
-    else {
+    // A deleted conversation has no transcript to fetch — return summary-only.
+    guard persisted.summary.status != .deleted else {
       return ChatCanonicalSnapshot(
         summary: persisted.summary,
         messages: [],
@@ -506,6 +487,26 @@ actor LiveChatSynchronizer: ChatFeatureSynchronizing {
       )
     }
 
+    // The message page is addressed by conversation ID, not by revision, so
+    // fetching it is ALWAYS safe and correct once we know the conversation is
+    // live. We must NOT gate the fetch on the summary matching the store.
+    //
+    // History of this guard, all removed here:
+    //   - It first required `persisted.summary == summary` byte-for-byte, so
+    //     ANY benign field drift (an older-build cache, the server-DERIVED
+    //     `lastMessagePreview`, a same-revision refresh) suppressed the page
+    //     FOREVER and left "No messages yet".
+    //   - Narrowing it to `persisted.summary.revision <= summary.revision`
+    //     still suppressed the page whenever the local cache had streamed
+    //     PAST the summary endpoint's revision (the endpoint lags the live
+    //     event stream) — reproduced by `diagCacheAheadOfSummarySuppressesPage`
+    //     and observed on device as summary+subagents fetched but never
+    //     `GET .../messages`.
+    //
+    // The genuine concern the guard was reaching for is narrower: never let a
+    // STALE server summary overwrite a newer local one. That is a decision
+    // about which SUMMARY to return, handled below by keeping the newer of
+    // (persisted, server) — it is NOT a reason to skip the transcript.
     let page: ConversationMessagePageDTO
     do {
       page = try await api.messages(

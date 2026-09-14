@@ -764,8 +764,14 @@ struct ChatFeatureTests {
     #expect(await chat.calls.compactMap(\.sentPayload).count == 1)
   }
 
-  @Test("live refresh returns the stored canonical when the API summary is stale")
+  @Test("live refresh keeps the newer stored summary but STILL fetches the page")
   func liveRefreshReturnsEffectiveStoredCanonical() async throws {
+    // A stale server summary must never overwrite a newer local one — that is
+    // the genuine concern. But it is a decision about which SUMMARY wins, not
+    // a reason to blank the transcript: the message page is addressed by
+    // conversation ID and is always safe to fetch. So the returned summary is
+    // the newer stored `current`, AND the page is fetched
+    // (hasCanonicalMessagePage == true).
     URLProtocolStub.reset()
     let store = try PersistenceStore.inMemory()
     let current = summary(
@@ -796,10 +802,44 @@ struct ChatFeatureTests {
     let snapshot = try await synchronizer.refresh(conversationID: current.id, before: nil)
 
     #expect(snapshot.summary == current)
-    #expect(snapshot.hasCanonicalMessagePage == false)
+    #expect(snapshot.hasCanonicalMessagePage == true)
+    #expect(snapshot.messages.isEmpty)
     #expect(
       try await store.conversation(gatewayID: "gateway-1", id: current.id)?.summary == current
     )
+  }
+
+  @Test("live refresh fetches the page even when the cache is AHEAD of the summary endpoint")
+  func liveRefreshFetchesPageWhenCacheIsAheadOfSummary() async throws {
+    // The device case that survived the revision-comparison guard: this iPad
+    // streamed the conversation live earlier, so its cached record sits at a
+    // HIGHER revision than the summary endpoint now returns (the endpoint
+    // lags the live event stream). Messages were never persisted. The old
+    // `persisted.revision <= summary.revision` guard SUPPRESSED the page here,
+    // leaving "No messages yet" — observed on device as summary+subagents
+    // fetched but never `GET .../messages`. The page must be fetched anyway.
+    URLProtocolStub.reset()
+    let store = try PersistenceStore.inMemory()
+    let cached = summary(revision: 13, status: .interrupted, lastSeq: 1055)
+    try await store.upsertConversations([cached], gatewayID: "gateway-1")
+    let serverSummary = summary(revision: 12, status: .interrupted, lastSeq: 1055)
+    URLProtocolStub.enqueue(status: 200, data: try ContractCoding.encoder().encode(serverSummary))
+    let serverMessage = message(id: "m1", text: "Real message on the gateway", ordinal: 1)
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: try ContractCoding.encoder().encode(
+        ConversationMessagePageDTO(items: [serverMessage], nextCursor: nil, throughSeq: 1055)
+      )
+    )
+    let api = makeChatGatewayAPI()
+    let synchronizer = LiveChatSynchronizer(gatewayID: "gateway-1", store: store, makeAPI: { api })
+
+    let snapshot = try await synchronizer.refresh(conversationID: cached.id, before: nil)
+
+    #expect(snapshot.hasCanonicalMessagePage == true)
+    #expect(snapshot.messages == [serverMessage])
+    // The newer local revision is still the one that wins for the summary.
+    #expect(snapshot.summary.revision == 13)
   }
 
   @Test("live refresh fetches the page when the stored canonical drifted at the SAME revision")
