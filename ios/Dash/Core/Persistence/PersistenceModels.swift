@@ -63,6 +63,24 @@ final class ConversationRecord {
   var createdAt: Date
   var updatedAt: Date
   var deletedAt: Date?
+  /// Sub-agent children (task C3 review C-1). All four are optional and
+  /// default to `nil`, so SwiftData's lightweight migration adds them to an
+  /// existing store without a plan.
+  ///
+  /// They are not decoration: `LiveChatSynchronizer.refresh` returns the
+  /// PERSISTED summary and only fetches a message page when it equals the one
+  /// the network gave (`persisted.summary == summary`, a `Hashable` compare
+  /// over every field). A child whose `kind` the round trip dropped could
+  /// therefore never satisfy that guard — no transcript, no error, no Retry —
+  /// and arrived on screen as an ordinary conversation with a composer.
+  var kind: String?
+  var parentConversationID: String?
+  var parentTurnID: String?
+  /// `SubagentInfoDTO` as JSON. A blob rather than a dozen more columns: it is
+  /// read back whole, and the DEFAULT date strategy is deliberate — it encodes
+  /// a `Date` as a `Double`, which round-trips exactly, and the equality guard
+  /// above compares `startedAt`/`endedAt`.
+  var subagentJSON: Data?
 
   init(
     scopedID: String,
@@ -80,7 +98,11 @@ final class ConversationRecord {
     lastMessagePreview: String?,
     createdAt: Date,
     updatedAt: Date,
-    deletedAt: Date?
+    deletedAt: Date?,
+    kind: String? = nil,
+    parentConversationID: String? = nil,
+    parentTurnID: String? = nil,
+    subagentJSON: Data? = nil
   ) {
     self.scopedID = scopedID
     self.gatewayID = gatewayID
@@ -98,6 +120,10 @@ final class ConversationRecord {
     self.createdAt = createdAt
     self.updatedAt = updatedAt
     self.deletedAt = deletedAt
+    self.kind = kind
+    self.parentConversationID = parentConversationID
+    self.parentTurnID = parentTurnID
+    self.subagentJSON = subagentJSON
   }
 }
 

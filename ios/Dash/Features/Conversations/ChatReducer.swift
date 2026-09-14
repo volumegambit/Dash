@@ -1888,7 +1888,18 @@ enum ChatReducer {
       lastMessagePreview: value.lastMessagePreview,
       createdAt: value.createdAt,
       updatedAt: value.updatedAt,
-      deletedAt: value.deletedAt
+      deletedAt: value.deletedAt,
+      // Carried, not dropped (task C3 review C-1). This helper rebuilds
+      // `state.conversation` after EVERY sequenced frame, at every turn
+      // admission and on every turn settle — so a field it forgets is a field
+      // the conversation loses on its first token. `kind` is what the whole
+      // read-only child mode branches on: without these four, one text delta
+      // on a child's socket put a composer back on the screen and let the user
+      // type into a sub-agent.
+      kind: value.kind,
+      parentConversationId: value.parentConversationId,
+      parentTurnId: value.parentTurnId,
+      subagent: value.subagent
     )
   }
 }
