@@ -1973,6 +1973,73 @@ struct PersistenceStoreTests {
     try context.save()
   }
 
+  @Test("a child conversation round-trips its kind, parent and sub-agent block")
+  func childConversationFieldsSurviveTheStore() async throws {
+    let store = try PersistenceStore.inMemory()
+    let child = childSummary()
+
+    let canonical = try await store.persistConversationAndReturnCanonical(child, gatewayID: "gw-a")
+
+    // Byte-for-byte, because `LiveChatSynchronizer.refresh` guards on exactly
+    // this equality (`persisted.summary == summary`) before it will fetch the
+    // message page. `ConversationSummaryDTO` is `Hashable`, so a dropped field
+    // makes that guard unsatisfiable for every child forever: no transcript,
+    // no error, no Retry.
+    #expect(canonical.summary == child)
+    #expect(canonical.summary.conversationKind == .subagent)
+    #expect(canonical.summary.parentConversationId == "parent-1")
+    #expect(canonical.summary.subagent?.report == "All clear.")
+
+    // And an UPDATE, not just an insert: `apply(_:to:)` is the other write.
+    let finished = childSummary(revision: 2, status: "done")
+    let updated = try await store.persistConversationAndReturnCanonical(finished, gatewayID: "gw-a")
+    #expect(updated.summary == finished)
+    #expect(updated.summary.subagent?.status == "done")
+  }
+
+  private func childSummary(
+    revision: Int = 1,
+    status: String = "running"
+  ) -> ConversationSummaryDTO {
+    ConversationSummaryDTO(
+      id: "child-1",
+      agentId: "agent-1",
+      agentName: "Agent One",
+      title: "Check launch readiness",
+      revision: revision,
+      status: .idle,
+      activeTurnId: nil,
+      owningIssueId: nil,
+      projectId: nil,
+      lastSeq: revision,
+      lastMessagePreview: nil,
+      createdAt: instant(0),
+      updatedAt: instant(revision),
+      deletedAt: nil,
+      kind: ConversationKind.subagent.rawValue,
+      parentConversationId: "parent-1",
+      parentTurnId: "turn-9",
+      subagent: SubagentInfoDTO(
+        type: "researcher",
+        name: "scout",
+        status: status,
+        description: "Check launch readiness",
+        prompt: "Check whether the launch checklist is complete",
+        model: "openai/gpt-5",
+        background: true,
+        isolation: nil,
+        depth: 1,
+        startedAt: instant(1),
+        endedAt: status == "running" ? nil : instant(9),
+        usage: SubagentUsageDTO(inputTokens: 3, outputTokens: 5),
+        toolCallCount: 2,
+        report: "All clear.",
+        oneShot: false,
+        workspace: nil
+      )
+    )
+  }
+
   private func summary(
     id: String,
     title: String,

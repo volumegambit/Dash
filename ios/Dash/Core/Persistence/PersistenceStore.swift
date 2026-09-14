@@ -975,7 +975,11 @@ actor PersistenceStore {
           lastMessagePreview: value.lastMessagePreview,
           createdAt: value.createdAt,
           updatedAt: value.updatedAt,
-          deletedAt: value.deletedAt
+          deletedAt: value.deletedAt,
+          kind: value.kind,
+          parentConversationID: value.parentConversationId,
+          parentTurnID: value.parentTurnId,
+          subagentJSON: Self.encodedSubagent(value.subagent)
         )
       )
     }
@@ -1038,6 +1042,26 @@ actor PersistenceStore {
     record.createdAt = value.createdAt
     record.updatedAt = value.updatedAt
     record.deletedAt = value.deletedAt
+    record.kind = value.kind
+    record.parentConversationID = value.parentConversationId
+    record.parentTurnID = value.parentTurnId
+    record.subagentJSON = Self.encodedSubagent(value.subagent)
+  }
+
+  /// `SubagentInfoDTO` ⇄ JSON, with the DEFAULT date strategy on both sides:
+  /// it writes a `Date` as a `Double`, so `startedAt`/`endedAt` come back
+  /// bit-identical and `LiveChatSynchronizer.refresh`'s
+  /// `persisted.summary == summary` guard can actually hold for a child.
+  /// An ISO-8601 strategy would quietly round off sub-second precision and
+  /// leave that guard unsatisfiable, which is the exact bug this fixes.
+  private static func encodedSubagent(_ value: SubagentInfoDTO?) -> Data? {
+    guard let value else { return nil }
+    return try? JSONEncoder().encode(value)
+  }
+
+  private static func decodedSubagent(_ data: Data?) -> SubagentInfoDTO? {
+    guard let data else { return nil }
+    return try? JSONDecoder().decode(SubagentInfoDTO.self, from: data)
   }
 
   private func purgeConversationContent(gatewayID: String, conversationID: String) throws {
@@ -1098,7 +1122,11 @@ actor PersistenceStore {
         lastMessagePreview: record.lastMessagePreview,
         createdAt: record.createdAt,
         updatedAt: record.updatedAt,
-        deletedAt: record.deletedAt
+        deletedAt: record.deletedAt,
+        kind: record.kind,
+        parentConversationId: record.parentConversationID,
+        parentTurnId: record.parentTurnID,
+        subagent: Self.decodedSubagent(record.subagentJSON)
       )
     )
   }
