@@ -1997,6 +1997,69 @@ struct PersistenceStoreTests {
     #expect(updated.summary.subagent?.status == "done")
   }
 
+  @Test("a same-revision refresh backfills fields a pre-fix cache stored as nil")
+  func sameRevisionRefreshReconcilesDriftedFields() async throws {
+    let store = try PersistenceStore.inMemory()
+
+    // A record written by a build BEFORE #158: same shape the server sends,
+    // but `kind` was dropped on the way into the store, so it reads back nil.
+    // This is exactly the state every device already had on disk.
+    let stale = ConversationSummaryDTO(
+      id: "conv-1",
+      agentId: "agent-1",
+      agentName: "Agent One",
+      title: "Hello",
+      revision: 5,
+      status: .idle,
+      activeTurnId: nil,
+      owningIssueId: nil,
+      projectId: nil,
+      lastSeq: 5,
+      lastMessagePreview: "Preview",
+      createdAt: instant(0),
+      updatedAt: instant(5),
+      deletedAt: nil,
+      kind: nil,
+      parentConversationId: nil,
+      parentTurnId: nil,
+      subagent: nil
+    )
+    _ = try await store.persistConversationAndReturnCanonical(stale, gatewayID: "gw-a")
+
+    // The server truth for the SAME revision — nothing changed server-side, it
+    // just always sends `kind`. `LiveChatSynchronizer.refresh` compares this to
+    // the persisted copy and only fetches messages when they are equal.
+    let fromServer = ConversationSummaryDTO(
+      id: "conv-1",
+      agentId: "agent-1",
+      agentName: "Agent One",
+      title: "Hello",
+      revision: 5,
+      status: .idle,
+      activeTurnId: nil,
+      owningIssueId: nil,
+      projectId: nil,
+      lastSeq: 5,
+      lastMessagePreview: "Preview",
+      createdAt: instant(0),
+      updatedAt: instant(5),
+      deletedAt: nil,
+      kind: ConversationKind.user.rawValue,
+      parentConversationId: nil,
+      parentTurnId: nil,
+      subagent: nil
+    )
+    let canonical = try await store.persistConversationAndReturnCanonical(
+      fromServer,
+      gatewayID: "gw-a"
+    )
+
+    // Must equal byte-for-byte, or the refresh guard never fetches the page and
+    // the screen stays empty — the very symptom, on a cache that predates #158.
+    #expect(canonical.summary == fromServer)
+    #expect(canonical.summary.kind == ConversationKind.user.rawValue)
+  }
+
   private func childSummary(
     revision: Int = 1,
     status: String = "running"
