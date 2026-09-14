@@ -806,15 +806,16 @@ struct ChatView: View {
             ) {
               isPinnedToBottom = pinned
             }
-          } else if isPinnedToBottom,
-            ChatScrollGeometry.viewportChangeNeedsRepin(previous: previous, current: current)
-          {
-            // The keyboard rising, the composer growing a line, a rotation
-            // or a split-view resize all change the VISIBLE height, which
-            // the size-change anchor above ignores (it tracks content size
-            // only) — so the tail slides under the keyboard. One exact
-            // `scrollTo` per such change, keyed on the height change rather
-            // than on "not at the bottom", so it cannot re-fire itself.
+          } else if ChatScrollGeometry.pinnedTranscriptNeedsRepin(
+            previous: previous,
+            current: current,
+            isPinned: isPinnedToBottom
+          ) {
+            // The bottom anchor is still the first line of defence, but device
+            // testing showed it can leave the growing streamed row below the
+            // viewport. While pinned, repair that drift with one exact
+            // `scrollTo`; while unpinned, leave the user's reading position
+            // alone.
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
@@ -1321,6 +1322,22 @@ enum ChatScrollGeometry {
   ) -> Bool {
     previous.viewportHeight != current.viewportHeight
       && current.distanceFromBottom > pinSlack
+  }
+
+  /// iOS 18+: should a pinned transcript be snapped back to its tail after a
+  /// geometry update? This covers both visible-height changes
+  /// (keyboard/composer/rotation) and live content growth (streamed tokens/tool
+  /// rows) when SwiftUI's size-change bottom anchor leaves the tail below the
+  /// viewport.
+  static func pinnedTranscriptNeedsRepin(
+    previous: TranscriptScrollMetrics,
+    current: TranscriptScrollMetrics,
+    isPinned: Bool
+  ) -> Bool {
+    isPinned
+      && current.distanceFromBottom > pinSlack
+      && (previous.viewportHeight != current.viewportHeight
+        || current.distanceFromBottom != previous.distanceFromBottom)
   }
 
   /// How much content is hidden below the transcript's visible bottom edge

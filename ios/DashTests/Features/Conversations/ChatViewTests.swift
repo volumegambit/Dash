@@ -160,11 +160,30 @@ struct ChatScrollViewportChangeTests {
     #expect(ChatScrollGeometry.viewportChangeNeedsRepin(previous: before, current: after))
   }
 
-  @Test("a content-only change (a streamed token) is the anchor's job, never a scrollTo")
-  func contentGrowthDoesNotRepin() {
+  @Test("a content-only change (a streamed token) re-pins when the tail slips out of view")
+  func contentGrowthRepinsWhenPinned() {
     let before = TranscriptScrollMetrics(distanceFromBottom: 0, viewportHeight: 700)
     let after = TranscriptScrollMetrics(distanceFromBottom: 24, viewportHeight: 700)
-    #expect(ChatScrollGeometry.viewportChangeNeedsRepin(previous: before, current: after) == false)
+    #expect(
+      ChatScrollGeometry.pinnedTranscriptNeedsRepin(
+        previous: before,
+        current: after,
+        isPinned: true
+      )
+    )
+  }
+
+  @Test("a content-only change does not pull the user back after they scrolled away")
+  func contentGrowthDoesNotRepinWhenUnpinned() {
+    let before = TranscriptScrollMetrics(distanceFromBottom: 120, viewportHeight: 700)
+    let after = TranscriptScrollMetrics(distanceFromBottom: 144, viewportHeight: 700)
+    #expect(
+      ChatScrollGeometry.pinnedTranscriptNeedsRepin(
+        previous: before,
+        current: after,
+        isPinned: false
+      ) == false
+    )
   }
 
   @Test("a viewport change that leaves the tail in view (keyboard dismissing) needs nothing")
