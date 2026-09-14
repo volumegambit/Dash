@@ -115,7 +115,6 @@ VERSION="$(grep -E '^MARKETING_VERSION' Config/Base.xcconfig | sed 's/.*= *//')"
 # advertise the unique, incrementing build number here (the same value baked
 # into the archive's CFBundleVersion), which makes every deploy a distinct,
 # newer version and forces the reinstall.
-MANIFEST_VERSION="${VERSION}.${BUILD_NUM}"
 
 log "writing OTA manifest"
 cat > "$STAGE/manifest.plist" <<PLIST
@@ -136,7 +135,7 @@ cat > "$STAGE/manifest.plist" <<PLIST
 			<key>metadata</key>
 			<dict>
 				<key>bundle-identifier</key><string>${BUNDLE_ID}</string>
-				<key>bundle-version</key><string>${MANIFEST_VERSION}</string>
+				<key>bundle-version</key><string>${BUILD_NUM}</string>
 				<key>kind</key><string>software</string>
 				<key>title</key><string>Dash</string>
 			</dict>
