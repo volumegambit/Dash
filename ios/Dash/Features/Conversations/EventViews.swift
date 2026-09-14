@@ -371,9 +371,8 @@ struct ToolCardView: View {
   }
 
   private var header: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 6) {
+    HStack(alignment: .center, spacing: 6) {
       statusGlyph
-        .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] + 1 }
       // Was `.callout` — the tool name is the least variable thing on the
       // row (it repeats down the whole run) and was set larger than the
       // summary, which is the part that differs. Demoting it to `.caption`
