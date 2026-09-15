@@ -263,6 +263,13 @@ struct ConversationQueueSnapshotDTO: Codable, Hashable, Sendable {
   let scheduling: PendingScheduling
   let pendingCount: Int
   let items: [PendingConversationInputDTO]
+
+  static let empty = ConversationQueueSnapshotDTO(
+    revision: 0,
+    scheduling: .running,
+    pendingCount: 0,
+    items: []
+  )
 }
 
 struct ConversationPendingPageDTO: Codable, Hashable, Sendable {

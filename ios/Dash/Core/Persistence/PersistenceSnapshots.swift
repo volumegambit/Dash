@@ -28,12 +28,69 @@ struct ConversationDraft: Equatable, Sendable {
   let updatedAt: Date
 }
 
+/// Text being composed in one restored scene. Conversation state is shared
+/// across devices, while an unfinished editor belongs to the window where it
+/// was typed. The revision lets persistence reject delayed writes and clear
+/// only the exact draft that was submitted.
+struct PendingWindowCommand: Codable, Equatable, Sendable {
+  let id: String
+  let command: ConversationCommand
+  let expectedActiveTurnID: String?
+  let text: String
+  let attachments: [PreparedAttachment]
+  let sourceWindowID: String
+  let submittedRevision: UInt64
+  let createdAt: Date
+}
+
+struct WindowConversationDraft: Equatable, Sendable {
+  let text: String
+  let attachments: [PreparedAttachment]
+  let revision: UInt64
+  let pendingCommand: PendingWindowCommand?
+  let updatedAt: Date
+
+  init(
+    text: String,
+    attachments: [PreparedAttachment] = [],
+    revision: UInt64,
+    pendingCommand: PendingWindowCommand? = nil,
+    updatedAt: Date
+  ) {
+    self.text = text
+    self.attachments = attachments
+    self.revision = revision
+    self.pendingCommand = pendingCommand
+    self.updatedAt = updatedAt
+  }
+}
+
 struct PendingChatSend: Equatable, Sendable {
   let turnID: String
   let localUserID: String
   let draft: String
   let attachments: [PreparedAttachment]
   let createdAt: Date
+  let sourceWindowID: String?
+  let submittedRevision: UInt64?
+
+  init(
+    turnID: String,
+    localUserID: String,
+    draft: String,
+    attachments: [PreparedAttachment],
+    createdAt: Date,
+    sourceWindowID: String? = nil,
+    submittedRevision: UInt64? = nil
+  ) {
+    self.turnID = turnID
+    self.localUserID = localUserID
+    self.draft = draft
+    self.attachments = attachments
+    self.createdAt = createdAt
+    self.sourceWindowID = sourceWindowID
+    self.submittedRevision = submittedRevision
+  }
 }
 
 enum PendingSendLoadResult: Equatable, Sendable {

@@ -258,6 +258,53 @@ struct NotificationRowTests {
   }
 }
 
+@Suite("Compact agent activity and long responses")
+struct ChatActivityPresentationTests {
+  @Test("consecutive implementation events form one activity group between prose")
+  func groupsConsecutiveActivity() {
+    let tool = ToolCardState(
+      id: "tool-1",
+      name: "read",
+      input: nil,
+      partialJSON: "",
+      status: .succeeded,
+      content: "done",
+      details: nil
+    )
+    let sections = assistantTimelineSections([
+      .text("Before"),
+      .thinking("Checking"),
+      .tool(tool),
+      .text("After"),
+    ])
+
+    #expect(sections.count == 3)
+    guard case .activity(_, let blocks) = sections[1] else {
+      Issue.record("Expected a compact activity section")
+      return
+    }
+    #expect(blocks.count == 2)
+  }
+
+  @Test("long responses use a bounded preview and preserve the full source")
+  func longResponsePreviewIsBounded() {
+    let text = String(repeating: "response ", count: 1_200)
+
+    #expect(LongMessagePresentation.needsReader(text))
+    #expect(LongMessagePresentation.preview(text).count == LongMessagePresentation.previewLength)
+    #expect(text.count > LongMessagePresentation.preview(text).count)
+  }
+
+  @Test("oversize responses use file export instead of the pasteboard")
+  func oversizeResponseAvoidsPasteboard() {
+    let fitting = String(repeating: "a", count: LongMessagePresentation.pasteboardByteLimit)
+    let oversize = fitting + "b"
+
+    #expect(LongMessagePresentation.fitsPasteboard(fitting))
+    #expect(LongMessagePresentation.fitsPasteboard(oversize) == false)
+  }
+}
+
 private func userMessage(
   id: String,
   turnID: String,

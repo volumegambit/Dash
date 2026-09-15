@@ -101,6 +101,238 @@ struct PersistenceStoreTests {
     #expect(values.map(\.ordinal) == [1, 2, 3])
   }
 
+  @Test("long conversations load a bounded newest window and prune the local cache")
+  func longConversationCacheIsBounded() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [summary(id: "c", title: "Long conversation")],
+      gatewayID: "gw"
+    )
+    let count = ChatCachePolicy.storedMessageLimitPerConversation + 25
+    try await store.mergeMessages(
+      (1...count).map { message(id: "m-\($0)", ordinal: $0) },
+      gatewayID: "gw",
+      conversationID: "c"
+    )
+
+    let values = try await store.messages(gatewayID: "gw", conversationID: "c")
+
+    #expect(values.count == ChatCachePolicy.initialMessageLimit)
+    #expect(values.first?.ordinal == count - ChatCachePolicy.initialMessageLimit + 1)
+    #expect(values.last?.ordinal == count)
+    #expect(
+      try await store.cachedMessageCount(gatewayID: "gw", conversationID: "c")
+        == ChatCachePolicy.storedMessageLimitPerConversation
+    )
+  }
+
+  @Test("window drafts stay independent and clear only the submitted revision")
+  func windowDraftsAreRevisionSafe() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [summary(id: "c", title: "Conversation")],
+      gatewayID: "gw"
+    )
+
+    try await store.saveWindowDraft(
+      WindowConversationDraft(text: "Window A", revision: 1, updatedAt: instant(10)),
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-a"
+    )
+    try await store.saveWindowDraft(
+      WindowConversationDraft(text: "Window B", revision: 4, updatedAt: instant(11)),
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-b"
+    )
+    try await store.saveWindowDraft(
+      WindowConversationDraft(text: "Typed after Send", revision: 2, updatedAt: instant(12)),
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-a"
+    )
+    try await store.saveWindowDraft(
+      WindowConversationDraft(text: "Delayed old write", revision: 1, updatedAt: instant(13)),
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-a"
+    )
+
+    try await store.clearWindowDraft(
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-a",
+      submittedRevision: 1
+    )
+    #expect(
+      try await store.windowDraft(
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: "window-a"
+      )?.text == "Typed after Send"
+    )
+    #expect(
+      try await store.windowDraft(
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: "window-b"
+      )?.text == "Window B"
+    )
+
+    try await store.clearWindowDraft(
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-a",
+      submittedRevision: 2
+    )
+    #expect(
+      try await store.windowDraft(
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: "window-a"
+      ) == nil
+    )
+  }
+
+  @Test("window drafts keep images isolated and are never quota evicted")
+  func windowDraftsPreserveUnsentWork() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [summary(id: "c", title: "Conversation")],
+      gatewayID: "gw"
+    )
+    let attachment = PreparedAttachment(id: UUID(), mediaType: "image/png", data: Data([1, 2]))
+    for index in 0..<101 {
+      try await store.saveWindowDraft(
+        WindowConversationDraft(
+          text: "Draft \(index)",
+          attachments: index == 100 ? [attachment] : [],
+          revision: 1,
+          updatedAt: instant(index)
+        ),
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: "window-\(index)"
+      )
+    }
+
+    #expect(try await store.cachedWindowDraftCount() == 101)
+    let last = try #require(
+      try await store.windowDraft(
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: "window-100"
+      )
+    )
+    #expect(last.attachments == [attachment])
+  }
+
+  @Test("a legacy draft is moved into exactly one window")
+  func legacyDraftIsClaimedOnce() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [summary(id: "c", title: "Conversation")],
+      gatewayID: "gw"
+    )
+    let attachment = PreparedAttachment(id: UUID(), mediaType: "image/png", data: Data([3]))
+    try await store.saveDraft(
+      ConversationDraft(text: "Legacy", attachments: [attachment], updatedAt: instant(1)),
+      gatewayID: "gw",
+      conversationID: "c"
+    )
+
+    let first = try await store.claimWindowDraft(
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-a"
+    )
+    let second = try await store.claimWindowDraft(
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-b"
+    )
+
+    #expect(first?.text == "Legacy")
+    #expect(first?.attachments == [attachment])
+    #expect(second == nil)
+    #expect(try await store.draft(gatewayID: "gw", conversationID: "c") == nil)
+  }
+
+  @Test("a queued window command survives reopening and resolves by the same id")
+  func pendingWindowCommandIsDurable() async throws {
+    let directory = FileManager.default.temporaryDirectory.appending(
+      path: "dash-window-command-\(UUID().uuidString)",
+      directoryHint: .isDirectory
+    )
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let storeURL = directory.appending(path: "dash.store")
+    let attachment = PreparedAttachment(id: UUID(), mediaType: "image/png", data: Data([4]))
+    let command = PendingWindowCommand(
+      id: "command-1",
+      command: .followUp,
+      expectedActiveTurnID: nil,
+      text: "Run this next",
+      attachments: [attachment],
+      sourceWindowID: "window-a",
+      submittedRevision: 7,
+      createdAt: instant(7)
+    )
+
+    do {
+      let store = try PersistenceStore.stored(at: storeURL)
+      try await store.upsertConversations(
+        [summary(id: "c", title: "Conversation")],
+        gatewayID: "gw"
+      )
+      try await store.saveWindowDraft(
+        WindowConversationDraft(
+          text: command.text,
+          attachments: command.attachments,
+          revision: command.submittedRevision,
+          updatedAt: command.createdAt
+        ),
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: command.sourceWindowID
+      )
+      #expect(
+        try await store.stageWindowCommand(
+          command,
+          gatewayID: "gw",
+          conversationID: "c"
+        )
+      )
+    }
+
+    do {
+      let reopened = try PersistenceStore.stored(at: storeURL)
+      let restored = try #require(
+        try await reopened.windowDraft(
+          gatewayID: "gw",
+          conversationID: "c",
+          windowID: "window-a"
+        )
+      )
+      #expect(restored.pendingCommand == command)
+      _ = try await reopened.resolveWindowCommand(
+        id: command.id,
+        accepted: true,
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: "window-a"
+      )
+      #expect(
+        try await reopened.windowDraft(
+          gatewayID: "gw",
+          conversationID: "c",
+          windowID: "window-a"
+        ) == nil
+      )
+    }
+  }
+
   @Test("newest and backward message pages merge without regressing an updated row")
   func backwardPageMerge() async throws {
     let store = try PersistenceStore.inMemory()

@@ -74,10 +74,11 @@ final class ConversationUITests: DashUITestCase {
     send.tap()
 
     let message = element("chat.message.assistant-ui-turn", in: app)
-    XCTAssertTrue(app.staticTexts["Reconnecting"].waitForExistence(timeout: 3))
-    XCTAssertTrue(app.buttons["Show thinking"].exists)
+    XCTAssertTrue(app.staticTexts["Needs your input"].waitForExistence(timeout: 3))
+    XCTAssertTrue(app.buttons["Review"].exists)
+    XCTAssertTrue(element("chat.message.assistant-ui-turn.activity.0", in: app).exists)
     XCTAssertTrue(app.descendants(matching: .any)["chat.question.ui-question"].exists)
-    XCTAssertTrue(app.descendants(matching: .any)["chat.tool.ui-tool"].exists)
+    XCTAssertTrue(element("chat.message.assistant-ui-turn.activity.2", in: app).exists)
     // One card for a child that emits BOTH the legacy `worker_*` mirrors and
     // the canonical `subagent_*` events — they share an id, so they must never
     // produce two rows (task D4, ruling 4).
@@ -98,12 +99,10 @@ final class ConversationUITests: DashUITestCase {
   ///
   /// Two things this pins that nothing else can:
   ///
-  /// 1. The nested tool card answers to `chat.subagent.ui-subagent.tool.ui-tool`
-  ///    while the PARENT's own card answers to `chat.tool.ui-tool`. Both
-  ///    exist at once, on purpose — the scripted child reuses the parent's
-  ///    `tool_use` id, because a `tool_use` id is only unique within its own
-  ///    conversation. Without §8.6's namespacing one of these queries would
-  ///    match two elements.
+  /// 1. The child's compact activity group has a child-message namespace,
+  ///    while the parent's group has the parent-message namespace. The
+  ///    scripted child reuses the parent's `tool_use` id, so opening the child
+  ///    inspector also proves the detailed tool output remains unambiguous.
   /// 2. The orchestrator's brief renders as §8.5's muted "from orchestrator"
   ///    row, and offers NEITHER Retry nor Edit & Resend. That is the security
   ///    half of D4's ruling 1: without the row, narrowing `isNotificationRow`
@@ -141,23 +140,40 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(row.exists)
     // Collapsed: no nested transcript, no body composer.
     XCTAssertFalse(
-      app.descendants(matching: .any)["chat.subagent.ui-subagent.tool.ui-tool"].exists)
+      app.descendants(matching: .any)[
+        "chat.subagent.ui-subagent.message.ui-subagent-reply.activity.0"
+      ].exists)
     XCTAssertFalse(app.descendants(matching: .any)["chat.subagent.ui-subagent.composer"].exists)
 
     element("chat.subagent.ui-subagent.header", in: app).tap()
 
-    let nestedTool = element("chat.subagent.ui-subagent.tool.ui-tool", in: app)
-    XCTAssertTrue(nestedTool.exists)
-    XCTAssertEqual(nestedTool.label, "Tool Search, Tool succeeded")
-    // The parent's own card is still there under its unnamespaced id, and
-    // each id matches exactly one element.
-    XCTAssertEqual(
-      app.descendants(matching: .any).matching(identifier: "chat.tool.ui-tool").count, 1)
+    let nestedActivity = element(
+      "chat.subagent.ui-subagent.message.ui-subagent-reply.activity.0",
+      in: app
+    )
+    XCTAssertTrue(nestedActivity.exists)
+    XCTAssertEqual(nestedActivity.label, "Activity, 1 step")
+    // The parent and child groups remain addressable independently.
     XCTAssertEqual(
       app.descendants(matching: .any)
-        .matching(identifier: "chat.subagent.ui-subagent.tool.ui-tool").count,
+        .matching(identifier: "chat.message.assistant-ui-turn.activity.2").count,
       1
     )
+    XCTAssertEqual(
+      app.descendants(matching: .any)
+        .matching(
+          identifier: "chat.subagent.ui-subagent.message.ui-subagent-reply.activity.0"
+        ).count,
+      1
+    )
+    nestedActivity.tap()
+    let nestedTool = element(
+      "chat.subagent.ui-subagent.message.ui-subagent-reply.activity.0.inspector.tool.ui-tool",
+      in: app
+    )
+    XCTAssertTrue(nestedTool.waitForExistence(timeout: 5))
+    XCTAssertEqual(nestedTool.label, "Tool Search, Tool succeeded")
+    app.buttons["Done"].tap()
 
     // The orchestrator row keeps its text (that text is the instruction the
     // child is working from) and is not a resendable user bubble.
@@ -209,7 +225,12 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertEqual(reopened.value as? String, "half a sentence I have not sent")
 
     scrollUntilHittable(element("chat.subagent.ui-subagent.header", in: app), in: app).tap()
-    XCTAssertTrue(waitForNoElement("chat.subagent.ui-subagent.tool.ui-tool", in: app))
+    XCTAssertTrue(
+      waitForNoElement(
+        "chat.subagent.ui-subagent.message.ui-subagent-reply.activity.0",
+        in: app
+      )
+    )
   }
 
   /// Task D6 (sub-agents design §8.4): the tasks sheet, the toolbar badge and
@@ -276,7 +297,7 @@ final class ConversationUITests: DashUITestCase {
     }
     XCTAssertEqual(
       element("chat.tasks.row.ui-subagent", in: app).label,
-      "Agent researcher, Running"
+      "Squad member researcher, Running"
     )
     // The wire's `waiting_input` reads as `waiting` here exactly as it does in
     // the transcript row, because both go through `SubagentCardStatus`.
@@ -295,7 +316,7 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(
       waitForLabel(
         element("chat.tasks.row.ui-subagent", in: app),
-        "Agent researcher, Cancelled"
+        "Squad member researcher, Cancelled"
       )
     )
     XCTAssertFalse(app.descendants(matching: .any)["chat.tasks.stop.ui-subagent"].exists)
@@ -432,19 +453,22 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(
       waitForLabel(
         element("chat.tasks.row.ui-subagent", in: app),
-        "Agent researcher, Cancelled"
+        "Squad member researcher, Cancelled"
       )
     )
 
     element("chat.tasks.row.ui-subagent", in: app).tap()
     XCTAssertTrue(
-      element("chat.subagent.ui-subagent.tool.ui-tool", in: app).exists,
+      element(
+        "chat.subagent.ui-subagent.message.ui-subagent-reply.activity.0",
+        in: app
+      ).exists,
       "Revealing a row from the sheet must expand it in the transcript"
     )
     XCTAssertTrue(
       waitForLabel(
         element("chat.subagent.ui-subagent", in: app),
-        "Agent researcher, Cancelled"
+        "Squad member researcher, Cancelled"
       ),
       "The transcript row must read the server's status, not the fold's Running"
     )
@@ -484,7 +508,7 @@ final class ConversationUITests: DashUITestCase {
     waitUntilEnabled(send)
     send.tap()
 
-    XCTAssertTrue(app.staticTexts["Reconnecting"].waitForExistence(timeout: 3))
+    XCTAssertTrue(app.staticTexts["Needs your input"].waitForExistence(timeout: 3))
     // Never shown while pinned — the transcript is short enough here that it
     // shouldn't overflow the viewport, but this also guards against a
     // regression that shows it unconditionally regardless of pin state.
@@ -1152,10 +1176,9 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertEqual(changed.label, "GPT-5 mini")
   }
 
-  /// Task cards (2026-09-05): the checklist renders, it is open without a
-  /// tap, and completed/in-progress/pending items are all present. Before
-  /// this the card body was the literal string "Todos: [3 items]".
-  func testTaskCardShowsTheChecklistExpandedByDefault() {
+  /// Tool output stays compact in the transcript and remains fully available
+  /// in the activity inspector.
+  func testActivityInspectorShowsTheTaskChecklist() {
     let app = launch(scenario: "streaming-reconnect")
     openFirstConversation(in: app)
 
@@ -1167,10 +1190,13 @@ final class ConversationUITests: DashUITestCase {
     waitUntilEnabled(send)
     send.tap()
 
+    let activity = element("chat.message.assistant-ui-turn.activity.2", in: app)
+    XCTAssertTrue(activity.waitForExistence(timeout: 10))
+    scrollUntilHittable(activity, in: app).tap()
     let todos = app.descendants(matching: .any)["chat.tool.todos"]
     XCTAssertTrue(
       todos.waitForExistence(timeout: 10),
-      "Expected the task checklist to render without expanding the card. UI: \(app.debugDescription)"
+      "Expected the task checklist in the activity inspector. UI: \(app.debugDescription)"
     )
     // Each item is its own combined a11y element, labelled by status.
     XCTAssertTrue(app.staticTexts["Done: Draft the plan"].exists)
@@ -1217,12 +1243,12 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(value.contains("second"), "Composer value: \(value)")
   }
 
-  /// Hardware Return must insert a newline (the 2026-09-13 fix). The composer
-  /// used to rely on `TextField` splicing Return natively once `.onSubmit` was
-  /// gone, but a hardware-keyboard Return on iPad never produced the newline —
-  /// the key was silently swallowed. This pins the onKeyPress splice: a Return
-  /// key event lands in the draft as a line break and does NOT send.
-  func testHardwareReturnInsertsANewlineByDefault() {
+  /// Return must insert a newline by default. `typeKey(.return)` does not
+  /// dispatch any event to a `UIViewRepresentable`-backed `UITextView` in the
+  /// simulator, so this uses the text-input path. Physical-keyboard routing is
+  /// declared separately by `ComposerKeyContractTests`; both paths land in
+  /// `ComposerTextView.insertNewlineAtCaret()`.
+  func testReturnInsertsANewlineByDefault() {
     let app = launch(scenario: "paired-online")
     openFirstConversation(in: app)
 
@@ -1230,38 +1256,13 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(waitUntilHittable(composer, timeout: 5))
     composer.tap()
     composer.typeText("first")
-    composer.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
+    composer.typeText("\n")
     composer.typeText("second")
 
     let value = composer.value as? String ?? ""
     XCTAssertTrue(
       value.contains("\n"),
-      "Expected hardware Return to insert a newline. Composer value: \(value)"
-    )
-    XCTAssertTrue(value.contains("first"), "Composer value: \(value)")
-    XCTAssertTrue(value.contains("second"), "Composer value: \(value)")
-  }
-
-  /// Hardware Return must insert a newline (the 2026-09-13 fix). The composer
-  /// used to rely on `TextField` splicing Return natively once `.onSubmit` was
-  /// gone, but a hardware-keyboard Return on iPad never produced the newline —
-  /// the key was silently swallowed. This pins the onKeyPress splice: a Return
-  /// key event lands in the draft as a line break and does NOT send.
-  func testHardwareReturnInsertsANewlineByDefault() {
-    let app = launch(scenario: "paired-online")
-    openFirstConversation(in: app)
-
-    let composer = element("chat.composer", in: app)
-    XCTAssertTrue(waitUntilHittable(composer, timeout: 5))
-    composer.tap()
-    composer.typeText("first")
-    composer.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
-    composer.typeText("second")
-
-    let value = composer.value as? String ?? ""
-    XCTAssertTrue(
-      value.contains("\n"),
-      "Expected hardware Return to insert a newline. Composer value: \(value)"
+      "Expected Return to insert a newline. Composer value: \(value)"
     )
     XCTAssertTrue(value.contains("first"), "Composer value: \(value)")
     XCTAssertTrue(value.contains("second"), "Composer value: \(value)")

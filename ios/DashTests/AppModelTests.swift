@@ -1370,7 +1370,10 @@ struct AppModelTests {
 
     try await model.reconnect()
 
-    #expect(model.gatewayCapabilities == [.conversationSyncV1, .chatResumeV1, .speechV1])
+    #expect(
+      model.gatewayCapabilities
+        == [.conversationSyncV1, .conversationControlV2, .chatResumeV1, .speechV1]
+    )
     #expect(model.speechAvailable)
   }
 
@@ -1395,7 +1398,10 @@ struct AppModelTests {
     // The mic in the composer depends on this: before it, `speech-v1` was
     // unknowable until the user happened to trigger a reconnect, so a cold
     // launch showed no mic on a gateway that has speech.
-    #expect(model.gatewayCapabilities == [.conversationSyncV1, .chatResumeV1, .speechV1])
+    #expect(
+      model.gatewayCapabilities
+        == [.conversationSyncV1, .conversationControlV2, .chatResumeV1, .speechV1]
+    )
     #expect(model.speechAvailable)
   }
 

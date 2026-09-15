@@ -246,6 +246,41 @@ final class DraftRecord {
 }
 
 @Model
+final class WindowDraftRecord {
+  @Attribute(.unique) var scopedWindowID: String
+  var gatewayID: String
+  var conversationID: String
+  var windowID: String
+  var text: String
+  @Attribute(.externalStorage) var attachmentsData: Data?
+  var revision: Int64
+  @Attribute(.externalStorage) var pendingCommandData: Data?
+  var updatedAt: Date
+
+  init(
+    scopedWindowID: String,
+    gatewayID: String,
+    conversationID: String,
+    windowID: String,
+    text: String,
+    attachmentsData: Data? = nil,
+    revision: Int64,
+    pendingCommandData: Data? = nil,
+    updatedAt: Date
+  ) {
+    self.scopedWindowID = scopedWindowID
+    self.gatewayID = gatewayID
+    self.conversationID = conversationID
+    self.windowID = windowID
+    self.text = text
+    self.attachmentsData = attachmentsData
+    self.revision = revision
+    self.pendingCommandData = pendingCommandData
+    self.updatedAt = updatedAt
+  }
+}
+
+@Model
 final class PendingSendRecord {
   @Attribute(.unique) var scopedConversationID: String
   var gatewayID: String
@@ -255,6 +290,8 @@ final class PendingSendRecord {
   var draft: String
   @Attribute(.externalStorage) var attachmentsData: Data
   var createdAt: Date
+  var sourceWindowID: String?
+  var submittedRevision: Int64?
 
   init(
     scopedConversationID: String,
@@ -264,7 +301,9 @@ final class PendingSendRecord {
     localUserID: String,
     draft: String,
     attachmentsData: Data,
-    createdAt: Date
+    createdAt: Date,
+    sourceWindowID: String? = nil,
+    submittedRevision: Int64? = nil
   ) {
     self.scopedConversationID = scopedConversationID
     self.gatewayID = gatewayID
@@ -274,6 +313,8 @@ final class PendingSendRecord {
     self.draft = draft
     self.attachmentsData = attachmentsData
     self.createdAt = createdAt
+    self.sourceWindowID = sourceWindowID
+    self.submittedRevision = submittedRevision
   }
 }
 
@@ -306,6 +347,7 @@ enum PersistenceSchema {
       MessageRecord.self,
       AgentRecord.self,
       DraftRecord.self,
+      WindowDraftRecord.self,
       PendingSendRecord.self,
       ReplayCursorRecord.self,
     ])

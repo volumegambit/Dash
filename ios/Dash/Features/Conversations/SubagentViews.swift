@@ -526,7 +526,7 @@ private struct SubagentTranscriptRow: View {
           exposesResponseToAccessibility: false,
           // Namespaced so a nested tool card cannot collide with a
           // same-id card in the parent's transcript (§8.6).
-          identifierPrefix: "chat.subagent.\(childID)",
+          identifierPrefix: "chat.subagent.\(childID).message.\(message.rowID)",
           // Depth guard: at `maxSubagentDepth` a grandchild row still renders
           // — it must never vanish — but opens nothing.
           subagentDepth: depth,

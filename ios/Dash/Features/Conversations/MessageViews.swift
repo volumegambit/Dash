@@ -152,6 +152,8 @@ struct MessageListView: View {
   let onRetry: (String) -> Void
   let onEditAndResend: (String) -> Void
   let subagentInteraction: SubagentInteraction
+  let onActivityInspectorOpen: (String, String) -> Void
+  let onActivityInspectorDismiss: () -> Void
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -164,7 +166,9 @@ struct MessageListView: View {
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     onRetry: @escaping (String) -> Void = { _ in },
     onEditAndResend: @escaping (String) -> Void = { _ in },
-    subagentInteraction: SubagentInteraction = .inert
+    subagentInteraction: SubagentInteraction = .inert,
+    onActivityInspectorOpen: @escaping (String, String) -> Void = { _, _ in },
+    onActivityInspectorDismiss: @escaping () -> Void = {}
   ) {
     self.messages = messages
     self.firstRowFrameCoordinateSpace = firstRowFrameCoordinateSpace
@@ -175,6 +179,8 @@ struct MessageListView: View {
     self.onRetry = onRetry
     self.onEditAndResend = onEditAndResend
     self.subagentInteraction = subagentInteraction
+    self.onActivityInspectorOpen = onActivityInspectorOpen
+    self.onActivityInspectorDismiss = onActivityInspectorDismiss
   }
 
   var body: some View {
@@ -205,7 +211,9 @@ struct MessageListView: View {
           onAnswer: onAnswer,
           onRetry: onRetry,
           onEditAndResend: onEditAndResend,
-          subagentInteraction: subagentInteraction
+          subagentInteraction: subagentInteraction,
+          onActivityInspectorOpen: onActivityInspectorOpen,
+          onActivityInspectorDismiss: onActivityInspectorDismiss
         )
         // Entrance animation (chat-ux Phase 3 Task 4, audit #18): a fresh
         // row (new `ChatMessageState.rowID`, `ForEach`'s identity) fades+rises
@@ -361,6 +369,8 @@ struct ChatMessageView: View {
   let onRetry: (String) -> Void
   let onEditAndResend: (String) -> Void
   let subagentInteraction: SubagentInteraction
+  let onActivityInspectorOpen: (String, String) -> Void
+  let onActivityInspectorDismiss: () -> Void
 
   /// The one gate every speech surface reads, the same way `ComposerView`
   /// gates the mic. OPTIONAL on purpose: `MessageListView` is constructed
@@ -377,7 +387,9 @@ struct ChatMessageView: View {
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     onRetry: @escaping (String) -> Void = { _ in },
     onEditAndResend: @escaping (String) -> Void = { _ in },
-    subagentInteraction: SubagentInteraction = .inert
+    subagentInteraction: SubagentInteraction = .inert,
+    onActivityInspectorOpen: @escaping (String, String) -> Void = { _, _ in },
+    onActivityInspectorDismiss: @escaping () -> Void = {}
   ) {
     self.message = message
     self.isAnsweringEnabled = isAnsweringEnabled
@@ -388,6 +400,8 @@ struct ChatMessageView: View {
     self.onRetry = onRetry
     self.onEditAndResend = onEditAndResend
     self.subagentInteraction = subagentInteraction
+    self.onActivityInspectorOpen = onActivityInspectorOpen
+    self.onActivityInspectorDismiss = onActivityInspectorDismiss
   }
 
   var body: some View {
@@ -473,7 +487,10 @@ struct ChatMessageView: View {
               isAnsweringEnabled: isAnsweringEnabled,
               onAnswer: onAnswer,
               exposesResponseToAccessibility: message.exposesAssistantTextToAccessibility,
-              subagentInteraction: subagentInteraction
+              identifierPrefix: "chat.message.\(message.rowID)",
+              subagentInteraction: subagentInteraction,
+              onActivityInspectorOpen: onActivityInspectorOpen,
+              onActivityInspectorDismiss: onActivityInspectorDismiss
             )
 
             // The context menu closes the moment "Read aloud" is tapped, so
@@ -732,8 +749,7 @@ private struct UserMessageView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       if !message.text.isEmpty {
-        Text(message.text)
-          .textSelection(.enabled)
+        LongPlainMessageView(text: message.text)
       }
 
       if !message.images.isEmpty {

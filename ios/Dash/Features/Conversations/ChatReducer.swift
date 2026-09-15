@@ -13,6 +13,13 @@ struct ChatState: Equatable, Sendable {
   var olderCursor: String?
   var composerBlock: ComposerBlockReason?
   var errorBanner: String?
+  /// Durable gateway-owned work waiting behind the active turn. This is
+  /// canonical conversation state and is therefore shared by every window.
+  var queue: ConversationQueueSnapshotDTO = .empty
+  /// The newest command outcome. The presentation layer uses the command id
+  /// to make reconciliation idempotent and keeps transient progress local to
+  /// each window.
+  var lastCommandReceipt: ChatCommandReceiptState? = nil
   /// Per-child UI state for the sub-agent rows (§8.1–§8.3), keyed by child
   /// conversation id.
   ///
@@ -57,6 +64,15 @@ struct ChatState: Equatable, Sendable {
       || attachments.isEmpty == false
       || conversation.title != ChatState.defaultConversationTitle
   }
+}
+
+struct ChatCommandReceiptState: Equatable, Sendable {
+  let id: String
+  let command: ConversationCommand
+  let status: CommandReceiptStatus
+  let affectedTurnID: String?
+  let pendingItem: PendingConversationInputDTO?
+  let reason: CommandReceiptReason?
 }
 
 /// UI state for one sub-agent row, keyed by child conversation id in
@@ -990,13 +1006,19 @@ enum ChatReducer {
   ) -> [ChatEffect] {
     switch frame {
     case let .accepted(
-      id, _, userMessageID, assistantMessageID, revision, seq, origin, _, _, _
+      id, _, userMessageID, assistantMessageID, revision, seq, origin, _, _, pendingItemID
     ):
+      let pendingProjection = pendingItemID.flatMap { pendingID in
+        state.queue.items.first(where: { $0.id == pendingID }).map {
+          UserMessageProjection(text: $0.text, images: $0.images ?? [])
+        }
+      }
       reconcileAccepted(
         turnID: id,
         userMessageID: userMessageID,
         assistantMessageID: assistantMessageID,
         origin: origin,
+        pendingProjection: pendingProjection,
         state: &state
       )
       state.activeTurnID = id
@@ -1083,10 +1105,31 @@ enum ChatReducer {
       finishTurn(id, state: &state)
       return shouldAnnounce ? [.announceFinalResponse("Response failed: \(error)")] : []
 
-    case .watched, .commandReceipt, .queueChanged,
-      .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
-      // Never reached: `ChatFeature.consume` returns for a voice frame before
-      // `consumeFrame`/`apply` run.
+    case let .watched(_, _, throughSeq, queue):
+      installQueue(queue, state: &state)
+      guard throughSeq > state.lastAppliedSeq else { return [] }
+      state.lastAppliedSeq = throughSeq
+      return [.persistCursor(throughSeq)]
+
+    case let .commandReceipt(
+      id, _, command, status, queue, affectedTurnID, pendingItem, reason
+    ):
+      installQueue(queue, state: &state)
+      state.lastCommandReceipt = ChatCommandReceiptState(
+        id: id,
+        command: command,
+        status: status,
+        affectedTurnID: affectedTurnID,
+        pendingItem: pendingItem,
+        reason: reason
+      )
+      return []
+
+    case let .queueChanged(_, queue, _):
+      installQueue(queue, state: &state)
+      return []
+
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
       return []
     }
   }
@@ -1096,6 +1139,7 @@ enum ChatReducer {
     userMessageID: String,
     assistantMessageID: String,
     origin: MessageOrigin?,
+    pendingProjection: UserMessageProjection? = nil,
     state: inout ChatState
   ) {
     // `origin` is only ever WRITTEN when the frame carried one. A replayed
@@ -1123,7 +1167,7 @@ enum ChatReducer {
           ordinal: nil,
           role: .user,
           status: .accepted,
-          user: UserMessageProjection(text: "", images: []),
+          user: pendingProjection ?? UserMessageProjection(text: "", images: []),
           assistant: nil,
           origin: origin
         )
@@ -1160,6 +1204,14 @@ enum ChatReducer {
       keepingID: assistantMessageID,
       state: &state
     )
+  }
+
+  private static func installQueue(
+    _ queue: ConversationQueueSnapshotDTO,
+    state: inout ChatState
+  ) {
+    guard queue.revision >= state.queue.revision else { return }
+    state.queue = queue
   }
 
   private static func deduplicate(
