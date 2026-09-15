@@ -90,23 +90,36 @@ version and asks you to retry instead of overwriting it.
 
 Open a conversation, enter a message, and tap **Send**. Dash shows thinking, tool activity,
 [sub-agent](/tools#sub-agents) rows, questions, and response text as the gateway streams them. Tool
-calls appear as collapsed cards you can tap to expand — the same cards you see in Mission Control
-and the web client (see [Reading tool activity](/chat-with-your-agent#reading-tool-activity)). You
-can attach supported images, answer an agent question, or cancel the active turn. The **Tasks**
-button in the toolbar lists every sub-agent in the conversation, with stop and resume.
+calls and thinking are collected into a compact **Activity** row. Tap it to inspect each step and
+its available output. Thinking appears only when the model supplies it. Long responses stay compact
+in the transcript and offer **Continue reading** for the complete response. You can attach supported
+images or answer an agent question. The **Tasks** button in the toolbar lists every sub-agent in the
+conversation, with stop and resume.
+
+The transcript follows new text while you are reading the latest response. As soon as you scroll
+away, your position stays fixed even while more text streams in. **Latest** shows how many meaningful
+updates arrived and returns to the live response. If you send while reading earlier messages, Dash
+briefly reveals your new message and offers **Back to reading** so you can return to the same place.
 
 With a hardware keyboard, **Return** inserts a line break and **Cmd+Return** sends — matching the
 Send button. This differs from Mission Control and the web client, where Return sends; see
 [Composer keys](/chat-with-your-agent#composer-keys).
 
-Only one client owns a running turn at a time. If Mission Control or another phone started the turn,
-the composer shows **Active on another device** and stays read-only until that turn finishes. If the
-connection drops during your own turn, Dash keeps the partial response visible and resumes from the
-last durable event after reconnecting. If the connection fails before Dash can confirm that a new
-message was admitted, the app checks the gateway's canonical conversation before doing anything
-else. An ambiguous message stays saved across app restarts and is never resent automatically. When
-the conversation still exists, **Retry** reuses the exact original request ID so the gateway can
-resume or deduplicate the same turn instead of creating a second one.
+While an agent is working, the send button becomes **Follow Up**. It adds your message to a shared
+queue and runs it after the current response. Use the adjacent menu for **Interrupt & send** when the
+new message should take priority. The work strip shows the active response and pending count. Tap
+**View** to review, edit, or remove pending Follow Ups. **Stop** ends the exact active response and
+pauses pending work; **Resume** continues it when you are ready.
+
+Every paired client sees the same admitted turns, activity, command outcomes, and Follow Up order.
+Each window keeps its own text draft and reading position. If the connection drops, Dash keeps the
+partial response visible and resumes from the last durable event after reconnecting. New mutations
+wait for a connection, while the draft and cached conversation remain readable. If the connection
+fails before Dash can confirm that a new message was admitted, the app checks the gateway's
+canonical conversation before doing anything else. An ambiguous message stays saved across app
+restarts and is never resent automatically. When the conversation still exists, **Retry** reuses the
+exact original request ID so the gateway can resume or deduplicate the same turn instead of creating
+a second one.
 
 If another client deleted that conversation, Dash never recreates or resends the saved message.
 It appears in **Needs Recovery** at the top of Conversations. Open it to copy the exact text and
