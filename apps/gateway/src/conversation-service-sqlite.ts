@@ -570,7 +570,7 @@ export class SqliteConversationService implements ConversationService {
           );
         }
         const receipt = JSON.parse(existing.receipt) as ConversationCommandReceipt;
-        return { ...receipt, status: 'already_applied' };
+        return { ...receipt, status: 'already_applied' as const };
       }
 
       const receipt = apply(row);

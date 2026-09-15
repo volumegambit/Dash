@@ -723,9 +723,9 @@ describe('mobile v1 contract fixtures', () => {
       'createdAt',
       'updatedAt',
     ]);
-    expect(
-      openapi.paths?.['/conversations/{id}/pending']?.get?.operationId,
-    ).toBe('listConversationPending');
+    expect(openapi.paths?.['/conversations/{id}/pending']?.get?.operationId).toBe(
+      'listConversationPending',
+    );
 
     const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
       $defs?: Record<

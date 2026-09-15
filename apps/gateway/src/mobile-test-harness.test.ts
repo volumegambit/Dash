@@ -182,11 +182,19 @@ async function mintWsTicket(harness: RunningMobileTestHarness): Promise<string> 
  * narrows to the frame shapes an ordinary ChatSend/resume turn can actually
  * produce, keeping `.seq` available without an `undefined` branch.
  */
-type ChatTurnFrame = Exclude<MobileWsServerFrame, { type: `voice_${string}` }>;
+type ChatTurnFrame = Exclude<
+  MobileWsServerFrame,
+  { type: `voice_${string}` | 'watched' | 'queue_changed' | 'command_receipt' }
+>;
 
 function turnFrames(inbox: FrameInbox, turnId: string): ChatTurnFrame[] {
   return inbox.frames.filter(
-    (frame): frame is ChatTurnFrame => frame.id === turnId && !frame.type.startsWith('voice_'),
+    (frame): frame is ChatTurnFrame =>
+      'id' in frame &&
+      frame.id === turnId &&
+      !frame.type.startsWith('voice_') &&
+      frame.type !== 'watched' &&
+      frame.type !== 'command_receipt',
   );
 }
 

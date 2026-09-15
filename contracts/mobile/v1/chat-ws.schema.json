@@ -287,14 +287,7 @@
     "ChatInterruptAndSend": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "agentId",
-        "conversationId",
-        "expectedActiveTurnId",
-        "text"
-      ],
+      "required": ["type", "id", "agentId", "conversationId", "expectedActiveTurnId", "text"],
       "properties": {
         "type": { "const": "interrupt_and_send" },
         "id": { "type": "string", "format": "uuid" },
@@ -359,14 +352,7 @@
     "ChatRemovePending": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "agentId",
-        "conversationId",
-        "pendingId",
-        "expectedVersion"
-      ],
+      "required": ["type", "id", "agentId", "conversationId", "pendingId", "expectedVersion"],
       "properties": {
         "type": { "const": "remove_pending" },
         "id": { "type": "string", "format": "uuid" },

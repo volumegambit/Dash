@@ -188,7 +188,7 @@ function summarizeOutboundForLog(
   msg: WsServerMessage | MobileWsServerFrame | VoiceServerFrame,
 ): Record<string, unknown> {
   const summary: Record<string, unknown> = { frameType: msg.type };
-  if (typeof msg.id === 'string') summary.idLength = msg.id.length;
+  if ('id' in msg && typeof msg.id === 'string') summary.idLength = msg.id.length;
   if ('seq' in msg && typeof msg.seq === 'number') summary.seq = msg.seq;
   if (msg.type === 'event') summary.eventType = msg.event?.type ?? 'unknown';
   // A voice frame's `audio` is never summarized, by construction: this

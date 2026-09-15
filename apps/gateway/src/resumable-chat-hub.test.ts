@@ -21,7 +21,10 @@ import {
  * hub's own frames keep their `seq` field without an `undefined` branch from
  * a variant this hub can never actually produce.
  */
-type HubServerFrame = Exclude<MobileWsServerFrame, { type: `voice_${string}` }>;
+type HubServerFrame = Exclude<
+  MobileWsServerFrame,
+  { type: `voice_${string}` | 'watched' | 'queue_changed' }
+> & { seq?: number };
 
 function isHubServerFrame(frame: MobileWsServerFrame): frame is HubServerFrame {
   return !frame.type.startsWith('voice_');

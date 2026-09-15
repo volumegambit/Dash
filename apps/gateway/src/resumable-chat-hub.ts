@@ -446,13 +446,13 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     live.terminal = true;
     live.outcome = outcome;
     broadcast(live, frameFromPersisted(live, persisted));
-    notifyFinish(live, outcome);
     options.onChanged?.(persisted.conversation);
     return persisted;
   };
 
   const runTurn = async (live: LiveTurn, frame: ResumableSendFrame): Promise<void> => {
     let stream: ReturnType<AgentChatCoordinator['chat']> | undefined;
+    let failureMessage: string | undefined;
     try {
       stream = agents.chat({
         agentId: frame.agentId,
@@ -515,6 +515,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     } catch (error) {
       if (!live.cancelled) {
         const message = error instanceof Error ? error.message : String(error);
+        failureMessage = message;
         const persisted = conversations.finishTurn({
           conversationId: live.conversationId,
           turnId: live.turnId,
@@ -525,7 +526,6 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         live.terminal = true;
         live.outcome = 'failed';
         broadcast(live, frameFromPersisted(live, persisted));
-        notifyFinish(live, 'failed', message);
         options.onChanged?.(persisted.conversation);
       }
     } finally {
@@ -533,11 +533,6 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         if (stream) await stream.return(undefined);
       } finally {
         live.settled = true;
-        // Both terminal paths above persist BEFORE notifying, so a throwing
-        // finishTurn would otherwise leave observers waiting forever on a run
-        // that is over. Report it as failed; `finishNotified` keeps a later
-        // successful cancel retry from double-reporting.
-        notifyFinish(live, 'failed');
         const shouldAdvance =
           live.outcome === 'completed' ||
           (live.outcome === 'cancelled' && live.advanceAfterSettlement);
@@ -557,6 +552,10 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
           );
         }
         if (live.terminal && turns.get(live.turnId) === live) turns.delete(live.turnId);
+        // Notify only after the provider stream and durable queue bookkeeping
+        // have settled. Finish observers can start notification turns, and the
+        // conversation fence must see the previous run as fully released.
+        notifyFinish(live, live.outcome ?? 'failed', failureMessage);
         if (shouldAdvance) advancePending(live.agentId, live.conversationId);
       }
     }
@@ -582,7 +581,10 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     // A settled, non-terminal live turn exists only when its earlier terminal
     // persistence failed. Once this retry succeeds, do not let that historical
     // rejection make cancelAgent() or stop() report a false cleanup failure.
-    if (recoveringSettledFailure) live.promise = live.promise.catch(() => {});
+    if (recoveringSettledFailure) {
+      live.promise = live.promise.catch(() => {});
+      notifyFinish(live, 'cancelled');
+    }
     if (live.settled && turns.get(live.turnId) === live) turns.delete(live.turnId);
   };
 
