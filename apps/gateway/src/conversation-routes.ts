@@ -258,4 +258,21 @@ export function mountConversationRoutes(app: Hono, options: ConversationRoutesOp
       return c.json(mapped.body, mapped.status);
     }
   });
+
+  app.get('/conversations/:id/pending', (c) => {
+    try {
+      const url = urlFor(c.req.url);
+      assertOnlyQueryKeys(url, new Set(['limit', 'cursor']));
+      const cursor = singleQueryValue(url, 'cursor');
+      const page = options.conversations.listPending({
+        conversationId: c.req.param('id'),
+        limit: parseLimit(url, 50, 100),
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      return c.json(page);
+    } catch (error) {
+      const mapped = toMobileApiError(error);
+      return c.json(mapped.body, mapped.status);
+    }
+  });
 }

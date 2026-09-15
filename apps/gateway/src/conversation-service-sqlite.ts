@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
@@ -11,8 +11,12 @@ import type {
   ConversationNoticeKind,
   ConversationPage,
   ConversationPatchRequest,
+  ConversationPendingPage,
+  ConversationQueueSnapshot,
   ConversationSummary,
   MobileAgentEvent,
+  MobileImage,
+  PendingConversationInput,
   SubagentInfo,
   SubagentStatus,
 } from '@dash/mobile-contract';
@@ -27,18 +31,25 @@ import {
   type AcceptTurnInput,
   type AcceptedTurn,
   type AppendNoticeInput,
+  type ConversationCommandReceipt,
+  type ConversationCommandTarget,
   type ConversationService,
   ConversationServiceError,
   type CreateConversationInput,
   type CreateSubagentConversationInput,
   DEFAULT_CONVERSATION_TITLE,
   DEFAULT_SUBAGENT_LIST_LIMIT,
+  type EditPendingInput,
+  type EnqueueFollowUpInput,
   type FinishTurnInput,
+  type InterruptAndEnqueueInput,
   type ListConversationsInput,
   type ListMessagesInput,
+  type ListPendingInput,
   MAX_QUEUED_NOTIFICATIONS,
   type PendingNotification,
   type PersistedTurnFrame,
+  type RemovePendingInput,
   type SubagentGrant,
   type UpdateSubagentInput,
 } from './conversation-service.js';
@@ -98,6 +109,38 @@ const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS pending_notifications_queue_idx
     ON pending_notifications(conversation_id, created_at, id);
+
+  CREATE TABLE IF NOT EXISTS conversation_pending_inputs (
+    id                TEXT PRIMARY KEY,
+    command_id        TEXT NOT NULL UNIQUE,
+    conversation_id   TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    kind              TEXT NOT NULL CHECK (kind IN ('priority','follow_up')),
+    admission_order   INTEGER NOT NULL CHECK (admission_order > 0),
+    version           INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+    text              TEXT NOT NULL,
+    images            TEXT,
+    state             TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','claimed')),
+    claimed_turn_id   TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE(conversation_id, admission_order)
+  );
+
+  CREATE INDEX IF NOT EXISTS conversation_pending_order_idx
+    ON conversation_pending_inputs(conversation_id, kind, admission_order, id);
+
+  CREATE TABLE IF NOT EXISTS conversation_commands (
+    command_id       TEXT PRIMARY KEY,
+    conversation_id  TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    agent_id         TEXT NOT NULL,
+    command          TEXT NOT NULL,
+    payload_hash     TEXT NOT NULL,
+    receipt          TEXT NOT NULL,
+    created_at       TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS conversation_commands_scope_idx
+    ON conversation_commands(conversation_id, created_at, command_id);
 `;
 
 /**
@@ -117,6 +160,9 @@ const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, ddl:
   ['conversations', 'subagent_meta', 'TEXT'],
   ['conversations', 'subagent_grant', 'TEXT'],
   ['conversation_messages', 'origin', "TEXT NOT NULL DEFAULT 'user'"],
+  ['conversations', 'pending_count', 'INTEGER NOT NULL DEFAULT 0'],
+  ['conversations', 'pending_scheduling', "TEXT NOT NULL DEFAULT 'running'"],
+  ['conversations', 'queue_revision', 'INTEGER NOT NULL DEFAULT 0'],
 ];
 
 /** Indexes that can only be created once {@link ADDED_COLUMNS} are in place. */
@@ -167,6 +213,9 @@ interface ConversationRow {
   subagent_status: SubagentStatus | null;
   subagent_meta: string | null;
   subagent_grant: string | null;
+  pending_count: number;
+  pending_scheduling: ConversationSummary['pendingScheduling'];
+  queue_revision: number;
 }
 
 /**
@@ -196,12 +245,59 @@ interface ConversationMessageRow {
   origin: ConversationMessageOrigin;
 }
 
+interface PendingInputRow {
+  id: string;
+  command_id: string;
+  conversation_id: string;
+  kind: PendingConversationInput['kind'];
+  admission_order: number;
+  version: number;
+  text: string;
+  images: string | null;
+  state: PendingConversationInput['state'];
+  claimed_turn_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ConversationCommandRow {
+  command_id: string;
+  conversation_id: string;
+  agent_id: string;
+  command: ConversationCommandReceipt['command'];
+  payload_hash: string;
+  receipt: string;
+  created_at: string;
+}
+
 function collapsePreview(text: string): string {
   return [...text.trim().replace(/\s+/gu, ' ')].slice(0, 120).join('');
 }
 
 function parseContent(raw: string): ConversationContent {
   return JSON.parse(raw) as ConversationContent;
+}
+
+const MAX_PENDING_INPUTS = 100;
+
+function commandPayloadHash(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function mapPendingInput(row: PendingInputRow): PendingConversationInput {
+  return {
+    id: row.id,
+    commandId: row.command_id,
+    conversationId: row.conversation_id,
+    kind: row.kind,
+    version: row.version,
+    text: row.text,
+    ...(row.images ? { images: JSON.parse(row.images) as MobileImage[] } : {}),
+    state: row.state,
+    ...(row.claimed_turn_id ? { claimedTurnId: row.claimed_turn_id } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 /** Recombine the columnar fields with the `subagent_meta` blob. */
@@ -285,6 +381,24 @@ export class SqliteConversationService implements ConversationService {
       ensureColumn(this.db, table, column, ddl);
     }
     this.db.exec(MIGRATED_INDEX_SQL);
+    // A process restart destroys the worker fence. Pending work must wait for
+    // an explicit Resume rather than starting headlessly under a new owner.
+    this.db.transaction(() => {
+      this.db
+        .prepare(`
+          UPDATE conversation_pending_inputs
+          SET state = 'pending', claimed_turn_id = NULL, version = version + 1
+          WHERE state = 'claimed'
+        `)
+        .run();
+      this.db
+        .prepare(`
+          UPDATE conversations
+          SET pending_scheduling = 'paused', queue_revision = queue_revision + 1
+          WHERE pending_count > 0
+        `)
+        .run();
+    })();
     this.now = options.now ?? (() => new Date().toISOString());
     this.uuid = options.uuid ?? randomUUID;
   }
@@ -386,11 +500,117 @@ export class SqliteConversationService implements ConversationService {
       lastMessagePreview: this.lastMessagePreview(row.id),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      pendingCount: row.pending_count,
+      pendingScheduling: row.pending_scheduling,
+      queueRevision: row.queue_revision,
       ...(row.deleted_at ? { deletedAt: row.deleted_at } : {}),
       kind: row.kind,
       ...(row.parent_conversation_id ? { parentConversationId: row.parent_conversation_id } : {}),
       ...(row.parent_turn_id ? { parentTurnId: row.parent_turn_id } : {}),
       ...(row.kind === 'subagent' ? { subagent: mapSubagent(row) } : {}),
+    };
+  }
+
+  private pendingRows(conversationId: string): PendingInputRow[] {
+    return this.db
+      .prepare(`
+        SELECT * FROM conversation_pending_inputs
+        WHERE conversation_id = ?
+        ORDER BY CASE kind WHEN 'priority' THEN 0 ELSE 1 END,
+                 admission_order ASC,
+                 id ASC
+        LIMIT ${MAX_PENDING_INPUTS + 1}
+      `)
+      .all(conversationId) as PendingInputRow[];
+  }
+
+  private queueSnapshotForRow(row: ConversationRow): ConversationQueueSnapshot {
+    const items = this.pendingRows(row.id).slice(0, MAX_PENDING_INPUTS).map(mapPendingInput);
+    return {
+      revision: row.queue_revision,
+      scheduling: row.pending_scheduling,
+      pendingCount: row.pending_count,
+      items,
+    };
+  }
+
+  private requireCommandTarget(target: ConversationCommandTarget): ConversationRow {
+    const row = this.requireConversationRow(target.conversationId);
+    this.assertTurnWritable(row);
+    if (row.agent_id !== target.agentId) {
+      throw new ConversationServiceError('not_found', 'Conversation not found', 404, false);
+    }
+    return row;
+  }
+
+  private executeCommand(
+    target: ConversationCommandTarget,
+    command: ConversationCommandReceipt['command'],
+    payload: unknown,
+    apply: (row: ConversationRow) => ConversationCommandReceipt,
+  ): ConversationCommandReceipt {
+    return this.db.transaction(() => {
+      const row = this.requireCommandTarget(target);
+      const payloadHash = commandPayloadHash(payload);
+      const existing = this.db
+        .prepare('SELECT * FROM conversation_commands WHERE command_id = ?')
+        .get(target.commandId) as ConversationCommandRow | undefined;
+      if (existing) {
+        if (
+          existing.conversation_id !== target.conversationId ||
+          existing.agent_id !== target.agentId ||
+          existing.command !== command ||
+          existing.payload_hash !== payloadHash
+        ) {
+          throw new ConversationServiceError(
+            'validation_failed',
+            'Command id was already used with a different payload',
+            409,
+            false,
+          );
+        }
+        const receipt = JSON.parse(existing.receipt) as ConversationCommandReceipt;
+        return { ...receipt, status: 'already_applied' };
+      }
+
+      const receipt = apply(row);
+      this.db
+        .prepare(`
+          INSERT INTO conversation_commands (
+            command_id, conversation_id, agent_id, command, payload_hash, receipt, created_at
+          ) VALUES (
+            @commandId, @conversationId, @agentId, @command, @payloadHash, @receipt, @createdAt
+          )
+        `)
+        .run({
+          commandId: target.commandId,
+          conversationId: target.conversationId,
+          agentId: target.agentId,
+          command,
+          payloadHash,
+          receipt: JSON.stringify(receipt),
+          createdAt: this.now(),
+        });
+      return receipt;
+    })();
+  }
+
+  private commandReceipt(
+    target: ConversationCommandTarget,
+    command: ConversationCommandReceipt['command'],
+    status: ConversationCommandReceipt['status'],
+    extras: Partial<
+      Pick<ConversationCommandReceipt, 'affectedTurnId' | 'pendingItem' | 'reason'>
+    > = {},
+  ): ConversationCommandReceipt {
+    return {
+      type: 'command_receipt',
+      id: target.commandId,
+      conversationId: target.conversationId,
+      command,
+      status,
+      queue: this.queueSnapshot(target.conversationId),
+      ...extras,
     };
   }
 
@@ -627,6 +847,12 @@ export class SqliteConversationService implements ConversationService {
     this.db
       .prepare('DELETE FROM pending_notifications WHERE conversation_id = ?')
       .run(conversationId);
+    this.db
+      .prepare('DELETE FROM conversation_pending_inputs WHERE conversation_id = ?')
+      .run(conversationId);
+    this.db
+      .prepare('DELETE FROM conversation_commands WHERE conversation_id = ?')
+      .run(conversationId);
     this.eventLog.deleteConversation(agentId, conversationId);
   }
 
@@ -726,6 +952,356 @@ export class SqliteConversationService implements ConversationService {
         : null,
       throughSeq: conversation.last_seq,
     };
+  }
+
+  listPending(input: ListPendingInput): ConversationPendingPage {
+    if (!Number.isInteger(input.limit) || input.limit <= 0 || input.limit > MAX_PENDING_INPUTS) {
+      throw new ConversationServiceError('validation_failed', 'Invalid pending limit', 400, false);
+    }
+    const row = this.requireConversationRow(input.conversationId);
+    const all = this.pendingRows(row.id);
+    const start = input.cursor
+      ? Math.max(0, all.findIndex((item) => item.id === input.cursor) + 1)
+      : 0;
+    const pageRows = all.slice(start, start + input.limit);
+    const hasMore = start + pageRows.length < all.length;
+    return {
+      items: pageRows.map(mapPendingInput),
+      nextCursor: hasMore ? (pageRows.at(-1)?.id ?? null) : null,
+      queue: this.queueSnapshotForRow(row),
+    };
+  }
+
+  queueSnapshot(conversationId: string): ConversationQueueSnapshot {
+    return this.queueSnapshotForRow(this.requireConversationRow(conversationId));
+  }
+
+  enqueueFollowUp(input: EnqueueFollowUpInput): ConversationCommandReceipt {
+    return this.executeCommand(input, 'follow_up', input, (row) => {
+      if (row.pending_count >= MAX_PENDING_INPUTS) {
+        return this.commandReceipt(input, 'follow_up', 'rejected', { reason: 'invalid_state' });
+      }
+      const pendingId = this.uuid();
+      const timestamp = this.now();
+      const admissionOrder = row.queue_revision + 1;
+      this.db
+        .prepare(`
+          INSERT INTO conversation_pending_inputs (
+            id, command_id, conversation_id, kind, admission_order, version,
+            text, images, state, claimed_turn_id, created_at, updated_at
+          ) VALUES (
+            @id, @commandId, @conversationId, 'follow_up', @admissionOrder, 1,
+            @text, @images, 'pending', NULL, @now, @now
+          )
+        `)
+        .run({
+          id: pendingId,
+          commandId: input.commandId,
+          conversationId: input.conversationId,
+          admissionOrder,
+          text: input.text,
+          images: input.images ? JSON.stringify(input.images) : null,
+          now: timestamp,
+        });
+      this.db
+        .prepare(`
+          UPDATE conversations
+          SET pending_count = pending_count + 1,
+              queue_revision = queue_revision + 1,
+              revision = revision + 1,
+              updated_at = @now
+          WHERE id = @id
+        `)
+        .run({ id: input.conversationId, now: timestamp });
+      const pendingItem = mapPendingInput(
+        this.db
+          .prepare('SELECT * FROM conversation_pending_inputs WHERE id = ?')
+          .get(pendingId) as PendingInputRow,
+      );
+      return this.commandReceipt(input, 'follow_up', 'accepted', { pendingItem });
+    });
+  }
+
+  interruptAndEnqueue(input: InterruptAndEnqueueInput): ConversationCommandReceipt {
+    return this.executeCommand(input, 'interrupt_and_send', input, (row) => {
+      if (row.active_turn_id !== input.expectedActiveTurnId || row.status !== 'running') {
+        return this.commandReceipt(input, 'interrupt_and_send', 'rejected', {
+          reason: 'stale_execution',
+        });
+      }
+      if (row.pending_count >= MAX_PENDING_INPUTS) {
+        return this.commandReceipt(input, 'interrupt_and_send', 'rejected', {
+          reason: 'invalid_state',
+        });
+      }
+      const pendingId = this.uuid();
+      const timestamp = this.now();
+      const admissionOrder = row.queue_revision + 1;
+      this.db
+        .prepare(`
+          INSERT INTO conversation_pending_inputs (
+            id, command_id, conversation_id, kind, admission_order, version,
+            text, images, state, claimed_turn_id, created_at, updated_at
+          ) VALUES (
+            @id, @commandId, @conversationId, 'priority', @admissionOrder, 1,
+            @text, @images, 'pending', NULL, @now, @now
+          )
+        `)
+        .run({
+          id: pendingId,
+          commandId: input.commandId,
+          conversationId: input.conversationId,
+          admissionOrder,
+          text: input.text,
+          images: input.images ? JSON.stringify(input.images) : null,
+          now: timestamp,
+        });
+      this.db
+        .prepare(`
+          UPDATE conversations
+          SET pending_count = pending_count + 1,
+              pending_scheduling = 'running',
+              queue_revision = queue_revision + 1,
+              revision = revision + 1,
+              updated_at = @now
+          WHERE id = @id
+        `)
+        .run({ id: input.conversationId, now: timestamp });
+      const pendingItem = mapPendingInput(
+        this.db
+          .prepare('SELECT * FROM conversation_pending_inputs WHERE id = ?')
+          .get(pendingId) as PendingInputRow,
+      );
+      return this.commandReceipt(input, 'interrupt_and_send', 'accepted', {
+        affectedTurnId: input.expectedActiveTurnId,
+        pendingItem,
+      });
+    });
+  }
+
+  stopConversation(input: ConversationCommandTarget): ConversationCommandReceipt {
+    return this.executeCommand(input, 'stop_conversation', input, (row) => {
+      const timestamp = this.now();
+      this.db
+        .prepare(`
+          UPDATE conversations
+          SET pending_scheduling = 'paused',
+              queue_revision = queue_revision + 1,
+              revision = revision + 1,
+              updated_at = @now
+          WHERE id = @id
+        `)
+        .run({ id: input.conversationId, now: timestamp });
+      return this.commandReceipt(input, 'stop_conversation', 'accepted', {
+        ...(row.active_turn_id ? { affectedTurnId: row.active_turn_id } : {}),
+      });
+    });
+  }
+
+  resumePending(input: ConversationCommandTarget): ConversationCommandReceipt {
+    return this.executeCommand(input, 'resume_pending', input, (row) => {
+      if (row.pending_count === 0) {
+        return this.commandReceipt(input, 'resume_pending', 'rejected', {
+          reason: 'queue_empty',
+        });
+      }
+      const timestamp = this.now();
+      this.db
+        .prepare(`
+          UPDATE conversations
+          SET pending_scheduling = 'running',
+              queue_revision = queue_revision + 1,
+              revision = revision + 1,
+              updated_at = @now
+          WHERE id = @id
+        `)
+        .run({ id: input.conversationId, now: timestamp });
+      return this.commandReceipt(input, 'resume_pending', 'accepted');
+    });
+  }
+
+  editPending(input: EditPendingInput): ConversationCommandReceipt {
+    return this.executeCommand(input, 'edit_pending', input, () => {
+      const pending = this.db
+        .prepare('SELECT * FROM conversation_pending_inputs WHERE id = ? AND conversation_id = ?')
+        .get(input.pendingId, input.conversationId) as PendingInputRow | undefined;
+      if (!pending) {
+        return this.commandReceipt(input, 'edit_pending', 'rejected', { reason: 'not_found' });
+      }
+      if (pending.state === 'claimed') {
+        return this.commandReceipt(input, 'edit_pending', 'rejected', {
+          reason: 'already_claimed',
+        });
+      }
+      if (pending.version !== input.expectedVersion) {
+        return this.commandReceipt(input, 'edit_pending', 'rejected', {
+          reason: 'version_conflict',
+          pendingItem: mapPendingInput(pending),
+        });
+      }
+      const timestamp = this.now();
+      this.db
+        .prepare(`
+          UPDATE conversation_pending_inputs
+          SET text = @text, images = @images, version = version + 1, updated_at = @now
+          WHERE id = @id AND state = 'pending' AND version = @expectedVersion
+        `)
+        .run({
+          id: input.pendingId,
+          expectedVersion: input.expectedVersion,
+          text: input.text,
+          images: input.images ? JSON.stringify(input.images) : null,
+          now: timestamp,
+        });
+      this.db
+        .prepare(`
+          UPDATE conversations
+          SET queue_revision = queue_revision + 1,
+              revision = revision + 1,
+              updated_at = @now
+          WHERE id = @id
+        `)
+        .run({ id: input.conversationId, now: timestamp });
+      const changed = this.db
+        .prepare('SELECT * FROM conversation_pending_inputs WHERE id = ?')
+        .get(input.pendingId) as PendingInputRow;
+      return this.commandReceipt(input, 'edit_pending', 'accepted', {
+        pendingItem: mapPendingInput(changed),
+      });
+    });
+  }
+
+  removePending(input: RemovePendingInput): ConversationCommandReceipt {
+    return this.executeCommand(input, 'remove_pending', input, () => {
+      const pending = this.db
+        .prepare('SELECT * FROM conversation_pending_inputs WHERE id = ? AND conversation_id = ?')
+        .get(input.pendingId, input.conversationId) as PendingInputRow | undefined;
+      if (!pending) {
+        return this.commandReceipt(input, 'remove_pending', 'rejected', { reason: 'not_found' });
+      }
+      if (pending.state === 'claimed') {
+        return this.commandReceipt(input, 'remove_pending', 'rejected', {
+          reason: 'already_claimed',
+        });
+      }
+      if (pending.version !== input.expectedVersion) {
+        return this.commandReceipt(input, 'remove_pending', 'rejected', {
+          reason: 'version_conflict',
+          pendingItem: mapPendingInput(pending),
+        });
+      }
+      const timestamp = this.now();
+      this.db.prepare('DELETE FROM conversation_pending_inputs WHERE id = ?').run(input.pendingId);
+      this.db
+        .prepare(`
+          UPDATE conversations
+          SET pending_count = pending_count - 1,
+              pending_scheduling = CASE WHEN pending_count = 1 THEN 'running'
+                                        ELSE pending_scheduling END,
+              queue_revision = queue_revision + 1,
+              revision = revision + 1,
+              updated_at = @now
+          WHERE id = @id
+        `)
+        .run({ id: input.conversationId, now: timestamp });
+      return this.commandReceipt(input, 'remove_pending', 'accepted', {
+        pendingItem: mapPendingInput(pending),
+      });
+    });
+  }
+
+  claimNextPending(conversationId: string): PendingConversationInput | null {
+    return this.db.transaction(() => {
+      const conversation = this.requireConversationRow(conversationId);
+      if (conversation.active_turn_id !== null || conversation.pending_scheduling !== 'running') {
+        return null;
+      }
+      const pending = this.db
+        .prepare(`
+          SELECT * FROM conversation_pending_inputs
+          WHERE conversation_id = ? AND state = 'pending'
+          ORDER BY CASE kind WHEN 'priority' THEN 0 ELSE 1 END,
+                   admission_order ASC,
+                   id ASC
+          LIMIT 1
+        `)
+        .get(conversationId) as PendingInputRow | undefined;
+      if (!pending) return null;
+      const turnId = this.uuid();
+      const timestamp = this.now();
+      this.db
+        .prepare(`
+          UPDATE conversation_pending_inputs
+          SET state = 'claimed', claimed_turn_id = @turnId,
+              version = version + 1, updated_at = @now
+          WHERE id = @id AND state = 'pending'
+        `)
+        .run({ id: pending.id, turnId, now: timestamp });
+      this.db
+        .prepare(`
+          UPDATE conversations
+          SET queue_revision = queue_revision + 1,
+              revision = revision + 1,
+              updated_at = @now
+          WHERE id = @id
+        `)
+        .run({ id: conversationId, now: timestamp });
+      return mapPendingInput(
+        this.db
+          .prepare('SELECT * FROM conversation_pending_inputs WHERE id = ?')
+          .get(pending.id) as PendingInputRow,
+      );
+    })();
+  }
+
+  releasePendingClaim(pendingId: string): void {
+    this.db.transaction(() => {
+      const pending = this.db
+        .prepare('SELECT * FROM conversation_pending_inputs WHERE id = ?')
+        .get(pendingId) as PendingInputRow | undefined;
+      if (!pending || pending.state !== 'claimed') return;
+      const timestamp = this.now();
+      this.db
+        .prepare(`
+          UPDATE conversation_pending_inputs
+          SET state = 'pending', claimed_turn_id = NULL,
+              version = version + 1, updated_at = @now
+          WHERE id = @id
+        `)
+        .run({ id: pendingId, now: timestamp });
+      this.db
+        .prepare(`
+          UPDATE conversations
+          SET queue_revision = queue_revision + 1,
+              revision = revision + 1,
+              updated_at = @now
+          WHERE id = @id
+        `)
+        .run({ id: pending.conversation_id, now: timestamp });
+    })();
+  }
+
+  completePendingClaim(pendingId: string): void {
+    this.db.transaction(() => {
+      const pending = this.db
+        .prepare('SELECT * FROM conversation_pending_inputs WHERE id = ?')
+        .get(pendingId) as PendingInputRow | undefined;
+      if (!pending || pending.state !== 'claimed') return;
+      const timestamp = this.now();
+      this.db.prepare('DELETE FROM conversation_pending_inputs WHERE id = ?').run(pendingId);
+      this.db
+        .prepare(`
+          UPDATE conversations
+          SET pending_count = pending_count - 1,
+              pending_scheduling = CASE WHEN pending_count = 1 THEN 'running'
+                                        ELSE pending_scheduling END,
+              queue_revision = queue_revision + 1,
+              revision = revision + 1,
+              updated_at = @now
+          WHERE id = @id
+        `)
+        .run({ id: pending.conversation_id, now: timestamp });
+    })();
   }
 
   acceptTurn(input: AcceptTurnInput): AcceptedTurn {
