@@ -4233,17 +4233,20 @@ extension MobileWSServerFrame {
     switch self {
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
       true
-    case .accepted, .event, .done, .error:
+    case .accepted, .event, .done, .error, .watched, .commandReceipt, .queueChanged:
       false
     }
   }
 
   fileprivate var conversationIDForFeature: String? {
     switch self {
-    case let .accepted(_, conversationID, _, _, _, _, _, _, _): conversationID
+    case let .accepted(_, conversationID, _, _, _, _, _, _, _, _): conversationID
     case let .event(_, conversationID, _, _): conversationID
     case let .done(_, conversationID, _, _): conversationID
     case let .error(_, conversationID, _, _, _, _, _): conversationID
+    case let .watched(_, conversationID, _, _),
+      let .commandReceipt(_, conversationID, _, _, _, _, _, _),
+      let .queueChanged(conversationID, _, _): conversationID
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: nil
     }
   }
@@ -4273,14 +4276,14 @@ extension MobileWSServerFrame {
   ///    that missed the start. One read per parent turn.
   fileprivate var refreshesSubagentList: Bool {
     switch self {
-    case let .accepted(_, _, _, _, _, _, origin, _, _): origin == .notification
+    case let .accepted(_, _, _, _, _, _, origin, _, _, _): origin == .notification
     case .done: true
     case let .event(_, _, _, event):
       switch event {
       case .subagentStarted, .subagentFinished: true
       default: false
       }
-    case .error: false
+    case .error, .watched, .commandReceipt, .queueChanged: false
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
@@ -4303,7 +4306,7 @@ extension MobileWSServerFrame {
   fileprivate var isAdmissionOrTerminal: Bool {
     switch self {
     case .accepted, .done, .error: true
-    case .event: false
+    case .event, .watched, .commandReceipt, .queueChanged: false
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
@@ -4311,14 +4314,14 @@ extension MobileWSServerFrame {
   fileprivate var isTerminalForFeature: Bool {
     switch self {
     case .done, .error: true
-    case .accepted, .event: false
+    case .accepted, .event, .watched, .commandReceipt, .queueChanged: false
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
 
   fileprivate var turnIDForFeature: String {
     switch self {
-    case .accepted(let id, _, _, _, _, _, _, _, _),
+    case .accepted(let id, _, _, _, _, _, _, _, _, _),
       .event(let id, _, _, _),
       .done(let id, _, _, _),
       .error(let id, _, _, _, _, _, _),
@@ -4328,19 +4331,23 @@ extension MobileWSServerFrame {
       .voiceError(let id, _, _),
       .voiceStopped(let id, _):
       id
+    case let .watched(id, _, _, _): id
+    case let .commandReceipt(id, _, _, _, _, _, _, _): id
+    case let .queueChanged(conversationID, _, commandID): commandID ?? conversationID
     }
   }
 
   fileprivate var sequenceForFeature: Int? {
     switch self {
-    case .accepted(_, _, _, _, _, let seq, _, _, _):
+    case .accepted(_, _, _, _, _, let seq, _, _, _, _):
       seq
     case .event(_, _, let seq, _),
       .done(_, _, let seq, _):
       seq
     case .error(_, _, let seq, _, _, _, _):
       seq
-    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+    case .watched, .commandReceipt, .queueChanged,
+      .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
       nil
     }
   }

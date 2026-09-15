@@ -604,7 +604,7 @@ extension MobileWSServerFrame {
       let .voiceError(id, _, _),
       let .voiceStopped(id, _):
       id
-    case .accepted, .event, .done, .error:
+    case .accepted, .event, .done, .error, .watched, .commandReceipt, .queueChanged:
       nil
     }
   }

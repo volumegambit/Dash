@@ -267,7 +267,7 @@ enum VoiceModeReducer {
       state.phase = .ended(reason: VoiceModeState.message(for: reason))
       return []
 
-    case .accepted, .event, .done, .error:
+    case .accepted, .event, .done, .error, .watched, .commandReceipt, .queueChanged:
       // Chat-turn frames never reach this reducer — `ChatFeature` routes only
       // `voice_*` here — but the switch is exhaustive rather than defaulted
       // so a new frame case has to be considered.

@@ -84,6 +84,12 @@ actor ChatConnection {
     let operationGeneration: Int
   }
 
+  private struct ConversationWatch: Sendable {
+    let agentID: String
+    var sinceSeq: Int
+    let operationGeneration: Int
+  }
+
   private let endpoint: ConnectionEndpoint
   private let session: any WebSocketSessioning
   private let clock: any AppClock
@@ -93,6 +99,7 @@ actor ChatConnection {
   private var socket: (any WebSocketTasking)?
   private var generation = 0
   private var turnOperationGeneration = 0
+  private var watchOperationGeneration = 0
   private var reconnectAttempt = 0
   private var turnSubscriptions: [String: TurnSubscription] = [:]
   private var turnSubscriptionOrder: [String] = []
@@ -106,6 +113,11 @@ actor ChatConnection {
   /// session.
   private var conversationSubscriptions: [String: String] = [:]
   private var conversationSubscriptionOrder: [String] = []
+  /// Durable v2 conversation watches are independent of legacy turn
+  /// subscriptions. Their cursor advances with every acknowledged or received
+  /// sequence and is replayed after a transient socket reconnect.
+  private var conversationWatches: [String: ConversationWatch] = [:]
+  private var conversationWatchOrder: [String] = []
   private var state: ChatTransportState = .idle
   private var streamFinished = false
   private let locationProvider: @Sendable () -> ClientLocation?
@@ -241,6 +253,123 @@ actor ChatConnection {
         id: UUID().uuidString.lowercased(),
         agentId: agentID,
         conversationId: conversationID
+      )
+    )
+  }
+
+  func watch(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    sinceSeq: Int
+  ) async throws {
+    watchOperationGeneration += 1
+    let operationGeneration = watchOperationGeneration
+    registerWatch(
+      agentID: agentID,
+      conversationID: conversationID,
+      sinceSeq: sinceSeq,
+      operationGeneration: operationGeneration
+    )
+    do {
+      try await send(
+        .watch(
+          id: id,
+          agentId: agentID,
+          conversationId: conversationID,
+          sinceSeq: sinceSeq
+        )
+      )
+    } catch {
+      clearWatch(conversationID: conversationID, ifOwnedBy: operationGeneration)
+      throw error
+    }
+  }
+
+  func followUp(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws {
+    try await send(
+      .followUp(
+        id: id,
+        agentId: agentID,
+        conversationId: conversationID,
+        text: text,
+        images: images.isEmpty ? nil : images
+      )
+    )
+  }
+
+  func interruptAndSend(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    expectedActiveTurnID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws {
+    try await send(
+      .interruptAndSend(
+        id: id,
+        agentId: agentID,
+        conversationId: conversationID,
+        expectedActiveTurnId: expectedActiveTurnID,
+        text: text,
+        images: images.isEmpty ? nil : images
+      )
+    )
+  }
+
+  func stopConversation(id: String, agentID: String, conversationID: String) async throws {
+    try await send(
+      .stopConversation(id: id, agentId: agentID, conversationId: conversationID)
+    )
+  }
+
+  func resumePending(id: String, agentID: String, conversationID: String) async throws {
+    try await send(.resumePending(id: id, agentId: agentID, conversationId: conversationID))
+  }
+
+  func editPending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int,
+    text: String,
+    images: [MessageImage]
+  ) async throws {
+    try await send(
+      .editPending(
+        id: id,
+        agentId: agentID,
+        conversationId: conversationID,
+        pendingId: pendingID,
+        expectedVersion: expectedVersion,
+        text: text,
+        images: images.isEmpty ? nil : images
+      )
+    )
+  }
+
+  func removePending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int
+  ) async throws {
+    try await send(
+      .removePending(
+        id: id,
+        agentId: agentID,
+        conversationId: conversationID,
+        pendingId: pendingID,
+        expectedVersion: expectedVersion
       )
     )
   }
@@ -386,6 +515,19 @@ actor ChatConnection {
           continuation.yield(.frame(frame))
           continue
         }
+        if frame.isConversationControl {
+          guard
+            let conversationID = frame.controlConversationID,
+            var watch = conversationWatches[conversationID]
+          else { continue }
+          if let checkpoint = frame.watchCheckpoint {
+            watch.sinceSeq = max(watch.sinceSeq, checkpoint)
+            conversationWatches[conversationID] = watch
+          }
+          reconnectAttempt = 0
+          continuation.yield(.frame(frame))
+          continue
+        }
         // A turn this client never started, on a conversation it watches: the
         // server-initiated notification turns and child turns of sub-agents
         // design 7.6. Register the turn from its `accepted` so the rest of its
@@ -394,14 +536,15 @@ actor ChatConnection {
         if turnSubscriptions[frame.id] == nil,
           frame.isAccepted,
           let conversationID = frame.acceptedConversationID,
-          let agentID = conversationSubscriptions[conversationID]
+          let agentID = conversationWatches[conversationID]?.agentID
+            ?? conversationSubscriptions[conversationID]
         {
           turnOperationGeneration += 1
           registerTurn(
             id: frame.id,
             agentID: agentID,
             conversationID: conversationID,
-            sinceSeq: 0,
+            sinceSeq: conversationWatches[conversationID]?.sinceSeq ?? 0,
             capable: true,
             operationGeneration: turnOperationGeneration
           )
@@ -410,11 +553,18 @@ actor ChatConnection {
         let capable = subscription.capable || frame.isAccepted
         _ = try validatedFrame(frame, capable: capable)
         reconnectAttempt = 0
+        if let seq = frame.seq, seq <= subscription.sinceSeq {
+          continue
+        }
         if frame.isAccepted {
           subscription.capable = true
         }
         if let seq = frame.seq {
           subscription.sinceSeq = max(subscription.sinceSeq, seq)
+          if var watch = conversationWatches[subscription.conversationID] {
+            watch.sinceSeq = max(watch.sinceSeq, seq)
+            conversationWatches[subscription.conversationID] = watch
+          }
         }
         turnSubscriptions[frame.id] = subscription
         continuation.yield(.frame(frame))
@@ -641,10 +791,13 @@ actor ChatConnection {
 
   private func clearAllTurns() {
     turnOperationGeneration += 1
+    watchOperationGeneration += 1
     turnSubscriptions.removeAll()
     turnSubscriptionOrder.removeAll()
     conversationSubscriptions.removeAll()
     conversationSubscriptionOrder.removeAll()
+    conversationWatches.removeAll()
+    conversationWatchOrder.removeAll()
   }
 
   private func registerConversation(agentID: String, conversationID: String) {
@@ -659,9 +812,47 @@ actor ChatConnection {
     conversationSubscriptionOrder.removeAll { $0 == conversationID }
   }
 
+  private func registerWatch(
+    agentID: String,
+    conversationID: String,
+    sinceSeq: Int,
+    operationGeneration: Int
+  ) {
+    if conversationWatches[conversationID] == nil {
+      conversationWatchOrder.append(conversationID)
+    }
+    let currentSeq = conversationWatches[conversationID]?.sinceSeq ?? 0
+    conversationWatches[conversationID] = ConversationWatch(
+      agentID: agentID,
+      sinceSeq: max(currentSeq, sinceSeq),
+      operationGeneration: operationGeneration
+    )
+  }
+
+  private func clearWatch(conversationID: String, ifOwnedBy operationGeneration: Int) {
+    guard conversationWatches[conversationID]?.operationGeneration == operationGeneration else {
+      return
+    }
+    conversationWatches[conversationID] = nil
+    conversationWatchOrder.removeAll { $0 == conversationID }
+  }
+
   private func replayTurnSubscriptions() async throws {
-    // Conversation subscriptions first: the fresh socket must be watching
-    // before any turn traffic resumes over it.
+    // Conversation watches first: the fresh socket must establish its
+    // checkpoint before turn resumes or legacy subscriptions can race it.
+    for conversationID in conversationWatchOrder {
+      guard let watch = conversationWatches[conversationID] else { continue }
+      try await send(
+        .watch(
+          id: UUID().uuidString.lowercased(),
+          agentId: watch.agentID,
+          conversationId: conversationID,
+          sinceSeq: watch.sinceSeq
+        )
+      )
+    }
+    // Legacy conversation subscriptions follow for compatibility before any
+    // turn traffic resumes over the fresh socket.
     for conversationID in conversationSubscriptionOrder {
       guard let agentID = conversationSubscriptions[conversationID] else { continue }
       try await send(
@@ -716,16 +907,20 @@ actor ChatConnection {
 extension MobileWSServerFrame {
   fileprivate var id: String {
     switch self {
-    case .accepted(let id, _, _, _, _, _, _, _, _),
+    case .accepted(let id, _, _, _, _, _, _, _, _, _),
       .event(let id, _, _, _),
       .done(let id, _, _, _),
       .error(let id, _, _, _, _, _, _),
+      .watched(let id, _, _, _),
+      .commandReceipt(let id, _, _, _, _, _, _, _),
       .voiceState(let id, _, _),
       .voiceTranscript(let id, _, _, _),
       .voiceSpeech(let id, _, _, _, _, _),
       .voiceError(let id, _, _),
       .voiceStopped(let id, _):
       return id
+    case .queueChanged(let conversationId, _, let commandId):
+      return commandId ?? conversationId
     }
   }
 
@@ -737,7 +932,7 @@ extension MobileWSServerFrame {
   /// Only an `accepted` frame carries a non-optional conversation id, which is
   /// exactly the frame a conversation subscription can register a turn from.
   fileprivate var acceptedConversationID: String? {
-    if case .accepted(_, let conversationId, _, _, _, _, _, _, _) = self {
+    if case .accepted(_, let conversationId, _, _, _, _, _, _, _, _) = self {
       return conversationId
     }
     return nil
@@ -745,13 +940,14 @@ extension MobileWSServerFrame {
 
   fileprivate var seq: Int? {
     switch self {
-    case .accepted(_, _, _, _, _, let seq, _, _, _):
+    case .accepted(_, _, _, _, _, let seq, _, _, _, _):
       return seq
     case .event(_, _, let seq, _),
       .done(_, _, let seq, _),
       .error(_, _, let seq, _, _, _, _):
       return seq
-    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+    case .watched, .commandReceipt, .queueChanged,
+      .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
       // The resumable chat hub's turn/seq bookkeeping does not apply to voice
       // frames at all — they never flow through the hub (`chat-ws.ts`'s
       // `emitVoice` bypasses it entirely).
@@ -763,7 +959,7 @@ extension MobileWSServerFrame {
     switch self {
     case .done, .error:
       return true
-    case .accepted, .event:
+    case .accepted, .event, .watched, .commandReceipt, .queueChanged:
       return false
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
       // "Terminal" is a chat-TURN concept; a voice session's own lifecycle is
@@ -779,8 +975,37 @@ extension MobileWSServerFrame {
     switch self {
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
       return true
-    case .accepted, .event, .done, .error:
+    case .accepted, .event, .done, .error, .watched, .commandReceipt, .queueChanged:
       return false
     }
+  }
+
+  fileprivate var isConversationControl: Bool {
+    switch self {
+    case .watched, .commandReceipt, .queueChanged:
+      return true
+    case .accepted, .event, .done, .error,
+      .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      return false
+    }
+  }
+
+  fileprivate var controlConversationID: String? {
+    switch self {
+    case .watched(_, let conversationId, _, _),
+      .commandReceipt(_, let conversationId, _, _, _, _, _, _),
+      .queueChanged(let conversationId, _, _):
+      return conversationId
+    case .accepted, .event, .done, .error,
+      .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      return nil
+    }
+  }
+
+  fileprivate var watchCheckpoint: Int? {
+    if case .watched(_, _, let throughSeq, _) = self {
+      return throughSeq
+    }
+    return nil
   }
 }

@@ -1372,7 +1372,8 @@ struct ChatFeatureTests {
           seq: 9,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -2999,7 +3000,8 @@ struct ChatFeatureTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -5814,7 +5816,8 @@ struct ChatFeatureTests {
       seq: 40,
       origin: origin,
       kind: nil,
-      requestId: nil
+      requestId: nil,
+      pendingItemId: nil
     )
   }
 
@@ -7631,7 +7634,8 @@ private func accepted(seq: Int) -> MobileWSServerFrame {
     seq: seq,
     origin: nil,
     kind: nil,
-    requestId: nil
+    requestId: nil,
+    pendingItemId: nil
   )
 }
 

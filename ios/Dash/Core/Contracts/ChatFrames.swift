@@ -66,6 +66,40 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
   /// merely open.
   case subscribe(id: String, agentId: String, conversationId: String)
   case unsubscribe(id: String, agentId: String, conversationId: String)
+  case watch(id: String, agentId: String, conversationId: String, sinceSeq: Int)
+  case followUp(
+    id: String,
+    agentId: String,
+    conversationId: String,
+    text: String,
+    images: [MessageImage]?
+  )
+  case interruptAndSend(
+    id: String,
+    agentId: String,
+    conversationId: String,
+    expectedActiveTurnId: String,
+    text: String,
+    images: [MessageImage]?
+  )
+  case stopConversation(id: String, agentId: String, conversationId: String)
+  case resumePending(id: String, agentId: String, conversationId: String)
+  case editPending(
+    id: String,
+    agentId: String,
+    conversationId: String,
+    pendingId: String,
+    expectedVersion: Int,
+    text: String,
+    images: [MessageImage]?
+  )
+  case removePending(
+    id: String,
+    agentId: String,
+    conversationId: String,
+    pendingId: String,
+    expectedVersion: Int
+  )
   /// Starts the hands-free voice session on `conversationId`. `id` is the
   /// client-generated session id every `voice_*` frame in both directions
   /// carries; a second `voice_start` from this socket replaces the first.
@@ -98,6 +132,9 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
     case sinceSeq
     case questionId
     case answer
+    case expectedActiveTurnId
+    case pendingId
+    case expectedVersion
     case seq
     case pcm
     case muted
@@ -173,6 +210,60 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
         id: try container.decode(String.self, forKey: .id),
         agentId: try container.decode(String.self, forKey: .agentId),
         conversationId: try container.decode(String.self, forKey: .conversationId)
+      )
+    case "watch":
+      self = .watch(
+        id: try container.decode(String.self, forKey: .id),
+        agentId: try container.decode(String.self, forKey: .agentId),
+        conversationId: try container.decode(String.self, forKey: .conversationId),
+        sinceSeq: try container.decode(Int.self, forKey: .sinceSeq)
+      )
+    case "follow_up":
+      self = .followUp(
+        id: try container.decode(String.self, forKey: .id),
+        agentId: try container.decode(String.self, forKey: .agentId),
+        conversationId: try container.decode(String.self, forKey: .conversationId),
+        text: try container.decode(String.self, forKey: .text),
+        images: try container.decodeIfPresent([MessageImage].self, forKey: .images)
+      )
+    case "interrupt_and_send":
+      self = .interruptAndSend(
+        id: try container.decode(String.self, forKey: .id),
+        agentId: try container.decode(String.self, forKey: .agentId),
+        conversationId: try container.decode(String.self, forKey: .conversationId),
+        expectedActiveTurnId: try container.decode(String.self, forKey: .expectedActiveTurnId),
+        text: try container.decode(String.self, forKey: .text),
+        images: try container.decodeIfPresent([MessageImage].self, forKey: .images)
+      )
+    case "stop_conversation":
+      self = .stopConversation(
+        id: try container.decode(String.self, forKey: .id),
+        agentId: try container.decode(String.self, forKey: .agentId),
+        conversationId: try container.decode(String.self, forKey: .conversationId)
+      )
+    case "resume_pending":
+      self = .resumePending(
+        id: try container.decode(String.self, forKey: .id),
+        agentId: try container.decode(String.self, forKey: .agentId),
+        conversationId: try container.decode(String.self, forKey: .conversationId)
+      )
+    case "edit_pending":
+      self = .editPending(
+        id: try container.decode(String.self, forKey: .id),
+        agentId: try container.decode(String.self, forKey: .agentId),
+        conversationId: try container.decode(String.self, forKey: .conversationId),
+        pendingId: try container.decode(String.self, forKey: .pendingId),
+        expectedVersion: try container.decode(Int.self, forKey: .expectedVersion),
+        text: try container.decode(String.self, forKey: .text),
+        images: try container.decodeIfPresent([MessageImage].self, forKey: .images)
+      )
+    case "remove_pending":
+      self = .removePending(
+        id: try container.decode(String.self, forKey: .id),
+        agentId: try container.decode(String.self, forKey: .agentId),
+        conversationId: try container.decode(String.self, forKey: .conversationId),
+        pendingId: try container.decode(String.self, forKey: .pendingId),
+        expectedVersion: try container.decode(Int.self, forKey: .expectedVersion)
       )
     case "voice_start":
       self = .voiceStart(
@@ -257,6 +348,57 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
       try container.encode(id, forKey: .id)
       try container.encode(agentId, forKey: .agentId)
       try container.encode(conversationId, forKey: .conversationId)
+    case let .watch(id, agentId, conversationId, sinceSeq):
+      try container.encode("watch", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(agentId, forKey: .agentId)
+      try container.encode(conversationId, forKey: .conversationId)
+      try container.encode(sinceSeq, forKey: .sinceSeq)
+    case let .followUp(id, agentId, conversationId, text, images):
+      try container.encode("follow_up", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(agentId, forKey: .agentId)
+      try container.encode(conversationId, forKey: .conversationId)
+      try container.encode(text, forKey: .text)
+      try container.encodeIfPresent(images, forKey: .images)
+    case let .interruptAndSend(
+      id, agentId, conversationId, expectedActiveTurnId, text, images
+    ):
+      try container.encode("interrupt_and_send", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(agentId, forKey: .agentId)
+      try container.encode(conversationId, forKey: .conversationId)
+      try container.encode(expectedActiveTurnId, forKey: .expectedActiveTurnId)
+      try container.encode(text, forKey: .text)
+      try container.encodeIfPresent(images, forKey: .images)
+    case let .stopConversation(id, agentId, conversationId):
+      try container.encode("stop_conversation", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(agentId, forKey: .agentId)
+      try container.encode(conversationId, forKey: .conversationId)
+    case let .resumePending(id, agentId, conversationId):
+      try container.encode("resume_pending", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(agentId, forKey: .agentId)
+      try container.encode(conversationId, forKey: .conversationId)
+    case let .editPending(
+      id, agentId, conversationId, pendingId, expectedVersion, text, images
+    ):
+      try container.encode("edit_pending", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(agentId, forKey: .agentId)
+      try container.encode(conversationId, forKey: .conversationId)
+      try container.encode(pendingId, forKey: .pendingId)
+      try container.encode(expectedVersion, forKey: .expectedVersion)
+      try container.encode(text, forKey: .text)
+      try container.encodeIfPresent(images, forKey: .images)
+    case let .removePending(id, agentId, conversationId, pendingId, expectedVersion):
+      try container.encode("remove_pending", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(agentId, forKey: .agentId)
+      try container.encode(conversationId, forKey: .conversationId)
+      try container.encode(pendingId, forKey: .pendingId)
+      try container.encode(expectedVersion, forKey: .expectedVersion)
     case let .voiceStart(id, agentId, conversationId):
       try container.encode("voice_start", forKey: .type)
       try container.encode(id, forKey: .id)
@@ -311,7 +453,8 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
     /// child's running turn and so produces no `accepted` at all. A client
     /// that sent one and gets an `accepted` back without one must treat that
     /// turn as UNCORRELATED rather than assuming it is its own.
-    requestId: String?
+    requestId: String?,
+    pendingItemId: String?
   )
   case event(id: String, conversationId: String?, seq: Int?, event: AgentEvent)
   case done(id: String, conversationId: String?, seq: Int?, outcome: TurnOutcome?)
@@ -323,6 +466,27 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
     code: String?,
     retryable: Bool?,
     activeTurnId: String?
+  )
+  case watched(
+    id: String,
+    conversationId: String,
+    throughSeq: Int,
+    queue: ConversationQueueSnapshotDTO
+  )
+  case commandReceipt(
+    id: String,
+    conversationId: String,
+    command: ConversationCommand,
+    status: CommandReceiptStatus,
+    queue: ConversationQueueSnapshotDTO,
+    affectedTurnId: String?,
+    pendingItem: PendingConversationInputDTO?,
+    reason: CommandReceiptReason?
+  )
+  case queueChanged(
+    conversationId: String,
+    queue: ConversationQueueSnapshotDTO,
+    commandId: String?
   )
   /// `turnId` is set once a turn is running and cleared once the session
   /// settles back to `.listening`.
@@ -347,12 +511,20 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
     case origin
     case kind
     case requestId
+    case pendingItemId
     case event
     case outcome
     case error
     case code
     case retryable
     case activeTurnId
+    case throughSeq
+    case queue
+    case command
+    case status
+    case affectedTurnId
+    case pendingItem
+    case commandId
     case state
     case turnId
     case text
@@ -384,7 +556,8 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
         // `GatewayError.updateRequired` and tear the socket down
         // (`ChatConnection.decodedFrame`). Leniency is only defensible where a
         // safe fallback is specified; this is such a field.
-        requestId: try? container.decodeIfPresent(String.self, forKey: .requestId)
+        requestId: try? container.decodeIfPresent(String.self, forKey: .requestId),
+        pendingItemId: try? container.decodeIfPresent(String.self, forKey: .pendingItemId)
       )
     case "event":
       self = .event(
@@ -409,6 +582,33 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
         code: try container.decodeIfPresent(String.self, forKey: .code),
         retryable: try container.decodeIfPresent(Bool.self, forKey: .retryable),
         activeTurnId: try container.decodeIfPresent(String.self, forKey: .activeTurnId)
+      )
+    case "watched":
+      self = .watched(
+        id: try container.decode(String.self, forKey: .id),
+        conversationId: try container.decode(String.self, forKey: .conversationId),
+        throughSeq: try container.decode(Int.self, forKey: .throughSeq),
+        queue: try container.decode(ConversationQueueSnapshotDTO.self, forKey: .queue)
+      )
+    case "command_receipt":
+      self = .commandReceipt(
+        id: try container.decode(String.self, forKey: .id),
+        conversationId: try container.decode(String.self, forKey: .conversationId),
+        command: try container.decode(ConversationCommand.self, forKey: .command),
+        status: try container.decode(CommandReceiptStatus.self, forKey: .status),
+        queue: try container.decode(ConversationQueueSnapshotDTO.self, forKey: .queue),
+        affectedTurnId: try container.decodeIfPresent(String.self, forKey: .affectedTurnId),
+        pendingItem: try container.decodeIfPresent(
+          PendingConversationInputDTO.self,
+          forKey: .pendingItem
+        ),
+        reason: try container.decodeIfPresent(CommandReceiptReason.self, forKey: .reason)
+      )
+    case "queue_changed":
+      self = .queueChanged(
+        conversationId: try container.decode(String.self, forKey: .conversationId),
+        queue: try container.decode(ConversationQueueSnapshotDTO.self, forKey: .queue),
+        commandId: try container.decodeIfPresent(String.self, forKey: .commandId)
       )
     case "voice_state":
       self = .voiceState(
@@ -464,7 +664,8 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
       seq,
       origin,
       kind,
-      requestId
+      requestId,
+      pendingItemId
     ):
       try container.encode("accepted", forKey: .type)
       try container.encode(id, forKey: .id)
@@ -476,6 +677,7 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
       try container.encodeIfPresent(origin, forKey: .origin)
       try container.encodeIfPresent(kind, forKey: .kind)
       try container.encodeIfPresent(requestId, forKey: .requestId)
+      try container.encodeIfPresent(pendingItemId, forKey: .pendingItemId)
     case let .event(id, conversationId, seq, event):
       try container.encode("event", forKey: .type)
       try container.encode(id, forKey: .id)
@@ -497,6 +699,29 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
       try container.encodeIfPresent(code, forKey: .code)
       try container.encodeIfPresent(retryable, forKey: .retryable)
       try container.encodeIfPresent(activeTurnId, forKey: .activeTurnId)
+    case let .watched(id, conversationId, throughSeq, queue):
+      try container.encode("watched", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(conversationId, forKey: .conversationId)
+      try container.encode(throughSeq, forKey: .throughSeq)
+      try container.encode(queue, forKey: .queue)
+    case let .commandReceipt(
+      id, conversationId, command, status, queue, affectedTurnId, pendingItem, reason
+    ):
+      try container.encode("command_receipt", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(conversationId, forKey: .conversationId)
+      try container.encode(command, forKey: .command)
+      try container.encode(status, forKey: .status)
+      try container.encode(queue, forKey: .queue)
+      try container.encodeIfPresent(affectedTurnId, forKey: .affectedTurnId)
+      try container.encodeIfPresent(pendingItem, forKey: .pendingItem)
+      try container.encodeIfPresent(reason, forKey: .reason)
+    case let .queueChanged(conversationId, queue, commandId):
+      try container.encode("queue_changed", forKey: .type)
+      try container.encode(conversationId, forKey: .conversationId)
+      try container.encode(queue, forKey: .queue)
+      try container.encodeIfPresent(commandId, forKey: .commandId)
     case let .voiceState(id, state, turnId):
       try container.encode("voice_state", forKey: .type)
       try container.encode(id, forKey: .id)
@@ -537,6 +762,7 @@ enum ContractValidationError: Error, Equatable, Sendable {
   /// Reaching `CapableServerFrame.validating` with one would mean that bypass
   /// regressed.
   case unexpectedVoiceFrame(id: String)
+  case unexpectedControlFrame(conversationId: String)
 }
 
 enum CapableServerFrame: Hashable, Sendable {
@@ -573,7 +799,7 @@ enum CapableServerFrame: Hashable, Sendable {
   static func validating(_ frame: MobileWSServerFrame) throws -> CapableServerFrame {
     switch frame {
     case let .accepted(
-      id, conversationId, userMessageId, assistantMessageId, revision, seq, _, _, _
+      id, conversationId, userMessageId, assistantMessageId, revision, seq, _, _, _, _
     ):
       return .accepted(
         id: id,
@@ -608,6 +834,10 @@ enum CapableServerFrame: Hashable, Sendable {
         retryable: retryable,
         activeTurnId: activeTurnId
       )
+    case let .watched(_, conversationId, _, _),
+      let .commandReceipt(_, conversationId, _, _, _, _, _, _),
+      let .queueChanged(conversationId, _, _):
+      throw ContractValidationError.unexpectedControlFrame(conversationId: conversationId)
     case let .voiceState(id, _, _),
       let .voiceTranscript(id, _, _, _),
       let .voiceSpeech(id, _, _, _, _, _),

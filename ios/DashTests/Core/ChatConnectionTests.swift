@@ -386,7 +386,8 @@ struct ChatConnectionTests {
             seq: 1,
             origin: nil,
             kind: nil,
-            requestId: nil
+            requestId: nil,
+            pendingItemId: nil
           ))))
     let expected = try canonicalFrames()
     for frame in expected {
@@ -1312,6 +1313,183 @@ struct ChatConnectionTests {
     await connection.detach()
   }
 
+  @Test("watch and conversation commands use the canonical v2 frames")
+  func conversationControlFrameShapes() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    try await connection.connect()
+    let image = MessageImage(mediaType: .png, data: "aGVsbG8=")
+
+    try await connection.watch(
+      id: "watch-01",
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 7
+    )
+    try await connection.followUp(
+      id: "follow-01",
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Next",
+      images: [image]
+    )
+    try await connection.interruptAndSend(
+      id: "interrupt-01",
+      agentID: "agent-1",
+      conversationID: conversationID,
+      expectedActiveTurnID: turnID,
+      text: "Change course",
+      images: []
+    )
+    try await connection.stopConversation(
+      id: "stop-01",
+      agentID: "agent-1",
+      conversationID: conversationID
+    )
+    try await connection.resumePending(
+      id: "resume-01",
+      agentID: "agent-1",
+      conversationID: conversationID
+    )
+    try await connection.editPending(
+      id: "edit-01",
+      agentID: "agent-1",
+      conversationID: conversationID,
+      pendingID: "pending-01",
+      expectedVersion: 2,
+      text: "Edited",
+      images: []
+    )
+    try await connection.removePending(
+      id: "remove-01",
+      agentID: "agent-1",
+      conversationID: conversationID,
+      pendingID: "pending-02",
+      expectedVersion: 3
+    )
+
+    #expect(
+      await task.sentFrames == [
+        .watch(
+          id: "watch-01",
+          agentId: "agent-1",
+          conversationId: conversationID,
+          sinceSeq: 7
+        ),
+        .followUp(
+          id: "follow-01",
+          agentId: "agent-1",
+          conversationId: conversationID,
+          text: "Next",
+          images: [image]
+        ),
+        .interruptAndSend(
+          id: "interrupt-01",
+          agentId: "agent-1",
+          conversationId: conversationID,
+          expectedActiveTurnId: turnID,
+          text: "Change course",
+          images: nil
+        ),
+        .stopConversation(id: "stop-01", agentId: "agent-1", conversationId: conversationID),
+        .resumePending(id: "resume-01", agentId: "agent-1", conversationId: conversationID),
+        .editPending(
+          id: "edit-01",
+          agentId: "agent-1",
+          conversationId: conversationID,
+          pendingId: "pending-01",
+          expectedVersion: 2,
+          text: "Edited",
+          images: nil
+        ),
+        .removePending(
+          id: "remove-01",
+          agentId: "agent-1",
+          conversationId: conversationID,
+          pendingId: "pending-02",
+          expectedVersion: 3
+        ),
+      ]
+    )
+    await connection.detach()
+  }
+
+  @Test("watch checkpoint advances on acknowledgement and reconnects without a gap")
+  func watchReconnectsFromAcknowledgedCheckpoint() async throws {
+    let first = FakeWebSocketTask()
+    let second = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, second])
+    let clock = TestAppClock(now: Date(timeIntervalSince1970: 0))
+    let connection = makeChatConnection(session: session, clock: clock)
+    try await connection.connect()
+    try await connection.watch(
+      id: "watch-01",
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 7
+    )
+    let watched = try fixture("chat-watched.json")
+    await first.enqueue(.string(serverJSON(watched)))
+    await settleConcurrentWork()
+
+    await first.fail()
+    await waitForRequestCount(2, in: session)
+    await settleConcurrentWork()
+
+    guard case let .watch(_, agentID, watchedConversationID, sinceSeq) = await second.sentFrames.first
+    else {
+      Issue.record("expected watch replay")
+      return
+    }
+    #expect(agentID == "agent-1")
+    #expect(watchedConversationID == conversationID)
+    #expect(sinceSeq == 12)
+    await connection.detach()
+  }
+
+  @Test("watched conversations accept remote turns and suppress duplicate sequences")
+  func watchedRemoteTurnSuppressesDuplicateSequence() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let sink = FrameSink()
+    let collector = await collectFrames(from: connection, into: sink)
+    try await connection.connect()
+    try await connection.watch(
+      id: "watch-01",
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 0
+    )
+    let remoteTurnID = "018f0f4a-5c42-7a8b-9c01-777777777777"
+    let accepted = MobileWSServerFrame.accepted(
+      id: remoteTurnID,
+      conversationId: conversationID,
+      userMessageId: "user-remote",
+      assistantMessageId: "assistant-remote",
+      revision: 4,
+      seq: 1,
+      origin: .user,
+      kind: .user,
+      requestId: nil,
+      pendingItemId: "pending-01"
+    )
+    let delta = MobileWSServerFrame.event(
+      id: remoteTurnID,
+      conversationId: conversationID,
+      seq: 2,
+      event: .textDelta(text: "Remote")
+    )
+    await task.enqueue(.string(serverJSON(accepted)))
+    await task.enqueue(.string(serverJSON(delta)))
+    await task.enqueue(.string(serverJSON(delta)))
+    await waitForFrames(2, in: sink)
+    await settleConcurrentWork()
+
+    #expect(await sink.frames == [accepted, delta])
+    collector.cancel()
+    await connection.detach()
+  }
+
   @Test("an accepted frame for a subscribed conversation registers its turn and is yielded")
   func acceptedForSubscribedConversationRegistersTurn() async throws {
     let serverTurnID = "018f0f4a-5c42-7a8b-9c01-777777777777"
@@ -1331,7 +1509,8 @@ struct ChatConnectionTests {
       seq: 7,
       origin: .notification,
       kind: .user,
-      requestId: nil
+      requestId: nil,
+      pendingItemId: nil
     )
     // The event proves the turn was REGISTERED, not merely let through once:
     // a frame for an unregistered turn id is dropped by the receive loop.
@@ -1369,7 +1548,8 @@ struct ChatConnectionTests {
       seq: 7,
       origin: .notification,
       kind: .user,
-      requestId: nil
+      requestId: nil,
+      pendingItemId: nil
     )
     await task.enqueue(.string(serverJSON(unrelated)))
     try await connection.resume(
@@ -1407,7 +1587,8 @@ struct ChatConnectionTests {
       seq: 7,
       origin: .notification,
       kind: .user,
-      requestId: nil
+      requestId: nil,
+      pendingItemId: nil
     )
     await task.enqueue(.string(serverJSON(dropped)))
     try await connection.resume(
@@ -1469,7 +1650,8 @@ struct ChatConnectionTests {
       seq: 7,
       origin: .notification,
       kind: .user,
-      requestId: nil
+      requestId: nil,
+      pendingItemId: nil
     )
     await second.enqueue(.string(serverJSON(afterSuspend)))
     try await connection.resume(

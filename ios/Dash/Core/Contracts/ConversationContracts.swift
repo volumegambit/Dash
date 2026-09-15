@@ -42,6 +42,81 @@ enum MessageStatus: String, Codable, Hashable, Sendable {
   case interrupted
 }
 
+enum PendingScheduling: String, Codable, Hashable, Sendable {
+  case running
+  case paused
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = PendingScheduling(rawValue: raw) ?? .unknown
+  }
+}
+
+enum PendingInputKind: String, Codable, Hashable, Sendable {
+  case priority
+  case followUp = "follow_up"
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = PendingInputKind(rawValue: raw) ?? .unknown
+  }
+}
+
+enum PendingInputState: String, Codable, Hashable, Sendable {
+  case pending
+  case claimed
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = PendingInputState(rawValue: raw) ?? .unknown
+  }
+}
+
+enum ConversationCommand: String, Codable, Hashable, Sendable {
+  case followUp = "follow_up"
+  case interruptAndSend = "interrupt_and_send"
+  case stopConversation = "stop_conversation"
+  case resumePending = "resume_pending"
+  case editPending = "edit_pending"
+  case removePending = "remove_pending"
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = ConversationCommand(rawValue: raw) ?? .unknown
+  }
+}
+
+enum CommandReceiptStatus: String, Codable, Hashable, Sendable {
+  case accepted
+  case rejected
+  case alreadyApplied = "already_applied"
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = CommandReceiptStatus(rawValue: raw) ?? .unknown
+  }
+}
+
+enum CommandReceiptReason: String, Codable, Hashable, Sendable {
+  case staleExecution = "stale_execution"
+  case versionConflict = "version_conflict"
+  case alreadyClaimed = "already_claimed"
+  case notFound = "not_found"
+  case queueEmpty = "queue_empty"
+  case invalidState = "invalid_state"
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = CommandReceiptReason(rawValue: raw) ?? .unknown
+  }
+}
+
 enum ImageMediaType: String, Codable, Hashable, Sendable {
   case jpeg = "image/jpeg"
   case png = "image/png"
@@ -144,6 +219,11 @@ struct ConversationSummaryDTO: Codable, Hashable, Identifiable, Sendable {
   let createdAt: Date
   let updatedAt: Date
   let deletedAt: Date?
+  /// Optional on the wire so summaries cached from a pre-v2 gateway continue
+  /// to decode. Consumers should use the canonical accessors below.
+  var pendingCount: Int? = nil
+  var pendingScheduling: PendingScheduling? = nil
+  var queueRevision: Int? = nil
   /// Raw so an unrecognized kind from a newer gateway degrades to "treat it as
   /// a user conversation" instead of failing the decode of the whole page.
   /// Read `conversationKind`, never this.
@@ -158,6 +238,37 @@ struct ConversationSummaryDTO: Codable, Hashable, Identifiable, Sendable {
   var conversationKind: ConversationKind {
     kind.flatMap(ConversationKind.init(rawValue:)) ?? .user
   }
+
+  var canonicalPendingCount: Int { pendingCount ?? 0 }
+  var canonicalPendingScheduling: PendingScheduling { pendingScheduling ?? .running }
+  var canonicalQueueRevision: Int { queueRevision ?? 0 }
+}
+
+struct PendingConversationInputDTO: Codable, Hashable, Identifiable, Sendable {
+  let id: String
+  let commandId: String
+  let conversationId: String
+  let kind: PendingInputKind
+  let version: Int
+  let text: String
+  let images: [MessageImage]?
+  let state: PendingInputState
+  let claimedTurnId: String?
+  let createdAt: Date
+  let updatedAt: Date
+}
+
+struct ConversationQueueSnapshotDTO: Codable, Hashable, Sendable {
+  let revision: Int
+  let scheduling: PendingScheduling
+  let pendingCount: Int
+  let items: [PendingConversationInputDTO]
+}
+
+struct ConversationPendingPageDTO: Codable, Hashable, Sendable {
+  let items: [PendingConversationInputDTO]
+  let nextCursor: String?
+  let queue: ConversationQueueSnapshotDTO
 }
 
 /// The sub-agent facts a child conversation's summary carries (sub-agents

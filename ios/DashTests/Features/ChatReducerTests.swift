@@ -25,7 +25,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -61,7 +62,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -91,7 +93,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -199,7 +202,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -1818,7 +1822,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: .notification,
           kind: .user,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -1852,7 +1857,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -1895,7 +1901,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -1955,7 +1962,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -2125,7 +2133,9 @@ struct ChatReducerTests {
     // Everything from the notification turn's `accepted` onwards.
     guard
       let notificationStart = frames.firstIndex(where: { frame in
-        if case let .accepted(_, _, _, _, _, _, origin, _, _) = frame { return origin != nil }
+        if case let .accepted(_, _, _, _, _, _, origin, _, _, _) = frame {
+          return origin != nil
+        }
         return false
       })
     else {
@@ -2148,7 +2158,7 @@ struct ChatReducerTests {
     for line in text.split(whereSeparator: \.isNewline) where line.isEmpty == false {
       let frame = try decoder.decode(MobileWSServerFrame.self, from: Data(line.utf8))
       switch frame {
-      case let .accepted(id, _, _, _, _, _, _, _, _):
+      case let .accepted(id, _, _, _, _, _, _, _, _, _):
         if turnID == nil { turnID = id }
       case let .event(id, _, _, event):
         if id == turnID { events.append(event) }

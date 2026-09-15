@@ -196,6 +196,25 @@ actor GatewayAPI {
     )
   }
 
+  func pending(
+    conversationID: String,
+    limit: Int,
+    cursor: String?
+  ) async throws -> ConversationPendingPageDTO {
+    try validate(limit: limit)
+    var query = [URLQueryItem(name: "limit", value: String(limit))]
+    if let cursor {
+      query.append(URLQueryItem(name: "cursor", value: cursor))
+    }
+    return try await transport.send(
+      GatewayRequest(
+        method: .get,
+        path: mobilePath("conversations", conversationID, "pending"),
+        query: query
+      )
+    )
+  }
+
   func replay(
     agentID: String,
     conversationID: String,
