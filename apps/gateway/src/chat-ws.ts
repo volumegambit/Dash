@@ -73,6 +73,13 @@ const KNOWN_CLIENT_FRAME_TYPES = new Set([
   'cancel',
   'subscribe',
   'unsubscribe',
+  'watch',
+  'follow_up',
+  'interrupt_and_send',
+  'stop_conversation',
+  'resume_pending',
+  'edit_pending',
+  'remove_pending',
   'voice_start',
   'voice_audio',
   'voice_mute',
@@ -86,6 +93,9 @@ const STRUCTURAL_CLIENT_FIELDS = new Set([
   'channelId',
   'conversationId',
   'questionId',
+  'expectedActiveTurnId',
+  'pendingId',
+  'expectedVersion',
   'sinceSeq',
   'resumable',
   'streamingBehavior',
@@ -226,6 +236,25 @@ function decodedBase64Bytes(data: string): number {
   return Buffer.from(data, 'base64').byteLength;
 }
 
+function hasValidImages(value: unknown, enforceCapableLimits: boolean): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  if (enforceCapableLimits && value.length > MAX_IMAGES) return false;
+  let totalBytes = 0;
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) return false;
+    const image = item as Record<string, unknown>;
+    if (typeof image.mediaType !== 'string' || typeof image.data !== 'string') return false;
+    if (!enforceCapableLimits) continue;
+    if (!ALLOWED_IMAGE_TYPES.has(image.mediaType)) return false;
+    const bytes = decodedBase64Bytes(image.data);
+    if (bytes < 0 || bytes > MAX_IMAGE_BYTES) return false;
+    totalBytes += bytes;
+    if (totalBytes > MAX_TOTAL_IMAGE_BYTES) return false;
+  }
+  return true;
+}
+
 /**
  * The hands-free voice client frames now live in `contracts/mobile/v1`
  * (`MobileWsClientFrame`'s `voice_start` | `voice_audio` | `voice_mute` |
@@ -278,6 +307,59 @@ export function parseChatClientFrame(msg: unknown): ChatClientFrame | null {
       typeof m.agentId !== 'string' ||
       typeof m.conversationId !== 'string' ||
       !isValidConversationId(m.conversationId)
+    ) {
+      return null;
+    }
+    return msg as MobileWsClientFrame;
+  }
+
+  const hasConversationTarget =
+    typeof m.agentId === 'string' &&
+    typeof m.conversationId === 'string' &&
+    isValidConversationId(m.conversationId);
+
+  if (m.type === 'watch') {
+    if (!hasConversationTarget || !Number.isInteger(m.sinceSeq) || (m.sinceSeq as number) < 0) {
+      return null;
+    }
+    return msg as MobileWsClientFrame;
+  }
+
+  if (m.type === 'stop_conversation' || m.type === 'resume_pending') {
+    return hasConversationTarget ? (msg as MobileWsClientFrame) : null;
+  }
+
+  if (m.type === 'follow_up') {
+    if (!hasConversationTarget || typeof m.text !== 'string' || !hasValidImages(m.images, true)) {
+      return null;
+    }
+    return msg as MobileWsClientFrame;
+  }
+
+  if (m.type === 'interrupt_and_send') {
+    if (
+      !hasConversationTarget ||
+      typeof m.expectedActiveTurnId !== 'string' ||
+      typeof m.text !== 'string' ||
+      !hasValidImages(m.images, true)
+    ) {
+      return null;
+    }
+    return msg as MobileWsClientFrame;
+  }
+
+  if (m.type === 'edit_pending' || m.type === 'remove_pending') {
+    if (
+      !hasConversationTarget ||
+      typeof m.pendingId !== 'string' ||
+      !Number.isInteger(m.expectedVersion) ||
+      (m.expectedVersion as number) < 1
+    ) {
+      return null;
+    }
+    if (
+      m.type === 'edit_pending' &&
+      (typeof m.text !== 'string' || !hasValidImages(m.images, true))
     ) {
       return null;
     }
@@ -345,22 +427,7 @@ export function parseChatClientFrame(msg: unknown): ChatClientFrame | null {
     ) {
       return null;
     }
-    if (m.images !== undefined) {
-      if (!Array.isArray(m.images)) return null;
-      if (m.resumable === true && m.images.length > MAX_IMAGES) return null;
-      let totalBytes = 0;
-      for (const img of m.images) {
-        if (typeof img !== 'object' || img === null) return null;
-        const image = img as Record<string, unknown>;
-        if (typeof image.mediaType !== 'string' || typeof image.data !== 'string') return null;
-        if (m.resumable !== true) continue;
-        if (!ALLOWED_IMAGE_TYPES.has(image.mediaType)) return null;
-        const bytes = decodedBase64Bytes(image.data);
-        if (bytes < 0 || bytes > MAX_IMAGE_BYTES) return null;
-        totalBytes += bytes;
-        if (totalBytes > MAX_TOTAL_IMAGE_BYTES) return null;
-      }
-    }
+    if (!hasValidImages(m.images, m.resumable === true)) return null;
     return msg as MobileWsClientFrame;
   }
 
@@ -701,6 +768,44 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
             // Idempotent teardown: stopping a session that already ended (or
             // never started) is not worth an error frame.
             stopVoice('client');
+            return;
+          }
+
+          if (msg.type === 'watch') {
+            dispatchHub(ws, msg.id, msg.conversationId, () => resumableChatHub.watch(msg, sink));
+            return;
+          }
+
+          if (
+            msg.type === 'follow_up' ||
+            msg.type === 'interrupt_and_send' ||
+            msg.type === 'stop_conversation' ||
+            msg.type === 'resume_pending' ||
+            msg.type === 'edit_pending' ||
+            msg.type === 'remove_pending'
+          ) {
+            dispatchHub(ws, msg.id, msg.conversationId, () => {
+              switch (msg.type) {
+                case 'follow_up':
+                  resumableChatHub.followUp(msg, sink);
+                  break;
+                case 'interrupt_and_send':
+                  resumableChatHub.interruptAndSend(msg, sink);
+                  break;
+                case 'stop_conversation':
+                  resumableChatHub.stopConversation(msg, sink);
+                  break;
+                case 'resume_pending':
+                  resumableChatHub.resumePending(msg, sink);
+                  break;
+                case 'edit_pending':
+                  resumableChatHub.editPending(msg, sink);
+                  break;
+                case 'remove_pending':
+                  resumableChatHub.removePending(msg, sink);
+                  break;
+              }
+            });
             return;
           }
 

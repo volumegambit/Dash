@@ -1196,8 +1196,6 @@ export class SqliteConversationService implements ConversationService {
         .prepare(`
           UPDATE conversations
           SET pending_count = pending_count - 1,
-              pending_scheduling = CASE WHEN pending_count = 1 THEN 'running'
-                                        ELSE pending_scheduling END,
               queue_revision = queue_revision + 1,
               revision = revision + 1,
               updated_at = @now
@@ -1281,7 +1279,7 @@ export class SqliteConversationService implements ConversationService {
     })();
   }
 
-  completePendingClaim(pendingId: string): void {
+  completePendingClaim(pendingId: string, pauseScheduling = false): void {
     this.db.transaction(() => {
       const pending = this.db
         .prepare('SELECT * FROM conversation_pending_inputs WHERE id = ?')
@@ -1293,14 +1291,37 @@ export class SqliteConversationService implements ConversationService {
         .prepare(`
           UPDATE conversations
           SET pending_count = pending_count - 1,
-              pending_scheduling = CASE WHEN pending_count = 1 THEN 'running'
+              pending_scheduling = CASE WHEN @pauseScheduling = 1 THEN 'paused'
                                         ELSE pending_scheduling END,
               queue_revision = queue_revision + 1,
               revision = revision + 1,
               updated_at = @now
           WHERE id = @id
         `)
-        .run({ id: pending.conversation_id, now: timestamp });
+        .run({
+          id: pending.conversation_id,
+          now: timestamp,
+          pauseScheduling: pauseScheduling ? 1 : 0,
+        });
+    })();
+  }
+
+  pausePending(conversationId: string): ConversationQueueSnapshot {
+    return this.db.transaction(() => {
+      const row = this.requireConversationRow(conversationId);
+      if (row.pending_scheduling !== 'paused') {
+        this.db
+          .prepare(`
+            UPDATE conversations
+            SET pending_scheduling = 'paused',
+                queue_revision = queue_revision + 1,
+                revision = revision + 1,
+                updated_at = @now
+            WHERE id = @id
+          `)
+          .run({ id: conversationId, now: this.now() });
+      }
+      return this.queueSnapshotForRow(this.requireConversationRow(conversationId));
     })();
   }
 
@@ -1356,6 +1377,9 @@ export class SqliteConversationService implements ConversationService {
           revision: accepted.payload.revision,
           created: false,
           firstUserMessage: user.ordinal === 1,
+          ...(accepted.payload.pendingItemId
+            ? { pendingItemId: accepted.payload.pendingItemId }
+            : {}),
         };
       }
 
@@ -1430,6 +1454,7 @@ export class SqliteConversationService implements ConversationService {
         userMessageId,
         assistantMessageId,
         revision: nextRevision,
+        ...(value.pendingItemId ? { pendingItemId: value.pendingItemId } : {}),
       });
       const acquired = this.db
         .prepare(`
@@ -1472,6 +1497,7 @@ export class SqliteConversationService implements ConversationService {
         revision: nextRevision,
         created: true,
         firstUserMessage: userOrdinal === 1,
+        ...(value.pendingItemId ? { pendingItemId: value.pendingItemId } : {}),
       };
     })(input);
   }

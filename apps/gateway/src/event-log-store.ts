@@ -39,6 +39,7 @@ export type EventLogPayload =
       userMessageId: string;
       assistantMessageId: string;
       revision: number;
+      pendingItemId?: string;
     }
   | { type: 'event'; event: MobileAgentEvent }
   | { type: 'done'; outcome?: 'completed' | 'cancelled' }

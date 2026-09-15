@@ -229,6 +229,13 @@ describe('parseChatClientFrame', () => {
     'chat-cancel.json',
     'chat-subscribe.json',
     'chat-unsubscribe.json',
+    'chat-watch.json',
+    'chat-follow-up.json',
+    'chat-interrupt.json',
+    'chat-stop-conversation.json',
+    'chat-resume-pending.json',
+    'chat-pending-edit.json',
+    'chat-pending-remove.json',
   ])('accepts frozen client fixture %s and preserves unknown fields', (name) => {
     const value = { ...(fixture(name) as Record<string, unknown>), futureField: 'preserved' };
     expect(parseChatClientFrame(value)).toEqual(value);
@@ -466,6 +473,13 @@ function makeScriptedStream(initialEvents: AgentEvent[] = []): ScriptedStream {
 function makeResumableHub() {
   const start = vi.fn<ResumableChatHub['start']>();
   const resume = vi.fn<ResumableChatHub['resume']>();
+  const watch = vi.fn<ResumableChatHub['watch']>();
+  const followUp = vi.fn<ResumableChatHub['followUp']>();
+  const interruptAndSend = vi.fn<ResumableChatHub['interruptAndSend']>();
+  const stopConversation = vi.fn<ResumableChatHub['stopConversation']>();
+  const resumePending = vi.fn<ResumableChatHub['resumePending']>();
+  const editPending = vi.fn<ResumableChatHub['editPending']>();
+  const removePending = vi.fn<ResumableChatHub['removePending']>();
   const answer = vi.fn<ResumableChatHub['answer']>().mockResolvedValue(undefined);
   const cancel = vi.fn<ResumableChatHub['cancel']>().mockResolvedValue(undefined);
   const detach = vi.fn<ResumableChatHub['detach']>();
@@ -481,6 +495,13 @@ function makeResumableHub() {
   const hub: ResumableChatHub = {
     start,
     resume,
+    watch,
+    followUp,
+    interruptAndSend,
+    stopConversation,
+    resumePending,
+    editPending,
+    removePending,
     answer,
     cancel,
     detach,
@@ -496,6 +517,13 @@ function makeResumableHub() {
     hub,
     start,
     resume,
+    watch,
+    followUp,
+    interruptAndSend,
+    stopConversation,
+    resumePending,
+    editPending,
+    removePending,
     answer,
     cancel,
     detach,
@@ -982,6 +1010,82 @@ describe('mountChatWs protocol ownership', () => {
     expect(harness.hub.cancel).not.toHaveBeenCalled();
     expect(harness.agents.cancel).not.toHaveBeenCalled();
     expect(harness.swarmCancel).not.toHaveBeenCalled();
+  });
+
+  it('routes watch and shared conversation commands through the stable hub sink', () => {
+    const harness = makeWsHarness();
+    const connection = harness.connect();
+    connection.handlers.onOpen?.({}, connection.socket);
+    const frames = [
+      {
+        type: 'watch',
+        id: 'watch-01',
+        agentId: 'agent-01',
+        conversationId: 'conversation-01',
+        sinceSeq: 12,
+      },
+      {
+        type: 'follow_up',
+        id: 'follow-01',
+        agentId: 'agent-01',
+        conversationId: 'conversation-01',
+        text: 'Next',
+      },
+      {
+        type: 'interrupt_and_send',
+        id: 'interrupt-01',
+        agentId: 'agent-01',
+        conversationId: 'conversation-01',
+        expectedActiveTurnId: 'turn-01',
+        text: 'Change course',
+      },
+      {
+        type: 'stop_conversation',
+        id: 'stop-01',
+        agentId: 'agent-01',
+        conversationId: 'conversation-01',
+      },
+      {
+        type: 'resume_pending',
+        id: 'resume-pending-01',
+        agentId: 'agent-01',
+        conversationId: 'conversation-01',
+      },
+      {
+        type: 'edit_pending',
+        id: 'edit-01',
+        agentId: 'agent-01',
+        conversationId: 'conversation-01',
+        pendingId: 'pending-01',
+        expectedVersion: 2,
+        text: 'Edited',
+      },
+      {
+        type: 'remove_pending',
+        id: 'remove-01',
+        agentId: 'agent-01',
+        conversationId: 'conversation-01',
+        pendingId: 'pending-02',
+        expectedVersion: 3,
+      },
+    ] satisfies MobileWsClientFrame[];
+
+    for (const frame of frames) dispatch(connection, frame);
+
+    const methods = [
+      harness.hub.watch,
+      harness.hub.followUp,
+      harness.hub.interruptAndSend,
+      harness.hub.stopConversation,
+      harness.hub.resumePending,
+      harness.hub.editPending,
+      harness.hub.removePending,
+    ];
+    for (const [index, method] of methods.entries()) {
+      expect(method).toHaveBeenCalledOnce();
+      expect(method.mock.calls[0]?.[0]).toEqual(frames[index]);
+      expect(method.mock.calls[0]?.[1]).toBe(methods[0]?.mock.calls[0]?.[1]);
+    }
   });
 
   it('routes subscribe and unsubscribe frames to the hub on the connection sink', () => {

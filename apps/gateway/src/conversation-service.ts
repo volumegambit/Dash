@@ -175,6 +175,8 @@ export interface AcceptTurnInput {
   images?: MobileImage[];
   /** Defaults to `'user'`; server-initiated turns pass `'notification'`. */
   origin?: ConversationMessageOrigin;
+  /** Durable queue item that this turn claims, when it was scheduler-admitted. */
+  pendingItemId?: string;
 }
 
 export interface AcceptedTurn {
@@ -185,6 +187,7 @@ export interface AcceptedTurn {
   revision: number;
   created: boolean;
   firstUserMessage: boolean;
+  pendingItemId?: string;
 }
 
 export type FinishTurnInput =
@@ -226,7 +229,8 @@ export interface ConversationService {
   removePending(input: RemovePendingInput): ConversationCommandReceipt;
   claimNextPending(conversationId: string): PendingConversationInput | null;
   releasePendingClaim(pendingId: string): void;
-  completePendingClaim(pendingId: string): void;
+  completePendingClaim(pendingId: string, pauseScheduling?: boolean): void;
+  pausePending(conversationId: string): ConversationQueueSnapshot;
   acceptTurn(input: AcceptTurnInput): AcceptedTurn;
   /** Append a standalone notice message (see the sqlite implementation). */
   appendNotice(input: AppendNoticeInput): ConversationMessage | null;

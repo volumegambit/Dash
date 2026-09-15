@@ -252,6 +252,9 @@ describe('mobile harness emitted contract output', () => {
         'apiVersion',
         'capabilities',
       ]);
+      expect((health as { capabilities: string[] }).capabilities).toContain(
+        'conversation-control-v2',
+      );
 
       const identityResponse = await mobileRequest(harness, '/identity');
       expect(identityResponse.status).toBe(200);
