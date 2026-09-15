@@ -651,6 +651,72 @@
       "document": "openapi",
       "schema": "SynthesisRequest",
       "valid": true
+    },
+    {
+      "file": "conversation-pending-page.json",
+      "document": "openapi",
+      "schema": "ConversationPendingPage",
+      "valid": true
+    },
+    {
+      "file": "chat-watch.json",
+      "document": "chat-ws",
+      "schema": "ChatWatch",
+      "valid": true
+    },
+    {
+      "file": "chat-watched.json",
+      "document": "chat-ws",
+      "schema": "ChatWatched",
+      "valid": true
+    },
+    {
+      "file": "chat-follow-up.json",
+      "document": "chat-ws",
+      "schema": "ChatFollowUp",
+      "valid": true
+    },
+    {
+      "file": "chat-interrupt.json",
+      "document": "chat-ws",
+      "schema": "ChatInterruptAndSend",
+      "valid": true
+    },
+    {
+      "file": "chat-stop-conversation.json",
+      "document": "chat-ws",
+      "schema": "ChatStopConversation",
+      "valid": true
+    },
+    {
+      "file": "chat-resume-pending.json",
+      "document": "chat-ws",
+      "schema": "ChatResumePending",
+      "valid": true
+    },
+    {
+      "file": "chat-pending-edit.json",
+      "document": "chat-ws",
+      "schema": "ChatEditPending",
+      "valid": true
+    },
+    {
+      "file": "chat-pending-remove.json",
+      "document": "chat-ws",
+      "schema": "ChatRemovePending",
+      "valid": true
+    },
+    {
+      "file": "chat-command-receipt.json",
+      "document": "chat-ws",
+      "schema": "ChatCommandReceipt",
+      "valid": true
+    },
+    {
+      "file": "chat-queue-changed.json",
+      "document": "chat-ws",
+      "schema": "ChatQueueChanged",
+      "valid": true
     }
   ]
 }

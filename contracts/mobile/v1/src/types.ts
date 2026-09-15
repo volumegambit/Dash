@@ -1,4 +1,8 @@
-export type MobileCapability = 'conversation-sync-v1' | 'chat-resume-v1' | 'speech-v1';
+export type MobileCapability =
+  | 'conversation-sync-v1'
+  | 'chat-resume-v1'
+  | 'conversation-control-v2'
+  | 'speech-v1';
 export type ConversationStatus = 'idle' | 'running' | 'interrupted' | 'archived' | 'deleted';
 export type ConversationMessageStatus =
   | 'accepted'
@@ -10,6 +14,9 @@ export type ConversationMessageStatus =
 export type ConversationRole = 'user' | 'assistant';
 export type ConversationKind = 'user' | 'subagent';
 export type ConversationMessageOrigin = 'user' | 'notification' | 'parent';
+export type PendingScheduling = 'running' | 'paused';
+export type PendingInputKind = 'priority' | 'follow_up';
+export type PendingInputState = 'pending' | 'claimed';
 export type SubagentStatus =
   | 'running'
   | 'waiting_input'
@@ -307,12 +314,45 @@ export interface ConversationSummary {
   lastMessagePreview: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Number of accepted inputs that have not yet become terminal transcript turns. */
+  pendingCount: number;
+  /** Whether an idle conversation may claim its next accepted input. */
+  pendingScheduling: PendingScheduling;
+  /** Monotonic version for the shared pending-work projection. */
+  queueRevision: number;
   deletedAt?: string;
   /** `'subagent'` rows are children; the conversation list shows `'user'` only. */
   kind: ConversationKind;
   parentConversationId?: string;
   parentTurnId?: string;
   subagent?: SubagentInfo;
+}
+
+export interface PendingConversationInput {
+  id: string;
+  commandId: string;
+  conversationId: string;
+  kind: PendingInputKind;
+  version: number;
+  text: string;
+  images?: MobileImage[];
+  state: PendingInputState;
+  claimedTurnId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConversationQueueSnapshot {
+  revision: number;
+  scheduling: PendingScheduling;
+  pendingCount: number;
+  items: PendingConversationInput[];
+}
+
+export interface ConversationPendingPage {
+  items: PendingConversationInput[];
+  nextCursor: string | null;
+  queue: ConversationQueueSnapshot;
 }
 
 export interface ConversationMessage {
@@ -481,6 +521,50 @@ export type MobileWsClientFrame =
    */
   | { type: 'subscribe'; id: string; agentId: string; conversationId: string }
   | { type: 'unsubscribe'; id: string; agentId: string; conversationId: string }
+  | {
+      type: 'watch';
+      id: string;
+      agentId: string;
+      conversationId: string;
+      sinceSeq: number;
+    }
+  | {
+      type: 'follow_up';
+      id: string;
+      agentId: string;
+      conversationId: string;
+      text: string;
+      images?: MobileImage[];
+    }
+  | {
+      type: 'interrupt_and_send';
+      id: string;
+      agentId: string;
+      conversationId: string;
+      expectedActiveTurnId: string;
+      text: string;
+      images?: MobileImage[];
+    }
+  | { type: 'stop_conversation'; id: string; agentId: string; conversationId: string }
+  | { type: 'resume_pending'; id: string; agentId: string; conversationId: string }
+  | {
+      type: 'edit_pending';
+      id: string;
+      agentId: string;
+      conversationId: string;
+      pendingId: string;
+      expectedVersion: number;
+      text: string;
+      images?: MobileImage[];
+    }
+  | {
+      type: 'remove_pending';
+      id: string;
+      agentId: string;
+      conversationId: string;
+      pendingId: string;
+      expectedVersion: number;
+    }
   /**
    * Starts the hands-free voice session on `conversationId`. `id` is the
    * client-generated session id: every `voice_*` frame in both directions
@@ -581,6 +665,8 @@ export type MobileWsServerFrame =
        * its id, ever.
        */
       requestId?: string;
+      /** Present when a claimed pending item becomes this transcript turn. */
+      pendingItemId?: string;
     }
   | {
       type: 'event';
@@ -605,6 +691,42 @@ export type MobileWsServerFrame =
       code?: MobileApiErrorCode;
       retryable?: boolean;
       activeTurnId?: string;
+    }
+  | {
+      type: 'watched';
+      id: string;
+      conversationId: string;
+      throughSeq: number;
+      queue: ConversationQueueSnapshot;
+    }
+  | {
+      type: 'command_receipt';
+      id: string;
+      conversationId: string;
+      command:
+        | 'follow_up'
+        | 'interrupt_and_send'
+        | 'stop_conversation'
+        | 'resume_pending'
+        | 'edit_pending'
+        | 'remove_pending';
+      status: 'accepted' | 'rejected' | 'already_applied';
+      queue: ConversationQueueSnapshot;
+      affectedTurnId?: string;
+      pendingItem?: PendingConversationInput;
+      reason?:
+        | 'stale_execution'
+        | 'version_conflict'
+        | 'already_claimed'
+        | 'not_found'
+        | 'queue_empty'
+        | 'invalid_state';
+    }
+  | {
+      type: 'queue_changed';
+      conversationId: string;
+      queue: ConversationQueueSnapshot;
+      commandId?: string;
     }
   /** `turnId` is set once a turn is running and cleared once it settles back to `listening`. */
   | { type: 'voice_state'; id: string; state: VoiceState; turnId?: string }
