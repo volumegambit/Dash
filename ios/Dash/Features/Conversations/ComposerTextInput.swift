@@ -79,11 +79,14 @@ struct ComposerTextInput: UIViewRepresentable {
     tv.returnKeyType = returnKeySends ? .send : .default
     context.coordinator.returnKeySends = returnKeySends
 
-    // Focus sync from SwiftUI → UITextView
+    // Programmatic focus sync from SwiftUI → UITextView. Do not resign here
+    // when the binding still says false: a direct tap makes the text view first
+    // responder before the delegate's asynchronous binding update lands. A
+    // character typed in that gap re-renders SwiftUI and used to dismiss the
+    // keyboard after its first letter. User-driven dismissal already updates
+    // the binding from `textViewDidEndEditing`.
     if isFocused, !tv.isFirstResponder {
       DispatchQueue.main.async { tv.becomeFirstResponder() }
-    } else if !isFocused, tv.isFirstResponder {
-      tv.resignFirstResponder()
     }
   }
 
@@ -109,7 +112,7 @@ struct ComposerTextInput: UIViewRepresentable {
     /// For the on-screen keyboard: a newline character as replacementText
     /// means the user tapped the return key. We route it the same way.
     func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText: String) -> Bool {
-      if replacementText == "\n" {
+      if replacementText == "\n" || replacementText == "\r" {
         // If modifier flags are set, this came from a hardware key that
         // `pressesBegan` already handled — block the duplicate.
         if ComposerTextView.currentModifierFlags != [] {
@@ -185,6 +188,20 @@ class ComposerTextView: UITextView {
   /// the key and modifiers but fires before `shouldChangeTextIn`.
   static var currentModifierFlags: UIKeyModifierFlags = []
 
+  /// Hardware key commands are the primary path for Return. They are
+  /// resolved by the responder system before text insertion and cover both
+  /// physical keyboards and XCUITest's synthetic hardware events. The
+  /// `pressesBegan` and `insertText` overrides below remain as fallbacks for
+  /// keyboards that deliver raw presses or text insertion directly.
+  override var keyCommands: [UIKeyCommand]? {
+    [
+      UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(handlePlainReturn)),
+      UIKeyCommand(input: "\r", modifierFlags: .shift, action: #selector(handleShiftReturn)),
+      UIKeyCommand(input: "\r", modifierFlags: .command, action: #selector(handleCommandReturn)),
+      UIKeyCommand(input: "\t", modifierFlags: .shift, action: #selector(handleShiftTab)),
+    ]
+  }
+
   override init(frame: CGRect, textContainer: NSTextContainer?) {
     super.init(frame: frame, textContainer: textContainer)
     NotificationCenter.default.addObserver(
@@ -236,9 +253,31 @@ class ComposerTextView: UITextView {
 
   // MARK: - Text insertion interception
 
+  @objc private func handlePlainReturn() {
+    if coordinator?.returnKeySends == true {
+      coordinator?.parent.onActionFeedback()
+      coordinator?.parent.onSend()
+    } else {
+      insertNewlineAtCaret()
+    }
+  }
+
+  @objc private func handleShiftReturn() {
+    insertNewlineAtCaret()
+  }
+
+  @objc private func handleCommandReturn() {
+    coordinator?.parent.onActionFeedback()
+    coordinator?.parent.onSend()
+  }
+
+  @objc private func handleShiftTab() {
+    insertNewlineAtCaret()
+  }
+
   /// Updates the text view's text and notifies the delegate/binding.
   /// The binding update is deferred to avoid focus loss during typing.
-  private func insertNewlineAtCaret() {
+  fileprivate func insertNewlineAtCaret() {
     let sel = selectedRange
     let nsText = (text as NSString)
     let newText = nsText.replacingCharacters(in: sel, with: "\n")
@@ -253,7 +292,7 @@ class ComposerTextView: UITextView {
   /// bypassing both `pressesBegan` and `shouldChangeTextIn`. This override
   /// catches that path for Return (\n) and Tab (\t).
   override func insertText(_ text: String) {
-    if text == "\n" {
+    if text == "\n" || text == "\r" {
       let modifiers = Self.currentModifierFlags
       let shift = modifiers.contains(.shift)
       let command = modifiers.contains(.command)
@@ -309,7 +348,15 @@ class ComposerTextView: UITextView {
         }
 
         // Return key: handle here for ALL cases (plain, Shift, ⌘).
-        if key.characters == "\r" || key.characters == "\n" {
+        let isReturn =
+          key.characters == "\r" || key.characters == "\n"
+          || key.charactersIgnoringModifiers == "\r"
+          || key.charactersIgnoringModifiers == "\n"
+          // USB HID Return/Enter and keypad Enter. XCUITest's synthetic
+          // Return has a stable key code but does not always expose a CR/LF
+          // character through `UIKey.characters`.
+          || key.keyCode.rawValue == 0x28 || key.keyCode.rawValue == 0x58
+        if isReturn {
           let shift = key.modifierFlags.contains(.shift)
           let command = key.modifierFlags.contains(.command)
           let returnKeySends = coordinator?.returnKeySends ?? false
@@ -339,5 +386,15 @@ class ComposerTextView: UITextView {
       }
     }
     super.pressesBegan(presses, with: event)
+  }
+
+  override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    Self.currentModifierFlags = []
+    super.pressesEnded(presses, with: event)
+  }
+
+  override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    Self.currentModifierFlags = []
+    super.pressesCancelled(presses, with: event)
   }
 }

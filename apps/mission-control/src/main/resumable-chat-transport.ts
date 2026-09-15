@@ -847,6 +847,10 @@ export class ResumableChatTransport {
   }
 
   private async receive(state: TurnState, frame: MobileWsServerFrame): Promise<void> {
+    if (frame.type === 'queue_changed') {
+      this.options.onFrame(frame);
+      return;
+    }
     const replayingForeignTurn = state.resuming && frame.id !== state.turnId;
     if (replayingForeignTurn) this.assertConversationOwnership(state, frame);
     else this.assertOwnership(state, frame);
@@ -898,7 +902,7 @@ export class ResumableChatTransport {
         .map((entry) => this.parseReplayEntry(state, entry))
         .sort((a, b) => (sequence(a) as number) - (sequence(b) as number));
       for (const missing of replayFrames) {
-        if (missing.id === state.turnId) {
+        if ('id' in missing && missing.id === state.turnId) {
           await this.deliverIfNext(state, missing);
         } else {
           this.advanceReplayCursor(state, missing);
@@ -942,7 +946,7 @@ export class ResumableChatTransport {
   }
 
   private assertOwnership(state: TurnState, frame: MobileWsServerFrame): void {
-    if (frame.id !== state.turnId) invalidFrame();
+    if (!('id' in frame) || frame.id !== state.turnId) invalidFrame();
     if (
       'conversationId' in frame &&
       frame.conversationId !== undefined &&

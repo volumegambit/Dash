@@ -42,7 +42,11 @@ import {
 } from './subagent-management.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
-const BASE_MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
+const BASE_MOBILE_CAPABILITIES: MobileCapability[] = [
+  'conversation-sync-v1',
+  'chat-resume-v1',
+  'conversation-control-v2',
+];
 
 /**
  * Exact request paths for which the log middleware omits even the
@@ -58,7 +62,7 @@ const NO_BODY_SHAPE_LOG = new Set([
 ]);
 
 /**
- * Per-request capability list: the two frozen base capabilities, plus
+ * Per-request capability list: the frozen base capabilities, plus
  * `'speech-v1'` only when BOTH speech deps are wired (mirrors the mount
  * guard below — `/speech/*` route absence and capability absence must
  * agree) AND the service's (30s-cached) `available()` says a provider can

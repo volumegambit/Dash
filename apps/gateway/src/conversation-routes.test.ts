@@ -377,6 +377,50 @@ describe('conversation REST routes', () => {
     }
   });
 
+  it('returns a bounded pending-work bootstrap with canonical queue state', async () => {
+    const created = await createConversation();
+    conversations.enqueueFollowUp({
+      commandId: '10000000-0000-4000-8000-000000000001',
+      agentId: agent.id,
+      conversationId: created.id,
+      text: 'First follow up',
+    });
+    conversations.enqueueFollowUp({
+      commandId: '10000000-0000-4000-8000-000000000002',
+      agentId: agent.id,
+      conversationId: created.id,
+      text: 'Second follow up',
+    });
+
+    const first = await app.request(`/conversations/${created.id}/pending?limit=1`, {
+      headers: AUTH,
+    });
+    expect(first.status).toBe(200);
+    const firstPage = (await first.json()) as JsonBody;
+    expect(firstPage).toMatchObject({
+      items: [{ text: 'First follow up' }],
+      queue: { revision: 2, scheduling: 'running', pendingCount: 2 },
+    });
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+    const second = await app.request(
+      `/conversations/${created.id}/pending?limit=1&cursor=${encodeURIComponent(String(firstPage.nextCursor))}`,
+      { headers: AUTH },
+    );
+    expect(second.status).toBe(200);
+    expect((await second.json()) as JsonBody).toMatchObject({
+      items: [{ text: 'Second follow up' }],
+      nextCursor: null,
+    });
+
+    for (const query of ['limit=0', 'limit=101', 'before=wrong']) {
+      const invalid = await app.request(`/conversations/${created.id}/pending?${query}`, {
+        headers: AUTH,
+      });
+      expect(invalid.status, query).toBe(400);
+    }
+  });
+
   it('emits exact changed and deleted invalidations for successful writes', async () => {
     const created = await createConversation();
     const renamedResponse = await app.request(`/conversations/${created.id}`, {

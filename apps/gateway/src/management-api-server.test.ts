@@ -454,7 +454,7 @@ describe('createGatewayManagementApp', () => {
       const response = await app.request('/health');
       expect((await response.json()) as JsonBody).toMatchObject({
         apiVersion: 1,
-        capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+        capabilities: ['conversation-sync-v1', 'chat-resume-v1', 'conversation-control-v2'],
       });
     });
   });
@@ -2355,7 +2355,11 @@ describe('speech routes wiring', () => {
       const { app } = createApp();
       const res = await app.request('/health');
       const body = (await res.json()) as JsonBody;
-      expect(body.capabilities).toEqual(['conversation-sync-v1', 'chat-resume-v1']);
+      expect(body.capabilities).toEqual([
+        'conversation-sync-v1',
+        'chat-resume-v1',
+        'conversation-control-v2',
+      ]);
     });
 
     it('is absent when speech is wired but speechConfigStore is not', async () => {
@@ -2363,7 +2367,11 @@ describe('speech routes wiring', () => {
       const { app } = createApp({ speech });
       const res = await app.request('/health');
       const body = (await res.json()) as JsonBody;
-      expect(body.capabilities).toEqual(['conversation-sync-v1', 'chat-resume-v1']);
+      expect(body.capabilities).toEqual([
+        'conversation-sync-v1',
+        'chat-resume-v1',
+        'conversation-control-v2',
+      ]);
     });
 
     it('is absent when both deps are wired but the service is unavailable', async () => {
@@ -2371,7 +2379,11 @@ describe('speech routes wiring', () => {
       const { app } = createApp({ speech, speechConfigStore });
       const res = await app.request('/health');
       const body = (await res.json()) as JsonBody;
-      expect(body.capabilities).toEqual(['conversation-sync-v1', 'chat-resume-v1']);
+      expect(body.capabilities).toEqual([
+        'conversation-sync-v1',
+        'chat-resume-v1',
+        'conversation-control-v2',
+      ]);
     });
 
     it('is present only when both deps are wired AND the service is available', async () => {
@@ -2379,7 +2391,12 @@ describe('speech routes wiring', () => {
       const { app } = createApp({ speech, speechConfigStore });
       const res = await app.request('/health');
       const body = (await res.json()) as JsonBody;
-      expect(body.capabilities).toEqual(['conversation-sync-v1', 'chat-resume-v1', 'speech-v1']);
+      expect(body.capabilities).toEqual([
+        'conversation-sync-v1',
+        'chat-resume-v1',
+        'conversation-control-v2',
+        'speech-v1',
+      ]);
     });
 
     it('does not 500 /health when available() rejects', async () => {
@@ -2390,7 +2407,11 @@ describe('speech routes wiring', () => {
       const res = await app.request('/health');
       expect(res.status).toBe(200);
       const body = (await res.json()) as JsonBody;
-      expect(body.capabilities).toEqual(['conversation-sync-v1', 'chat-resume-v1']);
+      expect(body.capabilities).toEqual([
+        'conversation-sync-v1',
+        'chat-resume-v1',
+        'conversation-control-v2',
+      ]);
     });
   });
 

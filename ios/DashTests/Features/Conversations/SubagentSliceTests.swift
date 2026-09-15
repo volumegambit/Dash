@@ -212,7 +212,8 @@ struct SubagentSliceTests {
           seq: 1,
           origin: .parent,
           kind: .subagent,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -339,7 +340,8 @@ struct SubagentSliceTests {
           seq: 1,
           origin: .parent,
           kind: .subagent,
-          requestId: "req-1"
+          requestId: "req-1",
+          pendingItemId: nil
         )
       )
     )
@@ -380,7 +382,8 @@ struct SubagentSliceTests {
           seq: 1,
           origin: .parent,
           kind: .subagent,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -415,7 +418,8 @@ struct SubagentSliceTests {
           seq: 1,
           origin: .parent,
           kind: .subagent,
-          requestId: "req-1"
+          requestId: "req-1",
+          pendingItemId: nil
         )
       )
     )

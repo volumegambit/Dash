@@ -2688,7 +2688,8 @@ extension AppDependenciesFactory {
           seq: takeSequence(),
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
       guard await pause(.milliseconds(100)) else { return }
@@ -2904,7 +2905,8 @@ extension AppDependenciesFactory {
           seq: takeSequence(),
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
       let reply = UITestScenarioFixtures.longTranscriptStreamedReply

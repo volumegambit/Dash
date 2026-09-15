@@ -110,6 +110,9 @@ describe('SqliteConversationService schema', () => {
       lastMessagePreview: null,
       createdAt: timestamp,
       updatedAt: timestamp,
+      pendingCount: 0,
+      pendingScheduling: 'running',
+      queueRevision: 0,
       kind: 'user',
     });
     expect('deletedAt' in created).toBe(false);
@@ -413,6 +416,74 @@ describe('SqliteConversationService schema', () => {
     expect(first.throughSeq).toBe(9);
     expect(second.throughSeq).toBe(9);
     expect(new Set([...first.items, ...second.items].map((item) => item.id)).size).toBe(4);
+    service.close();
+  });
+
+  it("reconstructs a page from only that page's turn events in a 10,000-message history", () => {
+    const service = new SqliteConversationService({
+      dataDir: tmpDir,
+      now: () => '2026-07-12T00:00:00.000Z',
+      uuid: () => '00000000-0000-4000-8000-000000000001',
+    });
+    const created = service.create({
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      requestId: 'request-01',
+    });
+    const db = (service as unknown as { db: DatabaseType }).db;
+    const insert = db.prepare(`
+      INSERT INTO conversation_messages
+        (id, conversation_id, turn_id, ordinal, role, content, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?)
+    `);
+    const seed = db.transaction(() => {
+      for (let turn = 1; turn <= 5_000; turn += 1) {
+        const suffix = String(turn).padStart(12, '0');
+        const turnId = `10000000-0000-4000-8000-${suffix}`;
+        const timestamp = `2026-07-12T00:00:00.${String(turn % 1_000).padStart(3, '0')}Z`;
+        insert.run(
+          `20000000-0000-4000-8000-${suffix}`,
+          created.id,
+          turnId,
+          turn * 2 - 1,
+          'user',
+          JSON.stringify({ type: 'user', text: `Question ${turn}` }),
+          timestamp,
+          timestamp,
+        );
+        insert.run(
+          `30000000-0000-4000-8000-${suffix}`,
+          created.id,
+          turnId,
+          turn * 2,
+          'assistant',
+          JSON.stringify({ type: 'assistant', events: [] }),
+          timestamp,
+          timestamp,
+        );
+        service.eventLog.append('agent-01', created.id, turnId, {
+          type: 'event',
+          event: { type: 'text_delta', text: `Answer ${turn}` },
+        });
+      }
+      db.prepare('UPDATE conversations SET last_seq = 5000 WHERE id = ?').run(created.id);
+    });
+    seed();
+    const readSince = vi.spyOn(service.eventLog, 'readSince');
+    const readForTurns = vi.spyOn(service.eventLog, 'readForTurns');
+
+    const page = service.listMessages({ conversationId: created.id, limit: 40 });
+
+    expect(page.items).toHaveLength(40);
+    expect(page.items[0]?.ordinal).toBe(9_961);
+    expect(page.items.at(-1)?.ordinal).toBe(10_000);
+    expect(readSince).not.toHaveBeenCalled();
+    expect(readForTurns).toHaveBeenCalledOnce();
+    expect(readForTurns.mock.calls[0]?.[2]).toHaveLength(20);
+    expect(page.items.at(-1)?.content).toEqual({
+      type: 'assistant',
+      events: [{ type: 'text_delta', text: 'Answer 5000' }],
+    });
     service.close();
   });
 
@@ -1672,6 +1743,222 @@ describe('SqliteConversationService subagent persistence', () => {
     expect(service.peekNotifications(second.id).map((item) => item.payload.from)).toEqual([
       'second',
     ]);
+  });
+});
+
+describe('SqliteConversationService conversation controls', () => {
+  let tmpDir: string;
+  let service: SqliteConversationService;
+  let conversationId: string;
+  let now: string;
+  let nextID: number;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'conversation-controls-'));
+    now = '2026-09-15T05:00:00.000Z';
+    nextID = 1;
+    service = new SqliteConversationService({
+      dataDir: tmpDir,
+      now: () => now,
+      uuid: () => `00000000-0000-4000-8000-${String(nextID++).padStart(12, '0')}`,
+    });
+    conversationId = service.create({
+      agentId: 'agent-1',
+      agentName: 'Agent One',
+      requestId: 'controls-conversation',
+    }).id;
+  });
+
+  afterEach(async () => {
+    service.close();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('persists one Follow Up and returns its original outcome for an idempotent retry', () => {
+    const input = {
+      commandId: '10000000-0000-4000-8000-000000000001',
+      agentId: 'agent-1',
+      conversationId,
+      text: 'Compare migration cost',
+      images: undefined,
+    };
+
+    const first = service.enqueueFollowUp(input);
+    const retry = service.enqueueFollowUp(input);
+
+    expect(first).toMatchObject({
+      command: 'follow_up',
+      status: 'accepted',
+      pendingItem: { kind: 'follow_up', version: 1, text: input.text, state: 'pending' },
+      queue: { revision: 1, scheduling: 'running', pendingCount: 1 },
+    });
+    expect(retry).toMatchObject({
+      command: 'follow_up',
+      status: 'already_applied',
+      pendingItem: { id: first.pendingItem?.id },
+      queue: first.queue,
+    });
+    expect(service.listPending({ conversationId, limit: 20 }).items).toHaveLength(1);
+
+    expect(() => service.enqueueFollowUp({ ...input, text: 'Different bytes' })).toThrow(
+      ConversationServiceError,
+    );
+  });
+
+  it('keeps interrupts in admission order ahead of ordinary Follow Ups', () => {
+    const activeTurnId = '20000000-0000-4000-8000-000000000001';
+    service.acceptTurn({
+      agentId: 'agent-1',
+      conversationId,
+      turnId: activeTurnId,
+      text: 'Initial request',
+    });
+    service.enqueueFollowUp({
+      commandId: '20000000-0000-4000-8000-000000000002',
+      agentId: 'agent-1',
+      conversationId,
+      text: 'ordinary one',
+    });
+    service.interruptAndEnqueue({
+      commandId: '20000000-0000-4000-8000-000000000003',
+      agentId: 'agent-1',
+      conversationId,
+      expectedActiveTurnId: activeTurnId,
+      text: 'priority one',
+    });
+    service.interruptAndEnqueue({
+      commandId: '20000000-0000-4000-8000-000000000004',
+      agentId: 'agent-1',
+      conversationId,
+      expectedActiveTurnId: activeTurnId,
+      text: 'priority two',
+    });
+    service.enqueueFollowUp({
+      commandId: '20000000-0000-4000-8000-000000000005',
+      agentId: 'agent-1',
+      conversationId,
+      text: 'ordinary two',
+    });
+
+    expect(
+      service.listPending({ conversationId, limit: 20 }).items.map((item) => item.text),
+    ).toEqual(['priority one', 'priority two', 'ordinary one', 'ordinary two']);
+  });
+
+  it('uses item versions for edits and removals and never mutates a claimed item', () => {
+    const added = service.enqueueFollowUp({
+      commandId: '30000000-0000-4000-8000-000000000001',
+      agentId: 'agent-1',
+      conversationId,
+      text: 'draft follow up',
+    });
+    const pendingId = added.pendingItem?.id as string;
+    const edited = service.editPending({
+      commandId: '30000000-0000-4000-8000-000000000002',
+      agentId: 'agent-1',
+      conversationId,
+      pendingId,
+      expectedVersion: 1,
+      text: 'edited follow up',
+    });
+    expect(edited).toMatchObject({
+      status: 'accepted',
+      pendingItem: { id: pendingId, version: 2, text: 'edited follow up' },
+    });
+    expect(
+      service.editPending({
+        commandId: '30000000-0000-4000-8000-000000000003',
+        agentId: 'agent-1',
+        conversationId,
+        pendingId,
+        expectedVersion: 1,
+        text: 'stale edit',
+      }),
+    ).toMatchObject({ status: 'rejected', reason: 'version_conflict' });
+
+    const claim = service.claimNextPending(conversationId);
+    expect(claim?.state).toBe('claimed');
+    expect(
+      service.removePending({
+        commandId: '30000000-0000-4000-8000-000000000004',
+        agentId: 'agent-1',
+        conversationId,
+        pendingId,
+        expectedVersion: 2,
+      }),
+    ).toMatchObject({ status: 'rejected', reason: 'already_claimed' });
+  });
+
+  it('records the exact active execution for Stop and does not retarget an idempotent retry', () => {
+    const firstTurn = '40000000-0000-4000-8000-000000000001';
+    service.acceptTurn({
+      agentId: 'agent-1',
+      conversationId,
+      turnId: firstTurn,
+      text: 'first',
+    });
+    const input = {
+      commandId: '40000000-0000-4000-8000-000000000002',
+      agentId: 'agent-1',
+      conversationId,
+    };
+    const first = service.stopConversation(input);
+    expect(first).toMatchObject({
+      status: 'accepted',
+      affectedTurnId: firstTurn,
+      queue: { scheduling: 'paused' },
+    });
+
+    service.finishTurn({ conversationId, turnId: firstTurn, outcome: 'cancelled' });
+    const secondTurn = '40000000-0000-4000-8000-000000000003';
+    service.acceptTurn({
+      agentId: 'agent-1',
+      conversationId,
+      turnId: secondTurn,
+      text: 'second',
+    });
+    expect(service.stopConversation(input)).toMatchObject({
+      status: 'already_applied',
+      affectedTurnId: firstTurn,
+    });
+  });
+
+  it('rejects a stale Interrupt and pauses pending advancement after restart', () => {
+    const activeTurnId = '50000000-0000-4000-8000-000000000001';
+    service.acceptTurn({
+      agentId: 'agent-1',
+      conversationId,
+      turnId: activeTurnId,
+      text: 'first',
+    });
+    expect(
+      service.interruptAndEnqueue({
+        commandId: '50000000-0000-4000-8000-000000000002',
+        agentId: 'agent-1',
+        conversationId,
+        expectedActiveTurnId: '50000000-0000-4000-8000-000000000099',
+        text: 'stale interrupt',
+      }),
+    ).toMatchObject({ status: 'rejected', reason: 'stale_execution' });
+    expect(service.listPending({ conversationId, limit: 20 }).items).toEqual([]);
+
+    service.enqueueFollowUp({
+      commandId: '50000000-0000-4000-8000-000000000003',
+      agentId: 'agent-1',
+      conversationId,
+      text: 'wait after restart',
+    });
+    service.finishTurn({ conversationId, turnId: activeTurnId, outcome: 'cancelled' });
+    expect(service.claimNextPending(conversationId)).toMatchObject({ state: 'claimed' });
+    service.close();
+    service = new SqliteConversationService({ dataDir: tmpDir, now: () => now });
+    expect(service.get(conversationId)).toMatchObject({
+      pendingCount: 1,
+      pendingScheduling: 'paused',
+    });
+    const restored = service.listPending({ conversationId, limit: 20 }).items;
+    expect(restored).toMatchObject([{ state: 'pending' }]);
+    expect('claimedTurnId' in restored[0]).toBe(false);
   });
 });
 

@@ -30,7 +30,9 @@ The empty chat panel shows your recent conversations and deployed agents for qui
 
 ## Reading tool activity
 
-When your agent uses a tool, it shows up as a card in the transcript. Cards look and behave the same way in Mission Control, the web client, and Dash for iOS.
+When your agent uses a tool, Mission Control and the web client show a tool card. Dash for iOS groups
+consecutive thinking, status, and tool steps into one compact **Activity** row so a long tool run does
+not crowd out the conversation. Tap the row to inspect the individual steps and available results.
 
 **Collapsed by default.** Each card shows a single line: the tool's name, a short summary of what it was asked to do, and what came back. A `bash` card reads its command, a `read` card names the file and says how many lines it returned, a `grep` card says how many matches it found. Tap or click a card to expand it and see the full inputs and result.
 
@@ -132,6 +134,6 @@ Responses arrive in real time as the agent works. You don't wait for the full re
 - **Text chunks** appear word by word as the model generates them
 - **Tool use** shows up when the agent decides to call a tool, as a collapsed card with the tool name and a short summary of its input
 - **Tool results** update the same card when the tool finishes, showing what came back (see [Reading tool activity](#reading-tool-activity))
-- **Thinking** (when enabled) lets you see the agent's internal reasoning process
+- **Thinking** appears only when the model supplies a thinking block
 
 This streaming experience works across all three chat methods — Mission Control, messaging apps, and the WebSocket API.

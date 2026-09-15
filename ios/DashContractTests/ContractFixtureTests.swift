@@ -32,7 +32,10 @@ struct ContractFixtureTests {
   func restFixtures() throws {
     let health = try FixtureLoader.decode(HealthResponse.self, "health-capabilities.json")
     #expect(health.apiVersion == 1)
-    #expect(Set(health.capabilities) == [.conversationSyncV1, .chatResumeV1, .speechV1])
+    #expect(
+      Set(health.capabilities)
+        == [.conversationSyncV1, .chatResumeV1, .conversationControlV2, .speechV1]
+    )
 
     let identity = try FixtureLoader.decode(GatewayIdentityDTO.self, "identity.json")
     #expect(identity.gatewayId.isEmpty == false)
@@ -330,6 +333,42 @@ struct ContractFixtureTests {
     try expectRoundTrip(MobileWSClientFrame.self, "chat-resume.json")
     try expectRoundTrip(MobileWSClientFrame.self, "chat-answer.json")
     try expectRoundTrip(MobileWSClientFrame.self, "chat-cancel.json")
+    for file in [
+      "chat-watch.json",
+      "chat-follow-up.json",
+      "chat-interrupt.json",
+      "chat-stop-conversation.json",
+      "chat-resume-pending.json",
+      "chat-pending-edit.json",
+      "chat-pending-remove.json",
+    ] {
+      try expectRoundTrip(MobileWSClientFrame.self, file)
+    }
+  }
+
+  @Test("conversation controls and pending work round-trip through the wire types")
+  func conversationControlFixtures() throws {
+    let page = try FixtureLoader.decode(
+      ConversationPendingPageDTO.self,
+      "conversation-pending-page.json"
+    )
+    #expect(page.items.count == 1)
+    #expect(page.queue.pendingCount == 1)
+    #expect(page.queue.scheduling == .running)
+
+    for file in ["chat-watched.json", "chat-command-receipt.json", "chat-queue-changed.json"] {
+      try expectRoundTrip(MobileWSServerFrame.self, file)
+    }
+
+    let acceptedJSON = Data(
+      #"{"type":"accepted","id":"t","conversationId":"c","userMessageId":"u","assistantMessageId":"a","revision":2,"seq":1,"pendingItemId":"p"}"#.utf8
+    )
+    let accepted = try ContractCoding.decoder().decode(MobileWSServerFrame.self, from: acceptedJSON)
+    guard case let .accepted(_, _, _, _, _, _, _, _, _, pendingItemID) = accepted else {
+      Issue.record("expected an accepted frame")
+      return
+    }
+    #expect(pendingItemID != nil)
   }
 
   /// Task B7: the hands-free voice frames moved into the contract alongside
@@ -677,7 +716,7 @@ else {
       MobileWSServerFrame.self,
       "chat-accepted-notification.json"
     )
-    guard case let .accepted(_, _, _, _, _, _, origin, kind, _) = notification else {
+    guard case let .accepted(_, _, _, _, _, _, origin, kind, _, _) = notification else {
       Issue.record("expected an accepted frame")
       return
     }
@@ -685,7 +724,9 @@ else {
     #expect(kind == .user)
 
     let child = try FixtureLoader.decode(MobileWSServerFrame.self, "chat-accepted-subagent.json")
-    guard case let .accepted(_, _, _, _, _, _, childOrigin, childKind, childRequestID) = child
+    guard case let .accepted(
+      _, _, _, _, _, _, childOrigin, childKind, childRequestID, _
+    ) = child
     else {
       Issue.record("expected an accepted frame")
       return
@@ -718,7 +759,7 @@ else {
       MobileWSServerFrame.self,
       from: try JSONSerialization.data(withJSONObject: withoutRequestID)
     )
-    guard case let .accepted(_, _, _, _, _, _, _, _, absentRequestID) = uncorrelated else {
+    guard case let .accepted(_, _, _, _, _, _, _, _, absentRequestID, _) = uncorrelated else {
       Issue.record("expected an accepted frame")
       return
     }
@@ -726,7 +767,7 @@ else {
 
     // An ordinary turn carries neither, and absent means `.user` on the wire.
     let ordinary = try FixtureLoader.decode(MobileWSServerFrame.self, "chat-accepted.json")
-    guard case let .accepted(_, _, _, _, _, _, plainOrigin, plainKind, _) = ordinary else {
+    guard case let .accepted(_, _, _, _, _, _, plainOrigin, plainKind, _, _) = ordinary else {
       Issue.record("expected an accepted frame")
       return
     }
@@ -764,7 +805,7 @@ else {
         .utf8
     )
     guard
-      case let .accepted(_, _, _, _, _, _, unknownOrigin, _, _) = try ContractCoding.decoder()
+      case let .accepted(_, _, _, _, _, _, unknownOrigin, _, _, _) = try ContractCoding.decoder()
         .decode(MobileWSServerFrame.self, from: futureOrigin)
     else {
       Issue.record("expected an accepted frame")
@@ -875,6 +916,8 @@ else {
       try decodeIfValid(ConversationPageDTO.self, fixture)
     case ("json", "openapi", "ConversationMessagePage"):
       try decodeIfValid(ConversationMessagePageDTO.self, fixture)
+    case ("json", "openapi", "ConversationPendingPage"):
+      try decodeIfValid(ConversationPendingPageDTO.self, fixture)
     case ("json", "openapi", "SubagentListResponse"):
       try decodeIfValid(SubagentListResponseDTO.self, fixture)
     case ("json", "openapi", "ReplayPage"):
@@ -901,6 +944,13 @@ else {
       ("json", "chat-ws", "ChatCancel"),
       ("json", "chat-ws", "ChatSubscribe"),
       ("json", "chat-ws", "ChatUnsubscribe"),
+      ("json", "chat-ws", "ChatWatch"),
+      ("json", "chat-ws", "ChatFollowUp"),
+      ("json", "chat-ws", "ChatInterruptAndSend"),
+      ("json", "chat-ws", "ChatStopConversation"),
+      ("json", "chat-ws", "ChatResumePending"),
+      ("json", "chat-ws", "ChatEditPending"),
+      ("json", "chat-ws", "ChatRemovePending"),
       ("json", "chat-ws", "VoiceStart"),
       ("json", "chat-ws", "VoiceAudio"),
       ("json", "chat-ws", "VoiceMute"),
@@ -911,6 +961,9 @@ else {
       ("json", "chat-ws", "ChatEvent"),
       ("json", "chat-ws", "ChatDone"),
       ("json", "chat-ws", "ChatError"),
+      ("json", "chat-ws", "ChatWatched"),
+      ("json", "chat-ws", "ChatCommandReceipt"),
+      ("json", "chat-ws", "ChatQueueChanged"),
       ("json", "chat-ws", "VoiceState"),
       ("json", "chat-ws", "VoiceTranscript"),
       ("json", "chat-ws", "VoiceSpeech"),

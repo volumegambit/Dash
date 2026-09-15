@@ -41,6 +41,40 @@ protocol ChatFeaturePersisting: Actor {
     gatewayID: String,
     conversationID: String
   ) async throws
+  func windowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft?
+  func claimWindowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft?
+  func saveWindowDraft(
+    _ draft: WindowConversationDraft,
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws
+  func clearWindowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String,
+    submittedRevision: UInt64
+  ) async throws
+  func stageWindowCommand(
+    _ command: PendingWindowCommand,
+    gatewayID: String,
+    conversationID: String
+  ) async throws -> Bool
+  func resolveWindowCommand(
+    id: String,
+    accepted: Bool,
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft?
   func stagePendingSend(
     _ pending: PendingChatSend,
     gatewayID: String,
@@ -66,6 +100,65 @@ protocol ChatFeaturePersisting: Actor {
     conversationID: String,
     to seq: Int
   ) async throws
+}
+
+/// Existing test and preview stores can remain conversation-scoped. The live
+/// store overrides these methods with durable per-window storage.
+extension ChatFeaturePersisting {
+  func claimWindowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft? {
+    try await windowDraft(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
+  }
+
+  func windowDraft(
+    gatewayID _: String,
+    conversationID _: String,
+    windowID _: String
+  ) async throws -> WindowConversationDraft? {
+    nil
+  }
+
+  func saveWindowDraft(
+    _ draft: WindowConversationDraft,
+    gatewayID _: String,
+    conversationID _: String,
+    windowID _: String
+  ) async throws {
+    _ = draft
+  }
+
+  func clearWindowDraft(
+    gatewayID _: String,
+    conversationID _: String,
+    windowID _: String,
+    submittedRevision _: UInt64
+  ) async throws {}
+
+  func stageWindowCommand(
+    _ command: PendingWindowCommand,
+    gatewayID _: String,
+    conversationID _: String
+  ) async throws -> Bool {
+    _ = command
+    return true
+  }
+
+  func resolveWindowCommand(
+    id _: String,
+    accepted _: Bool,
+    gatewayID _: String,
+    conversationID _: String,
+    windowID _: String
+  ) async throws -> WindowConversationDraft? {
+    nil
+  }
 }
 
 actor LiveChatPersistence: ChatFeaturePersisting {
@@ -103,6 +196,86 @@ actor LiveChatPersistence: ChatFeaturePersisting {
     conversationID: String
   ) async throws {
     try await store.saveDraft(draft, gatewayID: gatewayID, conversationID: conversationID)
+  }
+
+  func windowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft? {
+    try await store.windowDraft(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
+  }
+
+  func claimWindowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft? {
+    try await store.claimWindowDraft(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
+  }
+
+  func saveWindowDraft(
+    _ draft: WindowConversationDraft,
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws {
+    try await store.saveWindowDraft(
+      draft,
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
+  }
+
+  func clearWindowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String,
+    submittedRevision: UInt64
+  ) async throws {
+    try await store.clearWindowDraft(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID,
+      submittedRevision: submittedRevision
+    )
+  }
+
+  func stageWindowCommand(
+    _ command: PendingWindowCommand,
+    gatewayID: String,
+    conversationID: String
+  ) async throws -> Bool {
+    try await store.stageWindowCommand(
+      command,
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    )
+  }
+
+  func resolveWindowCommand(
+    id: String,
+    accepted: Bool,
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft? {
+    try await store.resolveWindowCommand(
+      id: id,
+      accepted: accepted,
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
   }
 
   func stagePendingSend(
@@ -237,6 +410,45 @@ protocol ChatFeatureTransporting: Actor {
   /// reach this client (sub-agents design 7.6).
   func subscribe(agentID: String, conversationID: String) async throws
   func unsubscribe(agentID: String, conversationID: String) async throws
+  func watch(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    sinceSeq: Int
+  ) async throws
+  func followUp(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws
+  func interruptAndSend(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    expectedActiveTurnID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws
+  func stopConversation(id: String, agentID: String, conversationID: String) async throws
+  func resumePending(id: String, agentID: String, conversationID: String) async throws
+  func editPending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int,
+    text: String,
+    images: [MessageImage]
+  ) async throws
+  func removePending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int
+  ) async throws
   /// Starts the hands-free voice session on `conversationID`. `id` is the
   /// caller-generated voice session id every `voice_*` frame carries.
   func voiceStart(id: String, agentID: String, conversationID: String) async throws
@@ -248,6 +460,64 @@ protocol ChatFeatureTransporting: Actor {
   func voicePlayed(id: String, seq: Int) async throws
   func suspendForDetachment() async
   func shutdown() async
+}
+
+extension ChatFeatureTransporting {
+  /// Compatibility implementation for test transports and older adapters.
+  /// The live transport overrides this with the v2 frame.
+  func watch(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    sinceSeq: Int
+  ) async throws {
+    _ = id
+    _ = sinceSeq
+    try await subscribe(agentID: agentID, conversationID: conversationID)
+  }
+
+  func followUp(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws { throw GatewayError.capabilityRequired }
+
+  func interruptAndSend(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    expectedActiveTurnID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws { throw GatewayError.capabilityRequired }
+
+  func stopConversation(id: String, agentID: String, conversationID: String) async throws {
+    throw GatewayError.capabilityRequired
+  }
+
+  func resumePending(id: String, agentID: String, conversationID: String) async throws {
+    throw GatewayError.capabilityRequired
+  }
+
+  func editPending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int,
+    text: String,
+    images: [MessageImage]
+  ) async throws { throw GatewayError.capabilityRequired }
+
+  func removePending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int
+  ) async throws { throw GatewayError.capabilityRequired }
 }
 
 protocol ChatAccessibilityAnnouncing: Actor {
@@ -318,6 +588,12 @@ private enum RecoveryClassificationResult: Equatable, Sendable {
 private enum PendingSendDraftResolution: Equatable, Sendable {
   case restored(ConversationDraft)
   case draftConflict(ConversationDraft)
+}
+
+struct ChatLocalSubmission: Equatable, Sendable {
+  let commandID: String
+  let rowID: String
+  let sourceWindowID: String?
 }
 
 enum ChatStatusPresentation: Equatable, Sendable {
@@ -396,6 +672,98 @@ actor LiveChatFeatureTransport: ChatFeatureTransporting {
 
   func unsubscribe(agentID: String, conversationID: String) async throws {
     try await connection.unsubscribe(agentID: agentID, conversationID: conversationID)
+  }
+
+  func watch(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    sinceSeq: Int
+  ) async throws {
+    try await connection.watch(
+      id: id,
+      agentID: agentID,
+      conversationID: conversationID,
+      sinceSeq: sinceSeq
+    )
+  }
+
+  func followUp(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws {
+    try await connection.followUp(
+      id: id,
+      agentID: agentID,
+      conversationID: conversationID,
+      text: text,
+      images: images
+    )
+  }
+
+  func interruptAndSend(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    expectedActiveTurnID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws {
+    try await connection.interruptAndSend(
+      id: id,
+      agentID: agentID,
+      conversationID: conversationID,
+      expectedActiveTurnID: expectedActiveTurnID,
+      text: text,
+      images: images
+    )
+  }
+
+  func stopConversation(id: String, agentID: String, conversationID: String) async throws {
+    try await connection.stopConversation(id: id, agentID: agentID, conversationID: conversationID)
+  }
+
+  func resumePending(id: String, agentID: String, conversationID: String) async throws {
+    try await connection.resumePending(id: id, agentID: agentID, conversationID: conversationID)
+  }
+
+  func editPending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int,
+    text: String,
+    images: [MessageImage]
+  ) async throws {
+    try await connection.editPending(
+      id: id,
+      agentID: agentID,
+      conversationID: conversationID,
+      pendingID: pendingID,
+      expectedVersion: expectedVersion,
+      text: text,
+      images: images
+    )
+  }
+
+  func removePending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int
+  ) async throws {
+    try await connection.removePending(
+      id: id,
+      agentID: agentID,
+      conversationID: conversationID,
+      pendingID: pendingID,
+      expectedVersion: expectedVersion
+    )
   }
 
   func voiceStart(id: String, agentID: String, conversationID: String) async throws {
@@ -723,6 +1091,9 @@ final class ChatFeature {
   private(set) var draftStatus: ChatDraftStatus = .saved
   private(set) var retryAt: Date?
   private(set) var pendingSendRecovery: RecoverablePendingSend?
+  private(set) var conversationControlAvailable = false
+  private(set) var localSubmission: ChatLocalSubmission?
+  private(set) var windowDraftResolution: ChatWindowDraftResolution?
 
   /// Scroll anchor (iPad goal Phase A, Task 4): the id of the last visible
   /// transcript message, tracked by `ChatView`'s `scrollPosition(id:)`
@@ -748,13 +1119,31 @@ final class ChatFeature {
   private(set) var scrollWasPinnedToBottom = true
 
   var canSend: Bool {
+    canSend(draft: state.draft)
+  }
+
+  func canSend(draft: String) -> Bool {
     guard
-      sendAuthorityIsAvailable,
+      (state.activeTurnID == nil ? sendAuthorityIsAvailable : followUpAuthorityIsAvailable),
       pendingSendReconciliation == nil,
       pendingSendRecovery == nil,
+      pendingComposerCommands.isEmpty,
       isSending == false,
-      state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+      draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         || state.attachments.isEmpty == false
+    else { return false }
+    return true
+  }
+
+  func canSend(draft: String, attachments: [PreparedAttachment]) -> Bool {
+    guard
+      (state.activeTurnID == nil ? sendAuthorityIsAvailable : followUpAuthorityIsAvailable),
+      pendingSendReconciliation == nil,
+      pendingSendRecovery == nil,
+      pendingComposerCommands.isEmpty,
+      isSending == false,
+      draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        || attachments.isEmpty == false
     else { return false }
     return true
   }
@@ -762,12 +1151,51 @@ final class ChatFeature {
   var draftEditingAllowed: Bool {
     isShutdown == false && isSending == false && pendingSendReconciliation == nil
       && pendingSendRecovery == nil
-      && state.activeTurnID == nil
-      && state.composerBlock == nil && isConversationReadOnly == false
+      && pendingComposerCommands.isEmpty
+      && (state.activeTurnID == nil || conversationControlAvailable)
+      && composerBlockAllowsSharedWork && isConversationReadOnly == false
+  }
+
+  var canInterruptAndSend: Bool {
+    canSend && conversationControlAvailable && state.activeTurnID != nil
+  }
+
+  func canInterruptAndSend(draft: String) -> Bool {
+    canSend(draft: draft) && conversationControlAvailable && state.activeTurnID != nil
+  }
+
+  func canInterruptAndSend(draft: String, attachments: [PreparedAttachment]) -> Bool {
+    canSend(draft: draft, attachments: attachments) && conversationControlAvailable
+      && state.activeTurnID != nil
+  }
+
+  var canStopConversation: Bool {
+    conversationControlAvailable && turnMutationAuthorityIsAvailable
+  }
+
+  var canResumePending: Bool {
+    conversationControlAvailable && connection == .online && isAuthoritative
+      && state.activeTurnID == nil && state.queue.pendingCount > 0
+      && state.queue.scheduling == .paused
   }
 
   var canAnswerQuestions: Bool {
     turnMutationAuthorityIsAvailable
+  }
+
+  var pendingQuestionCount: Int {
+    state.messages.reduce(into: 0) { count, message in
+      if let question = message.assistant?.pendingQuestion, question.answer == nil {
+        count += 1
+      }
+    }
+  }
+
+  var firstPendingQuestionRowID: String? {
+    state.messages.first {
+      guard let question = $0.assistant?.pendingQuestion else { return false }
+      return question.answer == nil
+    }?.rowID
   }
 
   var canCancel: Bool {
@@ -836,7 +1264,7 @@ final class ChatFeature {
     if isShutdown { return "Chat session is closed" }
     if pendingSendRecovery != nil { return "A saved message needs recovery" }
     if isConversationReadOnly { return "This conversation is read-only" }
-    if case .remoteActiveTurn? = state.composerBlock {
+    if case .remoteActiveTurn? = state.composerBlock, conversationControlAvailable == false {
       return "This conversation is active on another device"
     }
     if state.composerBlock == .repairRequired { return "Re-pair this gateway to continue" }
@@ -844,7 +1272,9 @@ final class ChatFeature {
     if connection != .online { return "Connect to the gateway to send" }
     if isSending { return "Sending message" }
     if pendingSendReconciliation != nil { return "Confirming whether your message was sent" }
-    if state.activeTurnID != nil { return "A response is in progress" }
+    if state.activeTurnID != nil, conversationControlAvailable == false {
+      return "A response is in progress"
+    }
     return nil
   }
 
@@ -901,6 +1331,8 @@ final class ChatFeature {
   /// `.success` haptic the design asks for. A counter rather than a flag: two
   /// consecutive dictations must each earn their tick.
   private(set) var dictationInsertTick = 0
+  private(set) var dictationInsertion: ChatDictationInsertion?
+  private(set) var dictationOwnerWindowID: String?
   /// The message row's read-aloud feature, or nil when this gateway has no
   /// `speech-v1` — see `syncReadAloud(available:)`. Observable so the menu
   /// item appears the moment the capability lands, which on a cold launch is
@@ -958,6 +1390,8 @@ final class ChatFeature {
   @ObservationIgnored private var submittedAnswers: [String: String] = [:]
   @ObservationIgnored private var localTurnIDs: Set<String> = []
   @ObservationIgnored private var pendingSendReconciliation: PendingChatSend?
+  @ObservationIgnored private var pendingComposerCommands: [String: PendingWindowCommand] = [:]
+  @ObservationIgnored private var dictationSequence: UInt64 = 0
   @ObservationIgnored private var sendCompletionWaiters: [CheckedContinuation<Void, Never>] = []
   @ObservationIgnored private var draftWriteTask: Task<DraftWriteResult, Never>?
   @ObservationIgnored private var draftWriteRevision: UInt64 = 0
@@ -1055,6 +1489,23 @@ final class ChatFeature {
     case .connecting, .reconnecting, .offline, .gatewayOffline:
       break
     }
+  }
+
+  /// Adopts the optional shared-work protocol after the live gateway's
+  /// capability probe lands. Existing gateways continue to use the legacy
+  /// subscription path.
+  func syncConversationControl(available: Bool) async {
+    guard isShutdown == false, conversationControlAvailable != available else { return }
+    conversationControlAvailable = available
+    guard available, hasVisibleHosts, connection == .online else { return }
+    if isSubscribed {
+      isSubscribed = false
+      try? await transport.unsubscribe(
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id
+      )
+    }
+    await subscribeToOpenConversation()
   }
 
   func consumeCanonicalSummary(_ canonical: ConversationSummaryDTO) {
@@ -1225,6 +1676,89 @@ final class ChatFeature {
     await persistDraft()
   }
 
+  func windowDraft(windowID: String) async -> WindowConversationDraft? {
+    guard rejectIfShutdown() == false else { return nil }
+    return try? await persistence.windowDraft(
+      gatewayID: gatewayID,
+      conversationID: state.conversation.id,
+      windowID: windowID
+    )
+  }
+
+  func claimWindowDraft(windowID: String) async -> WindowConversationDraft? {
+    guard rejectIfShutdown() == false else { return nil }
+    do {
+      let claimed = try await persistence.claimWindowDraft(
+        gatewayID: gatewayID,
+        conversationID: state.conversation.id,
+        windowID: windowID
+      )
+      if let claimed,
+        state.draft == claimed.text,
+        state.attachments.map(\.id) == claimed.attachments.map(\.id)
+      {
+        state.draft = ""
+        state.attachments = []
+      }
+      return claimed
+    } catch {
+      state.errorBanner = "Draft couldn't be restored."
+      return nil
+    }
+  }
+
+  func saveWindowDraft(
+    text: String,
+    attachments: [PreparedAttachment],
+    revision: UInt64,
+    windowID: String
+  ) async {
+    guard rejectIfShutdown() == false, composerMutationAllowed else { return }
+    do {
+      try await persistence.saveWindowDraft(
+        WindowConversationDraft(
+          text: text,
+          attachments: attachments,
+          revision: revision,
+          updatedAt: await clock.now()
+        ),
+        gatewayID: gatewayID,
+        conversationID: state.conversation.id,
+        windowID: windowID
+      )
+    } catch is CancellationError {
+      return
+    } catch {
+      state.errorBanner = "Draft couldn't be saved."
+    }
+  }
+
+
+  func saveWindowDraft(text: String, revision: UInt64, windowID: String) async {
+    await saveWindowDraft(
+      text: text,
+      attachments: [],
+      revision: revision,
+      windowID: windowID
+    )
+  }
+
+  func clearWindowDraft(windowID: String, submittedRevision: UInt64) async {
+    guard rejectIfShutdown() == false else { return }
+    do {
+      try await persistence.clearWindowDraft(
+        gatewayID: gatewayID,
+        conversationID: state.conversation.id,
+        windowID: windowID,
+        submittedRevision: submittedRevision
+      )
+    } catch is CancellationError {
+      return
+    } catch {
+      state.errorBanner = "Draft couldn't be saved."
+    }
+  }
+
   /// Appends a dictated transcript to the draft (design §4: dictation never
   /// sends, it only types for you) and persists it, so a crash between the
   /// transcript landing and the user tapping send does not lose the words.
@@ -1246,6 +1780,36 @@ final class ChatFeature {
     }
     dictationInsertTick &+= 1
     await persistDraft()
+  }
+
+  /// Publishes dictated text only to the scene that began recording. The
+  /// scene appends and persists it with its own editor revision.
+  func insertDictation(_ text: String, windowID: String) async {
+    guard rejectIfShutdown() == false, composerMutationAllowed else { return }
+    let addition = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard addition.isEmpty == false, dictationOwnerWindowID == windowID else { return }
+    dictationSequence &+= 1
+    dictationInsertion = ChatDictationInsertion(
+      sourceWindowID: windowID,
+      text: addition,
+      sequence: dictationSequence
+    )
+    dictationInsertTick &+= 1
+  }
+
+  func startDictation(windowID: String) async {
+    guard let dictation, dictationOwnerWindowID == nil || dictationOwnerWindowID == windowID else {
+      return
+    }
+    dictationOwnerWindowID = windowID
+    await dictation.start()
+    if dictation.isBusy == false {
+      dictationOwnerWindowID = nil
+    }
+  }
+
+  func ownsDictation(windowID: String?) -> Bool {
+    dictationOwnerWindowID == windowID
   }
 
   /// Creates or drops the dictation feature as the gateway's `speech-v1`
@@ -1271,10 +1835,18 @@ final class ChatFeature {
     }
     guard dictation == nil, let feature = makeDictation() else { return }
     feature.onInsert = { [weak self] text in
-      await self?.insertDictation(text)
+      guard let self else { return }
+      if let windowID = self.dictationOwnerWindowID {
+        await self.insertDictation(text, windowID: windowID)
+      } else {
+        await self.insertDictation(text)
+      }
     }
     feature.onActivityEnded = { [weak self] in
       guard let self else { return }
+      if feature.failureMessage == nil {
+        self.dictationOwnerWindowID = nil
+      }
       self.syncDictation(available: self.speechIsAvailable)
     }
     dictation = feature
@@ -1285,7 +1857,14 @@ final class ChatFeature {
   private func retireDictation() {
     guard let retiring = dictation else { return }
     dictation = nil
+    dictationOwnerWindowID = nil
     Task { await retiring.shutdown() }
+  }
+
+  func acknowledgeDictationFailure(windowID: String?) {
+    guard ownsDictation(windowID: windowID) else { return }
+    dictation?.acknowledgeFailure()
+    dictationOwnerWindowID = nil
   }
 
   /// Whether voice mode may be offered at all. Driven by `ComposerView`
@@ -1463,6 +2042,17 @@ final class ChatFeature {
     }
   }
 
+  func prepareSelections(
+    _ selections: [ImageSelection],
+    appendingTo attachments: [PreparedAttachment]
+  ) throws -> [PreparedAttachment] {
+    try validator.prepare(selections, appendingTo: attachments)
+  }
+
+  func showComposerError(_ message: String) {
+    state.errorBanner = message
+  }
+
   func removeAttachment(id: UUID) async {
     guard rejectIfShutdown() == false, composerMutationAllowed else { return }
     state.attachments.removeAll { $0.id == id }
@@ -1470,11 +2060,26 @@ final class ChatFeature {
   }
 
   func send() async {
+    await send(
+      payload: ChatComposerPayload(
+        sourceWindowID: nil,
+        revision: nil,
+        text: state.draft,
+        attachments: state.attachments
+      )
+    )
+  }
+
+  func send(payload: ChatComposerPayload) async {
     guard rejectIfShutdown() == false else { return }
-    guard canSend else { return }
-    let text = state.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-    let originalDraft = state.draft
-    let originalAttachments = state.attachments
+    guard canSend(draft: payload.text, attachments: payload.attachments) else { return }
+    if state.activeTurnID != nil {
+      await sendPendingComposer(interrupt: false, payload: payload)
+      return
+    }
+    let text = payload.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let originalDraft = payload.text
+    let originalAttachments = payload.attachments
     let images: [MessageImage]
     do {
       let validated = try validator.prepare([], appendingTo: originalAttachments)
@@ -1493,12 +2098,16 @@ final class ChatFeature {
       localUserID: localUserID,
       draft: originalDraft,
       attachments: originalAttachments,
-      createdAt: await clock.now()
+      createdAt: await clock.now(),
+      sourceWindowID: payload.sourceWindowID,
+      submittedRevision: payload.revision
     )
     guard await stagePendingSend(pending) else { return }
     pendingSendReconciliation = pending
-    state.draft = ""
-    state.attachments = []
+    if payload.sourceWindowID == nil {
+      state.draft = ""
+      state.attachments = []
+    }
     guard stagedSendAuthorityIsAvailable(turnID: turnID) else {
       await restorePendingSendAsDraft(pending)
       return
@@ -1519,6 +2128,11 @@ final class ChatFeature {
           text: text,
           images: images
         )
+      )
+      localSubmission = ChatLocalSubmission(
+        commandID: turnID,
+        rowID: localUserID,
+        sourceWindowID: payload.sourceWindowID
       )
       transportSendInFlightTurnID = turnID
       try await transport.sendTurn(
@@ -1576,6 +2190,293 @@ final class ChatFeature {
           replayDeferredFrames: false
         )
       }
+    }
+  }
+
+  /// Submits text from one window without making that window render another
+  /// window's draft. Assignment and payload capture happen on the main actor
+  /// before `send()` reaches its first suspension.
+  func send(draft: String) async {
+    await send(
+      payload: ChatComposerPayload(
+        sourceWindowID: nil,
+        revision: nil,
+        text: draft,
+        attachments: state.attachments
+      )
+    )
+  }
+
+  /// Places the current draft behind the active response. The gateway owns
+  /// admission and ordering, so every device sees the same Follow Up.
+  func sendFollowUp() async {
+    guard state.activeTurnID != nil else {
+      await send()
+      return
+    }
+    await sendPendingComposer(
+      interrupt: false,
+      payload: ChatComposerPayload(
+        sourceWindowID: nil,
+        revision: nil,
+        text: state.draft,
+        attachments: state.attachments
+      )
+    )
+  }
+
+  func sendFollowUp(draft: String) async {
+    guard state.activeTurnID != nil else {
+      await send(draft: draft)
+      return
+    }
+    await sendPendingComposer(
+      interrupt: false,
+      payload: ChatComposerPayload(
+        sourceWindowID: nil,
+        revision: nil,
+        text: draft,
+        attachments: state.attachments
+      )
+    )
+  }
+
+  func sendFollowUp(payload: ChatComposerPayload) async {
+    guard state.activeTurnID != nil else {
+      await send(payload: payload)
+      return
+    }
+    await sendPendingComposer(interrupt: false, payload: payload)
+  }
+
+  /// Gives this draft priority, atomically asking the gateway to settle the
+  /// exact active run before it starts the new input.
+  func interruptAndSend() async {
+    await sendPendingComposer(
+      interrupt: true,
+      payload: ChatComposerPayload(
+        sourceWindowID: nil,
+        revision: nil,
+        text: state.draft,
+        attachments: state.attachments
+      )
+    )
+  }
+
+  func interruptAndSend(draft: String) async {
+    await sendPendingComposer(
+      interrupt: true,
+      payload: ChatComposerPayload(
+        sourceWindowID: nil,
+        revision: nil,
+        text: draft,
+        attachments: state.attachments
+      )
+    )
+  }
+
+  func interruptAndSend(payload: ChatComposerPayload) async {
+    await sendPendingComposer(interrupt: true, payload: payload)
+  }
+
+  private func sendPendingComposer(interrupt: Bool, payload: ChatComposerPayload) async {
+    guard rejectIfShutdown() == false else { return }
+    guard
+      interrupt
+        ? canInterruptAndSend(draft: payload.text, attachments: payload.attachments)
+        : canSend(draft: payload.text, attachments: payload.attachments)
+    else { return }
+    guard let activeTurnID = state.activeTurnID else { return }
+    let originalDraft = payload.text
+    let text = originalDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    let originalAttachments = payload.attachments
+    let images: [MessageImage]
+    do {
+      let validated = try validator.prepare([], appendingTo: originalAttachments)
+      images = try validated.map { try $0.messageImage() }
+    } catch {
+      state.errorBanner = error.localizedDescription
+      return
+    }
+
+    let command = PendingWindowCommand(
+      id: makeID(),
+      command: interrupt ? .interruptAndSend : .followUp,
+      expectedActiveTurnID: interrupt ? activeTurnID : nil,
+      text: originalDraft,
+      attachments: originalAttachments,
+      sourceWindowID: payload.sourceWindowID ?? "__conversation__",
+      submittedRevision: payload.revision ?? 0,
+      createdAt: await clock.now()
+    )
+    if payload.sourceWindowID != nil {
+      do {
+        guard
+          try await persistence.stageWindowCommand(
+            command,
+            gatewayID: gatewayID,
+            conversationID: state.conversation.id
+          )
+        else {
+          state.errorBanner = "Another message from this window is still being confirmed."
+          return
+        }
+      } catch {
+        state.errorBanner = "That message couldn't be saved before sending."
+        return
+      }
+    }
+    pendingComposerCommands[command.id] = command
+    await transmitWindowCommand(command, images: images, trimmedText: text)
+  }
+
+  func resumePendingWindowCommand(_ command: PendingWindowCommand) async {
+    guard rejectIfShutdown() == false else { return }
+    guard isSending == false else { return }
+    let images: [MessageImage]
+    do {
+      let validated = try validator.prepare([], appendingTo: command.attachments)
+      images = try validated.map { try $0.messageImage() }
+    } catch {
+      state.errorBanner = error.localizedDescription
+      return
+    }
+    pendingComposerCommands[command.id] = command
+    await transmitWindowCommand(
+      command,
+      images: images,
+      trimmedText: command.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+  }
+
+  private func transmitWindowCommand(
+    _ command: PendingWindowCommand,
+    images: [MessageImage],
+    trimmedText: String
+  ) async {
+    isSending = true
+    defer { isSending = false }
+    do {
+      try await ensureConnected()
+      switch command.command {
+      case .interruptAndSend:
+        guard let expectedActiveTurnID = command.expectedActiveTurnID else { return }
+        try await transport.interruptAndSend(
+          id: command.id,
+          agentID: state.conversation.agentId,
+          conversationID: state.conversation.id,
+          expectedActiveTurnID: expectedActiveTurnID,
+          text: trimmedText,
+          images: images
+        )
+      case .followUp:
+        try await transport.followUp(
+          id: command.id,
+          agentID: state.conversation.agentId,
+          conversationID: state.conversation.id,
+          text: trimmedText,
+          images: images
+        )
+      default:
+        return
+      }
+    } catch is CancellationError {
+      return
+    } catch {
+      await applyFailure(error)
+    }
+  }
+
+  private func retryPendingWindowCommands() async {
+    for command in Array(pendingComposerCommands.values) {
+      guard isSending == false else { return }
+      let images: [MessageImage]
+      do {
+        let validated = try validator.prepare([], appendingTo: command.attachments)
+        images = try validated.map { try $0.messageImage() }
+      } catch {
+        state.errorBanner = error.localizedDescription
+        continue
+      }
+      await transmitWindowCommand(
+        command,
+        images: images,
+        trimmedText: command.text.trimmingCharacters(in: .whitespacesAndNewlines)
+      )
+    }
+  }
+
+  func stopConversation() async {
+    guard canStopConversation else { return }
+    let commandID = makeID()
+    isCancelling = true
+    defer { isCancelling = false }
+    do {
+      try await ensureConnected()
+      try await transport.stopConversation(
+        id: commandID,
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id
+      )
+    } catch is CancellationError {
+      return
+    } catch {
+      await applyFailure(error)
+    }
+  }
+
+  func resumePending() async {
+    guard canResumePending else { return }
+    do {
+      try await ensureConnected()
+      try await transport.resumePending(
+        id: makeID(),
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id
+      )
+    } catch is CancellationError {
+      return
+    } catch {
+      await applyFailure(error)
+    }
+  }
+
+  func editPending(_ item: PendingConversationInputDTO, text: String) async {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard conversationControlAvailable, trimmed.isEmpty == false else { return }
+    do {
+      try await ensureConnected()
+      try await transport.editPending(
+        id: makeID(),
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id,
+        pendingID: item.id,
+        expectedVersion: item.version,
+        text: trimmed,
+        images: item.images ?? []
+      )
+    } catch is CancellationError {
+      return
+    } catch {
+      await applyFailure(error)
+    }
+  }
+
+  func removePending(_ item: PendingConversationInputDTO) async {
+    guard conversationControlAvailable else { return }
+    do {
+      try await ensureConnected()
+      try await transport.removePending(
+        id: makeID(),
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id,
+        pendingID: item.id,
+        expectedVersion: item.version
+      )
+    } catch is CancellationError {
+      return
+    } catch {
+      await applyFailure(error)
     }
   }
 
@@ -3094,10 +3995,19 @@ final class ChatFeature {
     do {
       try await ensureConnected()
       guard isSubscribed == false, isShutdown == false else { return }
-      try await transport.subscribe(
-        agentID: state.conversation.agentId,
-        conversationID: state.conversation.id
-      )
+      if conversationControlAvailable {
+        try await transport.watch(
+          id: makeID(),
+          agentID: state.conversation.agentId,
+          conversationID: state.conversation.id,
+          sinceSeq: state.lastAppliedSeq
+        )
+      } else {
+        try await transport.subscribe(
+          agentID: state.conversation.agentId,
+          conversationID: state.conversation.id
+        )
+      }
       isSubscribed = true
     } catch is CancellationError {
       return
@@ -3211,6 +4121,9 @@ final class ChatFeature {
       if reconnectCompleted {
         await replayAndResumeActiveTurn()
       }
+      if transportState == .connected, isSending == false {
+        await retryPendingWindowCommands()
+      }
 
     case .frame(let frame):
       // The hands-free `voice_*` server frames (Task B7) are keyed by voice
@@ -3261,6 +4174,20 @@ final class ChatFeature {
   }
 
   private func consumeFrame(_ frame: MobileWSServerFrame) async {
+    switch frame {
+    case let .commandReceipt(id, _, _, status, _, _, _, reason):
+      await reconcilePendingComposerCommand(
+        id: id,
+        accepted: status == .accepted || status == .alreadyApplied,
+        reason: reason
+      )
+    case let .queueChanged(_, _, commandID):
+      if let commandID {
+        await reconcilePendingComposerCommand(id: commandID, accepted: true, reason: nil)
+      }
+    default:
+      break
+    }
     let wasCoveredByCanonicalState = frame.sequenceForFeature.map {
       $0 <= state.lastAppliedSeq
     } ?? false
@@ -3312,6 +4239,60 @@ final class ChatFeature {
       await refreshCanonical(preserveLiveProjection: true)
     }
     await finishTerminalFrame(frame)
+  }
+
+  private func reconcilePendingComposerCommand(
+    id: String,
+    accepted: Bool,
+    reason: CommandReceiptReason?
+  ) async {
+    guard let pending = pendingComposerCommands.removeValue(forKey: id) else { return }
+    if pending.sourceWindowID != "__conversation__" {
+      do {
+        _ = try await persistence.resolveWindowCommand(
+          id: id,
+          accepted: accepted,
+          gatewayID: gatewayID,
+          conversationID: state.conversation.id,
+          windowID: pending.sourceWindowID
+        )
+        windowDraftResolution = ChatWindowDraftResolution(
+          commandID: id,
+          sourceWindowID: pending.sourceWindowID,
+          submittedRevision: pending.submittedRevision,
+          accepted: accepted
+        )
+      } catch {
+        state.errorBanner = "The gateway replied, but the saved message state couldn't be updated."
+      }
+    }
+    guard accepted else {
+      state.errorBanner = pendingCommandError(reason)
+      return
+    }
+    let sameAttachments = state.attachments.map(\.id) == pending.attachments.map(\.id)
+    if pending.sourceWindowID == "__conversation__", state.draft == pending.text, sameAttachments {
+      state.draft = ""
+      state.attachments = []
+      await persistDraft()
+    }
+  }
+
+  private func pendingCommandError(_ reason: CommandReceiptReason?) -> String {
+    switch reason {
+    case .staleExecution:
+      "The response changed before that interruption arrived. Review and send again."
+    case .versionConflict:
+      "That Follow Up changed on another device. The latest version is shown."
+    case .alreadyClaimed:
+      "That Follow Up has already started."
+    case .notFound:
+      "That Follow Up is no longer in the queue."
+    case .queueEmpty:
+      "There are no Follow Ups to resume."
+    case .invalidState, .unknown, nil:
+      "That action could not be applied. Review the conversation and try again."
+    }
   }
 
   private func finishTerminalFrame(_ frame: MobileWSServerFrame) async {
@@ -3679,8 +4660,26 @@ final class ChatFeature {
       && pendingSendReconciliation == nil
       && pendingSendRecovery == nil
       && state.activeTurnID != nil
-      && state.composerBlock == nil
+      && composerBlockAllowsSharedWork
       && isConversationReadOnly == false
+  }
+
+  private var followUpAuthorityIsAvailable: Bool {
+    isShutdown == false
+      && conversationControlAvailable
+      && connection == .online
+      && isAuthoritative
+      && pendingSendReconciliation == nil
+      && pendingSendRecovery == nil
+      && state.activeTurnID != nil
+      && composerBlockAllowsSharedWork
+      && isConversationReadOnly == false
+  }
+
+  private var composerBlockAllowsSharedWork: Bool {
+    if state.composerBlock == nil { return true }
+    if conversationControlAvailable, case .remoteActiveTurn? = state.composerBlock { return true }
+    return false
   }
 
   private var composerMutationAllowed: Bool {
@@ -3688,7 +4687,7 @@ final class ChatFeature {
       && isSending == false
       && pendingSendReconciliation == nil
       && pendingSendRecovery == nil
-      && state.composerBlock == nil
+      && composerBlockAllowsSharedWork
       && isConversationReadOnly == false
   }
 
@@ -3776,6 +4775,22 @@ final class ChatFeature {
         )
       {
       case .cleared:
+        if let windowID = pending.sourceWindowID,
+          let submittedRevision = pending.submittedRevision
+        {
+          try await persistence.clearWindowDraft(
+            gatewayID: gatewayID,
+            conversationID: state.conversation.id,
+            windowID: windowID,
+            submittedRevision: submittedRevision
+          )
+          windowDraftResolution = ChatWindowDraftResolution(
+            commandID: pending.turnID,
+            sourceWindowID: windowID,
+            submittedRevision: submittedRevision,
+            accepted: true
+          )
+        }
         pendingSendReconciliation = nil
         if summaryOnlyFollowUpTurnID == pending.turnID {
           summaryOnlyFollowUpTurnID = nil
@@ -3883,6 +4898,16 @@ final class ChatFeature {
     case .draftConflict(let draft):
       await applyPendingSendDraftConflict(pending, draft: draft)
     }
+    if let windowID = pending.sourceWindowID,
+      let submittedRevision = pending.submittedRevision
+    {
+      windowDraftResolution = ChatWindowDraftResolution(
+        commandID: pending.turnID,
+        sourceWindowID: windowID,
+        submittedRevision: submittedRevision,
+        accepted: false
+      )
+    }
   }
 
   private func applyPendingSendDraftConflict(
@@ -3927,8 +4952,10 @@ final class ChatFeature {
     }
     localTurnIDs.remove(pending.turnID)
     _ = ChatReducer.reduce(state: &state, action: .sendRejected(turnID: pending.turnID))
-    state.draft = restored.text
-    state.attachments = restored.attachments
+    if pending.sourceWindowID == nil {
+      state.draft = restored.text
+      state.attachments = restored.attachments
+    }
     draftStatus = .saved
   }
 
@@ -4233,17 +5260,20 @@ extension MobileWSServerFrame {
     switch self {
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
       true
-    case .accepted, .event, .done, .error:
+    case .accepted, .event, .done, .error, .watched, .commandReceipt, .queueChanged:
       false
     }
   }
 
   fileprivate var conversationIDForFeature: String? {
     switch self {
-    case let .accepted(_, conversationID, _, _, _, _, _, _, _): conversationID
+    case let .accepted(_, conversationID, _, _, _, _, _, _, _, _): conversationID
     case let .event(_, conversationID, _, _): conversationID
     case let .done(_, conversationID, _, _): conversationID
     case let .error(_, conversationID, _, _, _, _, _): conversationID
+    case let .watched(_, conversationID, _, _),
+      let .commandReceipt(_, conversationID, _, _, _, _, _, _),
+      let .queueChanged(conversationID, _, _): conversationID
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: nil
     }
   }
@@ -4273,14 +5303,14 @@ extension MobileWSServerFrame {
   ///    that missed the start. One read per parent turn.
   fileprivate var refreshesSubagentList: Bool {
     switch self {
-    case let .accepted(_, _, _, _, _, _, origin, _, _): origin == .notification
+    case let .accepted(_, _, _, _, _, _, origin, _, _, _): origin == .notification
     case .done: true
     case let .event(_, _, _, event):
       switch event {
       case .subagentStarted, .subagentFinished: true
       default: false
       }
-    case .error: false
+    case .error, .watched, .commandReceipt, .queueChanged: false
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
@@ -4303,7 +5333,7 @@ extension MobileWSServerFrame {
   fileprivate var isAdmissionOrTerminal: Bool {
     switch self {
     case .accepted, .done, .error: true
-    case .event: false
+    case .event, .watched, .commandReceipt, .queueChanged: false
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
@@ -4311,14 +5341,14 @@ extension MobileWSServerFrame {
   fileprivate var isTerminalForFeature: Bool {
     switch self {
     case .done, .error: true
-    case .accepted, .event: false
+    case .accepted, .event, .watched, .commandReceipt, .queueChanged: false
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
 
   fileprivate var turnIDForFeature: String {
     switch self {
-    case .accepted(let id, _, _, _, _, _, _, _, _),
+    case .accepted(let id, _, _, _, _, _, _, _, _, _),
       .event(let id, _, _, _),
       .done(let id, _, _, _),
       .error(let id, _, _, _, _, _, _),
@@ -4328,19 +5358,23 @@ extension MobileWSServerFrame {
       .voiceError(let id, _, _),
       .voiceStopped(let id, _):
       id
+    case let .watched(id, _, _, _): id
+    case let .commandReceipt(id, _, _, _, _, _, _, _): id
+    case let .queueChanged(conversationID, _, commandID): commandID ?? conversationID
     }
   }
 
   fileprivate var sequenceForFeature: Int? {
     switch self {
-    case .accepted(_, _, _, _, _, let seq, _, _, _):
+    case .accepted(_, _, _, _, _, let seq, _, _, _, _):
       seq
     case .event(_, _, let seq, _),
       .done(_, _, let seq, _):
       seq
     case .error(_, _, let seq, _, _, _, _):
       seq
-    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+    case .watched, .commandReceipt, .queueChanged,
+      .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
       nil
     }
   }

@@ -13,6 +13,11 @@ struct ChatView: View {
   @Environment(AppModel.self) private var appModel
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+  @SceneStorage("dash.chat.window-id") private var windowID = UUID().uuidString
+  /// Reader, disclosure, and transient command state is owned by this view.
+  /// A second window observes the same canonical `ChatFeature` without
+  /// inheriting this window's scroll intent or open inspector.
+  @State private var presentation = ChatPresentationState()
 
   /// iOS 17 only (audit #4): "the bottom sentinel is within 100pt of the
   /// viewport's bottom edge" — drives both auto-follow and the jump button
@@ -28,6 +33,7 @@ struct ChatView: View {
   /// Mirrors `onScrollPhaseChange` (iOS 18+): true for tracking /
   /// interacting / decelerating — i.e. the user, not us, is moving the view.
   @State private var scrollPhaseIsUserDriven = false
+  @State private var intentBeforeInteraction: ChatReadingIntent = .following
   /// The transcript's visible (inset-adjusted) height. iOS 17 keeps it fresh
   /// through `ScrollViewportHeightKey` (audit #4's fallback, also its
   /// `isNearBottom` input); iOS 18+ through `onScrollGeometryChange`. Both
@@ -45,6 +51,8 @@ struct ChatView: View {
   /// per-host latch, so resetting to `false` on every re-host is the correct
   /// behavior, unlike the pinned-vs-anchored intent it guards.
   @State private var hasRestoredScrollPosition = false
+  @State private var passageRestoreRequest: ChatPassageAnchor?
+  @State private var questionNavigationRequest: String?
 
   private let bottomID = "chat-bottom"
   /// Named coordinate space for the transcript ScrollView — anchors
@@ -140,14 +148,15 @@ struct ChatView: View {
   /// from inside their own bodies, so a list re-read on every parent turn's
   /// `done` invalidates those two views and not this whole screen.
   @State private var isTasksPresented = false
+  @State private var isPendingWorkPresented = false
 
   var body: some View {
-    VStack(spacing: 0) {
+    let content = VStack(spacing: 0) {
       if showsAgentChip {
         agentChipBar
       }
 
-      if let presentation = feature.statusPresentation {
+      if let presentation = feature.statusPresentation, feature.pendingQuestionCount == 0 {
         ChatStatusBanner(presentation: presentation) {
           Task { await feature.retryConnection() }
         }
@@ -157,6 +166,8 @@ struct ChatView: View {
 
       transcript
     }
+
+    let surface = content
     // Handles drops released over the TRANSCRIPT only, in practice — Task 8
     // found (via `IPadUITests.testDroppingAnImageAttachesIt`, retargeted to
     // each drop location with everything else held constant) that a drag
@@ -178,7 +189,7 @@ struct ChatView: View {
     .dropDestination(for: DroppedImage.self) { items, _ in
       let selections = DroppedImage.selections(from: items)
       guard selections.isEmpty == false else { return false }
-      Task { await feature.addSelections(selections) }
+      addDroppedSelections(selections)
       return true
     } isTargeted: { isDropTargeted = $0 }
     .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -186,7 +197,16 @@ struct ChatView: View {
         // §8.4's pinned strip. It renders nothing while no child is live, so
         // placing it costs no read of the count here.
         TasksStrip { isTasksPresented = true }
-        ComposerView(focusRequest: composerFocusRequest, isDropTargeted: $isDropTargeted)
+        ChatControlStrip(
+          priority: presentation.controlPriority,
+          openPending: { isPendingWorkPresented = true },
+          reviewRequiredInput: reviewRequiredInput
+        )
+        ComposerView(
+          windowDraft: $presentation.windowDraft,
+          focusRequest: composerFocusRequest,
+          isDropTargeted: $isDropTargeted
+        )
       }
     }
     // Applied AFTER `.safeAreaInset`, not before, so the dashed highlight's
@@ -221,7 +241,8 @@ struct ChatView: View {
       )
       .equatable()
     }
-    .navigationTitle(feature.state.conversation.title)
+    let chrome = surface
+      .navigationTitle(feature.state.conversation.title)
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       ToolbarItem(placement: .principal) {
@@ -236,7 +257,8 @@ struct ChatView: View {
         conversationOptionsMenu
       }
     }
-    .sheet(isPresented: $isModelPickerPresented) {
+    let presentations = chrome
+      .sheet(isPresented: $isModelPickerPresented) {
       if let agentsFeature = appModel.agentsFeature {
         ChatModelPickerSheet(
           agentID: feature.state.conversation.agentId,
@@ -266,6 +288,11 @@ struct ChatView: View {
         .modifier(FormSheetSizing())
       }
     }
+    .sheet(isPresented: $isPendingWorkPresented) {
+      PendingWorkSheet()
+        .presentationDetents(horizontalSizeClass == .regular ? [.large] : [.medium, .large])
+        .modifier(FormSheetSizing())
+    }
     .overlay(alignment: .top) {
       if let toast = modelChangeToast {
         Text("Model changed to \(toast.modelLabel)")
@@ -279,8 +306,21 @@ struct ChatView: View {
           .accessibilityIdentifier("chat.modelToast")
       }
     }
-    .task {
+    let lifecycle = presentations
+      .task {
       await feature.appear()
+      let restoredWindowDraft = await feature.claimWindowDraft(windowID: windowID)
+      presentation.windowDraft.seed(
+        text: restoredWindowDraft?.text ?? "",
+        attachments: restoredWindowDraft?.attachments ?? [],
+        windowID: windowID,
+        revision: restoredWindowDraft?.revision ?? 0,
+        pendingCommand: restoredWindowDraft?.pendingCommand
+      )
+      if let pendingCommand = restoredWindowDraft?.pendingCommand {
+        await feature.resumePendingWindowCommand(pendingCommand)
+      }
+      syncPresentationState()
     }
     // Read aloud follows the SAME gate the composer's mic does
     // (`AppModel.speechAvailable`), driven from the view for the same reason:
@@ -293,6 +333,24 @@ struct ChatView: View {
       feature.syncReadAloud(available: available)
     }
     .task {
+      await feature.syncConversationControl(available: appModel.conversationControlAvailable)
+    }
+    .onChange(of: appModel.conversationControlAvailable) { _, available in
+      Task { await feature.syncConversationControl(available: available) }
+    }
+    .onChange(of: feature.connection) { _, _ in syncPresentationState() }
+    .onChange(of: feature.connection) { _, connection in
+      guard connection == .online, let command = presentation.windowDraft.pendingCommand else {
+        return
+      }
+      Task { await feature.resumePendingWindowCommand(command) }
+    }
+    .onChange(of: feature.state.queue) { _, _ in syncPresentationState() }
+    .onChange(of: feature.state.activeTurnID) { _, _ in syncPresentationState() }
+    .onChange(of: feature.isCancelling) { _, _ in syncPresentationState() }
+    .onChange(of: feature.pendingQuestionCount) { _, _ in syncPresentationState() }
+    .onChange(of: feature.statusPresentation) { _, _ in syncPresentationState() }
+    .task {
       // Model picker (goal 2026-09-04): the toolbar label wants the catalog's
       // human label ("GPT-5", not "gpt-5"), so load it with the view rather
       // than only when the sheet opens.
@@ -300,75 +358,9 @@ struct ChatView: View {
         await appModel.agentsFeature?.loadModels()
       }
     }
-    .onDisappear {
-      // Compose-first new chat (Task 3 review, I1): backing out of a
-      // compose-created, still-empty conversation without ever sending
-      // anything used to leave a permanent empty "New Conversation" row —
-      // the exact anti-pattern audit #16 targets (the pre-compose-first
-      // `NewConversationView` Form never had this problem, since creation
-      // only happened after an explicit "Start conversation" tap). Values
-      // captured synchronously, before the `Task`, since navigation state
-      // can keep changing after this closure returns:
-      //
-      // - `hasActivity` — this conversation is exempt from cleanup once it
-      //   has ever had a message or an active turn, OR (final-review fix
-      //   C2 — see `ChatState.hasComposeActivity`'s doc comment)
-      //   a non-empty draft, a staged attachment, or a title the user
-      //   already changed away from the gateway's default.
-      // - `stillNavigatedTo` — distinguishes a genuine "user backed out of
-      //   this conversation" from a transient tab-switch-away (which also
-      //   fires `onDisappear` — see `ChatFeature.disappear()`'s existing
-      //   use of the same hook to suspend the connection — but doesn't
-      //   remove this route from navigation, only hides it behind another
-      //   tab). Branches on presentation exactly like `ConversationListView
-      //   .isSelected(_:)` does, for the same reason: a compact back-button
-      //   pop mutates the BOUND `conversationPath` array (that's what makes
-      //   bound-path navigation work), but has no knowledge of
-      //   `splitConversationSelection` at all — that property is only ever
-      //   written by `AppModel`'s own navigation methods, never cleared by
-      //   an interactive pop. Checking it for compact too (an earlier
-      //   version of this did) meant it stayed permanently stale at
-      //   whatever was last opened, silently defeating cleanup on iPhone
-      //   entirely — caught by
-      //   `testComposeThenBackWithoutSendingLeavesNoPermanentRow`. Regular
-      //   width has the opposite asymmetry: its detail column's own
-      //   NavigationStack isn't bound to `conversationPath` at all, so
-      //   `splitConversationSelection` is the only thing that actually
-      //   tracks what's open there.
-      let conversationID = feature.state.conversation.id
-      let hasActivity = feature.state.hasComposeActivity
-      let stillNavigatedTo: Bool
-      switch AdaptiveNavigationPolicy.presentation(horizontalSizeClass: horizontalSizeClass) {
-      case .compact:
-        stillNavigatedTo = appModel.conversationPath.contains(.transcript(conversationID))
-      case .regular:
-        stillNavigatedTo = appModel.splitConversationSelection == .transcript(conversationID)
-      }
-      Task {
-        await feature.disappear()
-        // `feature.hasVisibleHosts` (whole-branch final review, blocking 1):
-        // `stillNavigatedTo` above is computed from the MAIN window's
-        // navigation state alone, so it is structurally blind to the
-        // chat-only scene `ConversationWindowView` puts on screen. Without
-        // this second condition, tapping a different conversation in the main
-        // window while the same one is open in its own window ran BOTH
-        // cleanups against a transcript that is still visible — discarding
-        // the other window's scroll position, and deleting the conversation
-        // outright when it was a still-empty compose-created one.
-        guard stillNavigatedTo == false, feature.hasVisibleHosts == false else { return }
-        // Scroll anchor (iPad goal Phase A, Task 4): only drop the
-        // remembered position when the conversation is genuinely being
-        // left, mirroring the compose-cleanup branch right below — a
-        // transient re-host (size-class flip) also fires `onDisappear` but
-        // keeps `stillNavigatedTo == true`, so the anchor survives it.
-        feature.clearScrollAnchor()
-        await appModel.conversationListFeature?.discardIfUnusedComposeCreation(
-          id: conversationID,
-          hasActivity: hasActivity
-        )
-      }
-    }
-    .alert("Rename conversation", isPresented: $isRenamePresented) {
+    .onDisappear(perform: handleDisappear)
+    return lifecycle
+      .alert("Rename conversation", isPresented: $isRenamePresented) {
       TextField("Title", text: $renameTitle)
       Button("Cancel", role: .cancel) {}
       Button("Rename") {
@@ -425,6 +417,51 @@ struct ChatView: View {
       )
       // Presentation audit (iPad goal Phase D, Task 11 / design §4).
       .modifier(FormSheetSizing())
+    }
+  }
+
+  private func syncPresentationState() {
+    presentation.connection = feature.connection
+    presentation.pendingScheduling = feature.state.queue.scheduling
+    presentation.pendingCount = feature.state.queue.pendingCount
+    presentation.recoveryMessage = feature.statusPresentation.map { String(describing: $0) }
+    if feature.pendingQuestionCount > 0 {
+      presentation.execution = .needsInput(count: feature.pendingQuestionCount)
+    } else if feature.isCancelling {
+      presentation.execution = .stopping(commandID: feature.state.activeTurnID ?? "stop")
+    } else {
+      presentation.execution = feature.state.activeTurnID == nil ? .idle : .working
+    }
+  }
+
+  private func reviewRequiredInput() {
+    guard let rowID = feature.firstPendingQuestionRowID else { return }
+    questionNavigationRequest = rowID
+  }
+
+  private func handleDisappear() {
+    // Capture navigation and activity synchronously. Navigation can continue
+    // changing while the asynchronous disconnect and cleanup finish.
+    let conversationID = feature.state.conversation.id
+    let hasActivity = feature.state.hasComposeActivity
+    let stillNavigatedTo: Bool
+    switch AdaptiveNavigationPolicy.presentation(horizontalSizeClass: horizontalSizeClass) {
+    case .compact:
+      stillNavigatedTo = appModel.conversationPath.contains(.transcript(conversationID))
+    case .regular:
+      stillNavigatedTo = appModel.splitConversationSelection == .transcript(conversationID)
+    }
+
+    Task {
+      await feature.disappear()
+      guard stillNavigatedTo == false else { return }
+      // Another scene may still host this conversation even when the main
+      // window navigated away. Preserve that reader's draft and passage.
+      guard feature.hasVisibleHosts == false else { return }
+      await appModel.conversationListFeature?.discardIfUnusedComposeCreation(
+        id: conversationID,
+        hasActivity: hasActivity
+      )
     }
   }
 
@@ -534,7 +571,7 @@ struct ChatView: View {
     @ViewBuilder
     private var scrollAnchorProbe: some View {
       if UITestProbe.isScrollAnchorProbeEnabled {
-        Text(feature.scrollAnchorMessageID ?? "none")
+        Text(presentation.passage?.rowID ?? "none")
           .font(.system(size: 1))
           .foregroundStyle(.clear)
           .allowsHitTesting(false)
@@ -553,8 +590,15 @@ struct ChatView: View {
         }
         .overlay(alignment: .bottomTrailing) {
           if showsJumpToBottom {
-            JumpToBottomButton {
-              jumpToBottom(proxy)
+            TranscriptNavigationButton(
+              returnsToPassage: presentation.reveal?.displacedPassage != nil,
+              unreadCount: presentation.unreadMeaningfulUpdates
+            ) {
+              if presentation.reveal?.displacedPassage != nil {
+                returnToReading(proxy)
+              } else {
+                jumpToBottom(proxy)
+              }
             }
             .padding(.trailing, 16)
             .padding(.bottom, 16)
@@ -562,20 +606,36 @@ struct ChatView: View {
           }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: showsJumpToBottom)
+        .onChange(of: passageRestoreRequest) { _, passage in
+          guard let passage else { return }
+          restorePassage(passage, proxy: proxy)
+          passageRestoreRequest = nil
+        }
+        .onChange(of: questionNavigationRequest) { _, rowID in
+          guard let rowID else { return }
+          presentation.readingIntent = .navigating
+          isPinnedToBottom = false
+          withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+            proxy.scrollTo(rowID, anchor: .center)
+          }
+          presentation.userRead(
+            ChatPassageAnchor(rowID: rowID, screenY: Double(viewportHeight / 2))
+          )
+          questionNavigationRequest = nil
+        }
         .onAppear {
           // Scroll anchor (iPad goal Phase A, Task 4; review fix, Important
           // 2): the restore decision is taken from state that SURVIVES a
-          // re-host — `feature.scrollAnchorMessageID` and
-          // `feature.scrollWasPinnedToBottom` — never from the local
-          // `isNearBottom` `@State`, which resets to its `true` default on
+          // re-host — this window's passage and reading intent — never from
+          // the local `isNearBottom` `@State`, which resets to `true` on
           // exactly the re-host this feature exists for and is not
           // guaranteed to have been refreshed by
           // `onScrollGeometryChange`/`onPreferenceChange` before this
           // closure runs. The choice itself is `ChatScrollRestoration`'s,
           // so it is unit-testable without rendering SwiftUI.
           switch ChatScrollRestoration.decide(
-            anchor: feature.scrollAnchorMessageID,
-            wasPinnedToBottom: feature.scrollWasPinnedToBottom,
+            anchor: presentation.passage?.rowID,
+            wasPinnedToBottom: presentation.readingIntent == .following,
             // `rowID`, not `id` (merge with main, 2026-09-07): main re-keyed
             // `MessageListView`'s `ForEach` to `\.rowID`, so the identity
             // `scrollPosition(id:)` reports and `scrollTo` matches is the
@@ -590,16 +650,12 @@ struct ChatView: View {
             // the transcript back up to a stale position (the Minor note's
             // "two mechanisms on one ScrollView": this is how they are kept
             // in agreement rather than by adding a third).
-            feature.scrollAnchorMessageID = nil
+            presentation.passage = nil
             // Record the intent this branch just acted on (deferred Task 4
             // fix). `decide` also returns `.bottom` when the anchor no
             // longer exists in the loaded transcript — with
-            // `scrollWasPinnedToBottom == false` that left the feature
-            // claiming "scrolled away" while the transcript was in fact
-            // pinned to the bottom, and nothing corrected it until an
-            // `isNearBottom` transition that a user sitting at the bottom
-            // never makes.
-            feature.recordScrollPinnedToBottom(true)
+            // an absent passage that otherwise leaves reader intent stale.
+            presentation.showLatest()
             isPinnedToBottom = true
             scrollToBottom(proxy, animated: false)
           case .message(let id):
@@ -616,24 +672,6 @@ struct ChatView: View {
           }
           hasRestoredScrollPosition = true
         }
-        .onChange(of: showsJumpToBottom) { _, showsJump in
-          // Mirror the pinned-vs-scrolled-away intent onto the feature, which
-          // outlives this view. Gated on the restore having already run: a
-          // fresh host starts at content offset 0, so a geometry report that
-          // lands BEFORE `onAppear` describes the un-restored ScrollView, not
-          // where the user actually was. Ignoring those leaves the feature
-          // holding its pre-re-host value, which is precisely the truth the
-          // restore needs.
-          //
-          // Keyed on `showsJumpToBottom`, not on `isNearBottom` (merge with
-          // main, 2026-09-07): main's iOS 18+ geometry callback stopped
-          // writing `isNearBottom` altogether — it maintains
-          // `isPinnedToBottom` instead — so an `onChange(of: isNearBottom)`
-          // would be dead code on every OS the fleet actually runs, and the
-          // feature would keep its stale `true` forever.
-          guard hasRestoredScrollPosition else { return }
-          feature.recordScrollPinnedToBottom(showsJump == false)
-        }
         .onChange(of: transcriptSignature) { oldValue, newValue in
           // iOS 17 only: follow the stream by scrolling to the sentinel on
           // every delta. Not animated — the previous 0.2s ease on every
@@ -641,8 +679,29 @@ struct ChatView: View {
           // rest. iOS 18+ needs nothing here: while pinned, the bottom
           // anchor for size changes keeps the tail in view by itself.
           if #unavailable(iOS 18.0) {
-            guard oldValue != newValue, isNearBottom else { return }
+            guard oldValue != newValue, presentation.readingIntent == .following else { return }
             scrollToBottom(proxy, animated: false)
+          }
+        }
+        .onChange(of: meaningfulSignature) { oldValue, newValue in
+          guard oldValue != newValue else { return }
+          presentation.receive(.turn, remote: true)
+        }
+        .onChange(of: feature.localSubmission) { _, submission in
+          guard let submission else { return }
+          guard submission.sourceWindowID == nil || submission.sourceWindowID == windowID else {
+            return
+          }
+          if let rowID = presentation.passage?.rowID {
+            presentation.userRead(
+              ChatPassageAnchor(rowID: rowID, screenY: Double(firstRowFrame.minY))
+            )
+          }
+          guard presentation.revealLocalExchange(commandID: submission.commandID) else { return }
+          var transaction = Transaction()
+          transaction.disablesAnimations = true
+          withTransaction(transaction) {
+            proxy.scrollTo(submission.rowID, anchor: .center)
           }
         }
         .onChange(of: feature.state.messages.first?.rowID) { previousFirst, currentFirst in
@@ -651,7 +710,7 @@ struct ChatView: View {
     }
   }
 
-  /// Two-way binding onto `feature.scrollAnchorMessageID` for
+  /// Two-way binding onto this window's passage anchor for
   /// `scrollPosition(id:anchor:)` below: SwiftUI both reads it (to restore
   /// position on a re-host) and writes it (as the user scrolls, tracking
   /// the topmost visible row) through this binding.
@@ -671,14 +730,17 @@ struct ChatView: View {
   /// `nil` from SwiftUI is ignored rather than written, because with the
   /// getter deliberately reporting `nil` a write-back of `nil` would erase a
   /// good anchor. The two places that genuinely mean "forget it" —
-  /// `ChatFeature.clearScrollAnchor()` and the `.bottom` restore branch —
+  /// `ChatPresentationState.showLatest()` and the `.bottom` restore branch —
   /// set the property directly, not through this binding.
   private var anchorBinding: Binding<String?> {
     Binding(
-      get: { showsJumpToBottom ? feature.scrollAnchorMessageID : nil },
+      get: { showsJumpToBottom ? presentation.passage?.rowID : nil },
       set: { newValue in
         guard let newValue else { return }
-        feature.scrollAnchorMessageID = newValue
+        presentation.passage = ChatPassageAnchor(
+          rowID: newValue,
+          screenY: Double(firstRowFrame.minY)
+        )
       }
     )
   }
@@ -718,6 +780,7 @@ struct ChatView: View {
   /// used to read `isNearBottom` directly now goes through this, so nothing
   /// reads a value that main stopped updating on iOS 18+.
   private var showsJumpToBottom: Bool {
+    if presentation.readingIntent != .following { return true }
     if #available(iOS 18.0, *) {
       return isPinnedToBottom == false
     } else {
@@ -726,8 +789,27 @@ struct ChatView: View {
   }
 
   private func jumpToBottom(_ proxy: ScrollViewProxy) {
+    presentation.showLatest()
     isPinnedToBottom = true
     scrollToBottom(proxy, animated: true)
+  }
+
+  private func returnToReading(_ proxy: ScrollViewProxy) {
+    guard let anchor = presentation.backToReading() else { return }
+    restorePassage(anchor, proxy: proxy)
+  }
+
+  private func restorePassage(_ anchor: ChatPassageAnchor, proxy: ScrollViewProxy) {
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    withTransaction(transaction) {
+      let viewportFraction = viewportHeight > 0 ? anchor.screenY / viewportHeight : 0
+      proxy.scrollTo(
+        anchor.rowID,
+        anchor: UnitPoint(x: 0.5, y: min(max(viewportFraction, 0), 1))
+      )
+    }
+    presentation.userRead(anchor)
   }
 
   /// Keeps `isNearBottom` accurate on every supported OS version (audit #4,
@@ -769,23 +851,44 @@ struct ChatView: View {
       transcriptScrollView
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .defaultScrollAnchor(.top, for: .alignment)
-        .defaultScrollAnchor(isPinnedToBottom ? .bottom : .top, for: .sizeChanges)
+        .defaultScrollAnchor(
+          presentation.readingIntent == .following ? .bottom : .top,
+          for: .sizeChanges
+        )
         .onScrollPhaseChange { previousPhase, phase, context in
           let userDriven = phase == .tracking || phase == .interacting || phase == .decelerating
           scrollPhaseIsUserDriven = userDriven
+          if phase == .tracking, previousPhase == .idle {
+            intentBeforeInteraction = presentation.readingIntent
+            presentation.userBeganInteraction()
+          }
           // The finger (or its fling) has come to rest: decide from where it
           // left the view. Independent of whether the geometry callback saw
           // the movement first — for a short, quick drag it may not have.
           let previousUserDriven =
             previousPhase == .tracking || previousPhase == .interacting
             || previousPhase == .decelerating
-          if previousUserDriven, phase == .idle || phase == .decelerating {
+          if previousUserDriven, phase == .idle {
             let distance = ChatScrollGeometry.distanceFromBottom(
               contentHeight: context.geometry.contentSize.height,
               visibleMaxY: context.geometry.visibleRect.maxY,
               bottomInset: context.geometry.contentInsets.bottom
             )
             isPinnedToBottom = ChatScrollGeometry.isPinnedAtGestureEnd(distance: distance)
+            if isPinnedToBottom, intentBeforeInteraction == .following {
+              presentation.interactionEnded(didMoveAway: false)
+            } else {
+              let anchor: ChatPassageAnchor?
+              if let rowID = presentation.passage?.rowID {
+                anchor = ChatPassageAnchor(
+                  rowID: rowID,
+                  screenY: Double(firstRowFrame.minY)
+                )
+              } else {
+                anchor = nil
+              }
+              presentation.userRead(anchor)
+            }
           }
         }
         .onScrollGeometryChange(for: TranscriptScrollMetrics.self) { geometry in
@@ -806,7 +909,8 @@ struct ChatView: View {
             ) {
               isPinnedToBottom = pinned
             }
-          } else if ChatScrollGeometry.pinnedTranscriptNeedsRepin(
+          } else if presentation.readingIntent == .following,
+            ChatScrollGeometry.pinnedTranscriptNeedsRepin(
             previous: previous,
             current: current,
             isPinned: isPinnedToBottom
@@ -835,10 +939,18 @@ struct ChatView: View {
         )
         .onPreferenceChange(ScrollViewportHeightKey.self) { viewportHeight = $0 }
         .onPreferenceChange(BottomSentinelOffsetKey.self) { sentinelMinY in
-          isNearBottom = ChatScrollGeometry.isNearBottom(
+          let wasNearBottom = isNearBottom
+          let nearBottom = ChatScrollGeometry.isNearBottom(
             sentinelMinY: sentinelMinY,
             viewportHeight: viewportHeight
           )
+          isNearBottom = nearBottom
+          if wasNearBottom, nearBottom == false {
+            let anchor = presentation.passage ?? feature.state.messages.first.map {
+              ChatPassageAnchor(rowID: $0.rowID, screenY: Double(firstRowFrame.minY))
+            }
+            presentation.userRead(anchor)
+          }
         }
     }
   }
@@ -913,7 +1025,16 @@ struct ChatView: View {
               // a list re-read invalidates the sub-agent ROWS and not
               // `ChatView.body`'s whole transcript.
               restStatus: { feature.restSubagentStatus($0) }
-            )
+            ),
+            onActivityInspectorOpen: { activityID, triggerID in
+              presentation.openInspector(activityID: activityID, triggerID: triggerID)
+            },
+            onActivityInspectorDismiss: {
+              guard let restoration = presentation.dismissInspector(),
+                let passage = restoration.passage
+              else { return }
+              passageRestoreRequest = passage
+            }
           )
         }
 
@@ -976,6 +1097,10 @@ struct ChatView: View {
 
   private var transcriptSignature: ChatTranscriptSignature {
     ChatTranscriptSignature.of(feature.state.messages)
+  }
+
+  private var meaningfulSignature: ChatMeaningfulSignature {
+    ChatMeaningfulSignature.of(feature.state.messages)
   }
 
   private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -1196,6 +1321,29 @@ struct ChatView: View {
     appModel.conversationListFeature?.mutationError?.userMessage
       ?? "Dash couldn't complete the update. Try again."
   }
+
+  private func addDroppedSelections(_ selections: [ImageSelection]) {
+    do {
+      var next = presentation.windowDraft
+      let attachments = try feature.prepareSelections(
+        selections,
+        appendingTo: next.attachments
+      )
+      next.replaceAttachments(attachments)
+      presentation.windowDraft = next
+      guard let windowID = next.windowID else { return }
+      Task {
+        await feature.saveWindowDraft(
+          text: next.text,
+          attachments: next.attachments,
+          revision: next.revision,
+          windowID: windowID
+        )
+      }
+    } catch {
+      feature.showComposerError(error.localizedDescription)
+    }
+  }
 }
 
 /// Plain-text transcript export for the chat-screen toolbar's Share
@@ -1282,6 +1430,27 @@ struct ChatTranscriptSignature: Equatable {
       messageID: last.id,
       status: last.status,
       contentCount: contentCount
+    )
+  }
+}
+
+/// Counts events worth interrupting a reader for without treating every
+/// streamed token as a new unread item.
+struct ChatMeaningfulSignature: Equatable {
+  let messageCount: Int
+  let messageID: String?
+  let status: MessageStatus?
+  let toolCount: Int
+  let questionID: String?
+
+  static func of(_ messages: [ChatMessageState]) -> ChatMeaningfulSignature {
+    let last = messages.last
+    return ChatMeaningfulSignature(
+      messageCount: messages.count,
+      messageID: last?.id,
+      status: last?.status,
+      toolCount: last?.assistant?.toolCards.count ?? 0,
+      questionID: last?.assistant?.pendingQuestion?.id
     )
   }
 }
@@ -1497,28 +1666,42 @@ private struct ScrollViewportHeightKey: PreferenceKey {
 /// floating-action button — matching the app's existing icon-only circular
 /// controls (`ComposerView`'s send/cancel buttons) — rather than porting the
 /// web pill verbatim, per the app's own rounded-native design language.
-private struct JumpToBottomButton: View {
+private struct TranscriptNavigationButton: View {
+  let returnsToPassage: Bool
+  let unreadCount: Int
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
-      Image(systemName: "arrow.down")
-        .font(.body.weight(.semibold))
+      HStack(spacing: 6) {
+        Image(systemName: returnsToPassage ? "arrow.turn.up.left" : "arrow.down")
+        if returnsToPassage {
+          Text("Back to reading")
+        } else {
+          Text(unreadCount > 0 ? "Latest · \(unreadCount)" : "Latest")
+        }
+      }
+        .font(.subheadline.weight(.semibold))
         .foregroundStyle(DashTheme.accent)
-        .frame(width: 40, height: 40)
-        .background(.regularMaterial, in: Circle())
-        .overlay(Circle().strokeBorder(Color.primary.opacity(DashTheme.Opacity.strokeSubtle)))
+        .padding(.horizontal, 13)
+        .frame(minHeight: 40)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(DashTheme.Opacity.strokeSubtle)))
         .shadow(
           color: .black.opacity(DashTheme.Opacity.shadow),
           radius: DashTheme.Shadow.floatingBlur,
           y: DashTheme.Shadow.floatingOffsetY
         )
-        .contentShape(Circle())
+        .contentShape(Capsule())
     }
     .buttonStyle(.plain)
     .hoverEffect(.lift)
     .frame(minWidth: 44, minHeight: 44)
-    .accessibilityLabel("Jump to latest messages")
+    .accessibilityLabel(
+      returnsToPassage
+        ? "Return to previous reading position"
+        : unreadCount > 0 ? "Show latest, \(unreadCount) new updates" : "Show latest"
+    )
     .accessibilityIdentifier("chat.jumpToBottom")
   }
 }

@@ -404,6 +404,7 @@ struct GatewayAPITests {
     try URLProtocolStub.enqueue(status: 200, fixture: "conversation-summary.json")
     try URLProtocolStub.enqueue(status: 200, fixture: "conversation-summary.json")
     try URLProtocolStub.enqueue(status: 200, fixture: "conversation-messages-page.json")
+    try URLProtocolStub.enqueue(status: 200, fixture: "conversation-pending-page.json")
     try URLProtocolStub.enqueue(status: 200, fixture: "replay.json")
     let api = makeAPI()
     let conversationID = "conv/a ?"
@@ -427,11 +428,13 @@ struct GatewayAPITests {
     )
     _ = try await api.deleteConversation(id: conversationID, revision: 8)
     _ = try await api.messages(conversationID: conversationID, limit: 40, before: "before:1")
+    _ = try await api.pending(conversationID: conversationID, limit: 20, cursor: "pending:1")
     _ = try await api.replay(agentID: "agent/a", conversationID: conversationID, sinceSeq: 12)
 
     let requests = URLProtocolStub.requests
     #expect(
-      requests.map(\.httpMethod) == ["GET", "GET", "POST", "GET", "PATCH", "DELETE", "GET", "GET"])
+      requests.map(\.httpMethod)
+        == ["GET", "GET", "POST", "GET", "PATCH", "DELETE", "GET", "GET", "GET"])
     #expect(try encodedPath(requests[0]) == "/mobile/v1/models")
     #expect(try encodedPath(requests[1]) == "/mobile/v1/conversations")
     #expect(try queryNames(requests[1]) == ["agentId", "limit", "cursor"])
@@ -458,10 +461,16 @@ struct GatewayAPITests {
     #expect(try queryValues(requests[6]) == ["40", "before:1"])
     #expect(
       try encodedPath(requests[7])
+        == "/mobile/v1/conversations/conv%2Fa%20%3F/pending"
+    )
+    #expect(try queryNames(requests[7]) == ["limit", "cursor"])
+    #expect(try queryValues(requests[7]) == ["20", "pending:1"])
+    #expect(
+      try encodedPath(requests[8])
         == "/mobile/v1/agents/agent%2Fa/conversations/conv%2Fa%20%3F/events"
     )
-    #expect(try queryNames(requests[7]) == ["sinceSeq"])
-    #expect(try queryValues(requests[7]) == ["12"])
+    #expect(try queryNames(requests[8]) == ["sinceSeq"])
+    #expect(try queryValues(requests[8]) == ["12"])
   }
 
   @Test("conversation patch preserves an explicit null field")

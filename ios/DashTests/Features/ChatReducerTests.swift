@@ -5,6 +5,66 @@ import Testing
 
 @Suite("Chat reducer")
 struct ChatReducerTests {
+  @Test("queue snapshots are monotonic and receipts remain canonical")
+  func queueSnapshotsAreMonotonic() {
+    var state = chatState()
+    let current = queue(revision: 4, text: "Second request")
+    let stale = queue(revision: 3, text: "Stale request")
+
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .commandReceipt(
+          id: "command-1",
+          conversationId: "conv-1",
+          command: .followUp,
+          status: .accepted,
+          queue: current,
+          affectedTurnId: nil,
+          pendingItem: current.items.first,
+          reason: nil
+        )
+      )
+    )
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .queueChanged(conversationId: "conv-1", queue: stale, commandId: nil)
+      )
+    )
+
+    #expect(state.queue == current)
+    #expect(state.lastCommandReceipt?.id == "command-1")
+    #expect(state.lastCommandReceipt?.status == .accepted)
+  }
+
+  @Test("a pending turn admission renders its durable text on every device")
+  func pendingAdmissionUsesQueueContent() {
+    var state = chatState()
+    state.queue = queue(revision: 2, text: "Run the migration")
+
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .accepted(
+          id: "turn-pending",
+          conversationId: "conv-1",
+          userMessageId: "user-pending",
+          assistantMessageId: "assistant-pending",
+          revision: 3,
+          seq: 1,
+          origin: .user,
+          kind: .user,
+          requestId: nil,
+          pendingItemId: "pending-1"
+        )
+      )
+    )
+
+    #expect(state.messages.first?.user?.text == "Run the migration")
+    #expect(state.messages.first?.rowID == "user-pending")
+  }
+
   @Test("accepted replaces optimistic ids without duplicating the user message")
   func acceptedReconcilesIdentity() {
     var state = chatState()
@@ -25,7 +85,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -61,7 +122,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -91,7 +153,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -199,7 +262,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -1800,6 +1864,30 @@ struct ChatReducerTests {
     )
   }
 
+  private func queue(revision: Int, text: String) -> ConversationQueueSnapshotDTO {
+    let timestamp = Date(timeIntervalSince1970: 1_750_000_000)
+    return ConversationQueueSnapshotDTO(
+      revision: revision,
+      scheduling: .running,
+      pendingCount: 1,
+      items: [
+        PendingConversationInputDTO(
+          id: "pending-1",
+          commandId: "command-1",
+          conversationId: "conv-1",
+          kind: .followUp,
+          version: 1,
+          text: text,
+          images: nil,
+          state: .pending,
+          claimedTurnId: nil,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        )
+      ]
+    )
+  }
+
   // MARK: - Server-initiated turns (task C7, sub-agents design 7.6/8.5)
 
   @Test("an accepted for an unknown turn with a notification origin registers the turn as a notification row, not a blank user bubble")
@@ -1818,7 +1906,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: .notification,
           kind: .user,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -1852,7 +1941,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -1895,7 +1985,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -1955,7 +2046,8 @@ struct ChatReducerTests {
           seq: 1,
           origin: nil,
           kind: nil,
-          requestId: nil
+          requestId: nil,
+          pendingItemId: nil
         )
       )
     )
@@ -2125,7 +2217,9 @@ struct ChatReducerTests {
     // Everything from the notification turn's `accepted` onwards.
     guard
       let notificationStart = frames.firstIndex(where: { frame in
-        if case let .accepted(_, _, _, _, _, _, origin, _, _) = frame { return origin != nil }
+        if case let .accepted(_, _, _, _, _, _, origin, _, _, _) = frame {
+          return origin != nil
+        }
         return false
       })
     else {
@@ -2148,7 +2242,7 @@ struct ChatReducerTests {
     for line in text.split(whereSeparator: \.isNewline) where line.isEmpty == false {
       let frame = try decoder.decode(MobileWSServerFrame.self, from: Data(line.utf8))
       switch frame {
-      case let .accepted(id, _, _, _, _, _, _, _, _):
+      case let .accepted(id, _, _, _, _, _, _, _, _, _):
         if turnID == nil { turnID = id }
       case let .event(id, _, _, event):
         if id == turnID { events.append(event) }

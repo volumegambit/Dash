@@ -63,7 +63,7 @@ function waitForTerminal(
 ): Promise<TerminalFrame> {
   const current = frames.find(
     (frame): frame is TerminalFrame =>
-      frame.id === turnId && (frame.type === 'done' || frame.type === 'error'),
+      (frame.type === 'done' || frame.type === 'error') && frame.id === turnId,
   );
   if (current) return Promise.resolve(current);
 
@@ -72,7 +72,7 @@ function waitForTerminal(
     const poll = (): void => {
       const terminal = frames.find(
         (frame): frame is TerminalFrame =>
-          frame.id === turnId && (frame.type === 'done' || frame.type === 'error'),
+          (frame.type === 'done' || frame.type === 'error') && frame.id === turnId,
       );
       if (terminal) {
         resolve(terminal);
@@ -106,8 +106,10 @@ export function assertDurableFrameIdentity(
   frame: MobileWsServerFrame,
   expected: { conversationId: string; turnId: string },
 ): void {
-  if (frame.id !== expected.turnId) {
-    throw new Error(`Received unexpected turn "${frame.id}"; expected "${expected.turnId}"`);
+  if (!('id' in frame) || frame.id !== expected.turnId) {
+    throw new Error(
+      `Received unexpected turn "${String('id' in frame ? frame.id : undefined)}"; expected "${expected.turnId}"`,
+    );
   }
   if (!('conversationId' in frame) || frame.conversationId !== expected.conversationId) {
     throw new Error(

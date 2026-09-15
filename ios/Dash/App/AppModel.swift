@@ -56,6 +56,9 @@ final class AppModel {
   /// actually landed — an unverified gateway is one whose capabilities are
   /// unknown, and unknown must read as absent.
   var speechAvailable: Bool { gatewayCapabilities.contains(.speechV1) }
+  var conversationControlAvailable: Bool {
+    gatewayCapabilities.contains(.conversationControlV2)
+  }
 
   /// Multi-window (design §3.2): whether any scene is currently active, from
   /// the set `sceneChanged(id:isActive:)` tracks.

@@ -3,8 +3,9 @@ import Foundation
 enum MobileCapability: String, Codable, Hashable, Sendable {
   case conversationSyncV1 = "conversation-sync-v1"
   case chatResumeV1 = "chat-resume-v1"
+  case conversationControlV2 = "conversation-control-v2"
   /// `/speech/*` is mounted AND a provider can currently transcribe and speak.
-  /// Unlike the other two this one comes and goes with the gateway's
+  /// Unlike the conversation capabilities this one comes and goes with the gateway's
   /// credentials, so it is read per verify rather than assumed.
   case speechV1 = "speech-v1"
 }

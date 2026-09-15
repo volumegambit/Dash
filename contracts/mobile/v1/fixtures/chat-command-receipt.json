@@ -1,0 +1,36 @@
+{
+  "type": "command_receipt",
+  "id": "218f0f4a-5c42-7a8b-9c01-1234567890ab",
+  "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+  "command": "follow_up",
+  "status": "accepted",
+  "pendingItem": {
+    "id": "818f0f4a-5c42-7a8b-9c01-1234567890ab",
+    "commandId": "218f0f4a-5c42-7a8b-9c01-1234567890ab",
+    "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+    "kind": "follow_up",
+    "version": 1,
+    "text": "Also compare the migration cost.",
+    "state": "pending",
+    "createdAt": "2026-09-15T05:00:00.000Z",
+    "updatedAt": "2026-09-15T05:00:00.000Z"
+  },
+  "queue": {
+    "revision": 4,
+    "scheduling": "running",
+    "pendingCount": 1,
+    "items": [
+      {
+        "id": "818f0f4a-5c42-7a8b-9c01-1234567890ab",
+        "commandId": "218f0f4a-5c42-7a8b-9c01-1234567890ab",
+        "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+        "kind": "follow_up",
+        "version": 1,
+        "text": "Also compare the migration cost.",
+        "state": "pending",
+        "createdAt": "2026-09-15T05:00:00.000Z",
+        "updatedAt": "2026-09-15T05:00:00.000Z"
+      }
+    ]
+  }
+}

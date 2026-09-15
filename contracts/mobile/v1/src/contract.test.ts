@@ -581,6 +581,13 @@ describe('mobile v1 contract fixtures', () => {
       '#/$defs/ChatCancel',
       '#/$defs/ChatSubscribe',
       '#/$defs/ChatUnsubscribe',
+      '#/$defs/ChatWatch',
+      '#/$defs/ChatFollowUp',
+      '#/$defs/ChatInterruptAndSend',
+      '#/$defs/ChatStopConversation',
+      '#/$defs/ChatResumePending',
+      '#/$defs/ChatEditPending',
+      '#/$defs/ChatRemovePending',
       '#/$defs/VoiceStart',
       '#/$defs/VoiceAudio',
       '#/$defs/VoiceMute',
@@ -599,6 +606,9 @@ describe('mobile v1 contract fixtures', () => {
       '#/$defs/MobileWsEventFrame',
       '#/$defs/MobileWsDoneFrame',
       '#/$defs/MobileWsErrorFrame',
+      '#/$defs/ChatWatched',
+      '#/$defs/ChatCommandReceipt',
+      '#/$defs/ChatQueueChanged',
       '#/$defs/VoiceState',
       '#/$defs/VoiceTranscript',
       '#/$defs/VoiceSpeech',
@@ -643,7 +653,7 @@ describe('mobile v1 contract fixtures', () => {
     });
   });
 
-  it('advertises speech-v1 as a mobile capability in both documents', async () => {
+  it('advertises chat control and speech as mobile capabilities in both documents', async () => {
     const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
       components?: { schemas?: Record<string, Record<string, unknown>> };
     };
@@ -657,13 +667,106 @@ describe('mobile v1 contract fixtures', () => {
     expect(capabilities.capabilities.items?.enum).toEqual([
       'conversation-sync-v1',
       'chat-resume-v1',
+      'conversation-control-v2',
       'speech-v1',
     ]);
 
     const health = JSON.parse(
       await readFile(join(root, 'fixtures', 'health-capabilities.json'), 'utf8'),
     ) as { capabilities: string[] };
-    expect(health.capabilities).toEqual(['conversation-sync-v1', 'chat-resume-v1', 'speech-v1']);
+    expect(health.capabilities).toEqual([
+      'conversation-sync-v1',
+      'chat-resume-v1',
+      'conversation-control-v2',
+      'speech-v1',
+    ]);
+  });
+
+  it('defines the durable conversation-control v2 protocol as closed schemas', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      paths?: Record<string, Record<string, { operationId?: string }>>;
+      components?: {
+        schemas?: Record<
+          string,
+          {
+            additionalProperties?: boolean;
+            required?: string[];
+            properties?: Record<string, unknown>;
+          }
+        >;
+      };
+    };
+    const schemas = openapi.components?.schemas ?? {};
+    const summary = schemas.ConversationSummary;
+    expect(summary?.required).toEqual(
+      expect.arrayContaining(['pendingCount', 'pendingScheduling', 'queueRevision']),
+    );
+    expect(summary?.properties?.pendingScheduling).toEqual({ enum: ['running', 'paused'] });
+    expect(summary?.properties?.pendingCount).toEqual({ type: 'integer', minimum: 0 });
+    expect(summary?.properties?.queueRevision).toEqual({ type: 'integer', minimum: 0 });
+
+    for (const name of [
+      'PendingConversationInput',
+      'ConversationPendingPage',
+      'ConversationQueueSnapshot',
+    ]) {
+      expect(schemas[name]?.additionalProperties, name).toBe(false);
+    }
+    expect(schemas.PendingConversationInput?.required).toEqual([
+      'id',
+      'commandId',
+      'conversationId',
+      'kind',
+      'version',
+      'text',
+      'state',
+      'createdAt',
+      'updatedAt',
+    ]);
+    expect(openapi.paths?.['/conversations/{id}/pending']?.get?.operationId).toBe(
+      'listConversationPending',
+    );
+
+    const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs?: Record<
+        string,
+        {
+          additionalProperties?: boolean;
+          required?: string[];
+          properties?: Record<string, unknown>;
+          oneOf?: Array<{ $ref?: string }>;
+        }
+      >;
+    };
+    const defs = ws.$defs ?? {};
+    const expectedClient = [
+      'ChatWatch',
+      'ChatFollowUp',
+      'ChatInterruptAndSend',
+      'ChatStopConversation',
+      'ChatResumePending',
+      'ChatEditPending',
+      'ChatRemovePending',
+    ];
+    const expectedServer = ['ChatWatched', 'ChatCommandReceipt', 'ChatQueueChanged'];
+    for (const name of [...expectedClient, ...expectedServer]) {
+      expect(defs[name]?.additionalProperties, name).toBe(false);
+    }
+    expect(defs.ChatWatch?.required).toEqual([
+      'type',
+      'id',
+      'agentId',
+      'conversationId',
+      'sinceSeq',
+    ]);
+    expect(defs.ChatInterruptAndSend?.required).toContain('expectedActiveTurnId');
+    expect(defs.ChatEditPending?.required).toContain('expectedVersion');
+    expect(defs.ChatRemovePending?.required).toContain('expectedVersion');
+
+    const clientRefs = defs.MobileWsClientFrame?.oneOf?.map((entry) => entry.$ref) ?? [];
+    for (const name of expectedClient) expect(clientRefs).toContain(`#/$defs/${name}`);
+    const serverRefs = defs.MobileWsServerFrame?.oneOf?.map((entry) => entry.$ref) ?? [];
+    for (const name of expectedServer) expect(serverRefs).toContain(`#/$defs/${name}`);
   });
 
   it('carries the speech error codes the /speech routes really emit', async () => {

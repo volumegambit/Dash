@@ -13,6 +13,13 @@ struct ChatState: Equatable, Sendable {
   var olderCursor: String?
   var composerBlock: ComposerBlockReason?
   var errorBanner: String?
+  /// Durable gateway-owned work waiting behind the active turn. This is
+  /// canonical conversation state and is therefore shared by every window.
+  var queue: ConversationQueueSnapshotDTO = .empty
+  /// The newest command outcome. The presentation layer uses the command id
+  /// to make reconciliation idempotent and keeps transient progress local to
+  /// each window.
+  var lastCommandReceipt: ChatCommandReceiptState? = nil
   /// Per-child UI state for the sub-agent rows (§8.1–§8.3), keyed by child
   /// conversation id.
   ///
@@ -57,6 +64,15 @@ struct ChatState: Equatable, Sendable {
       || attachments.isEmpty == false
       || conversation.title != ChatState.defaultConversationTitle
   }
+}
+
+struct ChatCommandReceiptState: Equatable, Sendable {
+  let id: String
+  let command: ConversationCommand
+  let status: CommandReceiptStatus
+  let affectedTurnID: String?
+  let pendingItem: PendingConversationInputDTO?
+  let reason: CommandReceiptReason?
 }
 
 /// UI state for one sub-agent row, keyed by child conversation id in
@@ -863,7 +879,9 @@ enum ChatReducer {
     }
 
     switch frame {
-    case let .accepted(turnID, _, userMessageID, assistantMessageID, _, _, origin, _, requestID):
+    case let .accepted(
+      turnID, _, userMessageID, assistantMessageID, _, _, origin, _, requestID, _
+    ):
       // Adopt this client's own optimistic row rather than adding a second
       // one. Keyed on `requestId`, which is the ONLY correlation available:
       // the server picks the turn id for a resume, and the resume response
@@ -941,7 +959,8 @@ enum ChatReducer {
       assistant.pendingQuestion = nil
       rows[index].assistant = assistant
 
-    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+    case .watched, .commandReceipt, .queueChanged,
+      .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
       // Never reached: `ChatFeature.consume` returns for a voice frame before
       // any sub-agent folding runs, and a voice session has no child rows.
       break
@@ -986,12 +1005,20 @@ enum ChatReducer {
     state: inout ChatState
   ) -> [ChatEffect] {
     switch frame {
-    case let .accepted(id, _, userMessageID, assistantMessageID, revision, seq, origin, _, _):
+    case let .accepted(
+      id, _, userMessageID, assistantMessageID, revision, seq, origin, _, _, pendingItemID
+    ):
+      let pendingProjection = pendingItemID.flatMap { pendingID in
+        state.queue.items.first(where: { $0.id == pendingID }).map {
+          UserMessageProjection(text: $0.text, images: $0.images ?? [])
+        }
+      }
       reconcileAccepted(
         turnID: id,
         userMessageID: userMessageID,
         assistantMessageID: assistantMessageID,
         origin: origin,
+        pendingProjection: pendingProjection,
         state: &state
       )
       state.activeTurnID = id
@@ -1078,9 +1105,31 @@ enum ChatReducer {
       finishTurn(id, state: &state)
       return shouldAnnounce ? [.announceFinalResponse("Response failed: \(error)")] : []
 
+    case let .watched(_, _, throughSeq, queue):
+      installQueue(queue, state: &state)
+      guard throughSeq > state.lastAppliedSeq else { return [] }
+      state.lastAppliedSeq = throughSeq
+      return [.persistCursor(throughSeq)]
+
+    case let .commandReceipt(
+      id, _, command, status, queue, affectedTurnID, pendingItem, reason
+    ):
+      installQueue(queue, state: &state)
+      state.lastCommandReceipt = ChatCommandReceiptState(
+        id: id,
+        command: command,
+        status: status,
+        affectedTurnID: affectedTurnID,
+        pendingItem: pendingItem,
+        reason: reason
+      )
+      return []
+
+    case let .queueChanged(_, queue, _):
+      installQueue(queue, state: &state)
+      return []
+
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
-      // Never reached: `ChatFeature.consume` returns for a voice frame before
-      // `consumeFrame`/`apply` run.
       return []
     }
   }
@@ -1090,6 +1139,7 @@ enum ChatReducer {
     userMessageID: String,
     assistantMessageID: String,
     origin: MessageOrigin?,
+    pendingProjection: UserMessageProjection? = nil,
     state: inout ChatState
   ) {
     // `origin` is only ever WRITTEN when the frame carried one. A replayed
@@ -1117,7 +1167,7 @@ enum ChatReducer {
           ordinal: nil,
           role: .user,
           status: .accepted,
-          user: UserMessageProjection(text: "", images: []),
+          user: pendingProjection ?? UserMessageProjection(text: "", images: []),
           assistant: nil,
           origin: origin
         )
@@ -1154,6 +1204,14 @@ enum ChatReducer {
       keepingID: assistantMessageID,
       state: &state
     )
+  }
+
+  private static func installQueue(
+    _ queue: ConversationQueueSnapshotDTO,
+    state: inout ChatState
+  ) {
+    guard queue.revision >= state.queue.revision else { return }
+    state.queue = queue
   }
 
   private static func deduplicate(
@@ -1717,22 +1775,26 @@ enum ChatReducer {
 
   private static func sequence(of frame: MobileWSServerFrame) -> Int? {
     switch frame {
-    case let .accepted(_, _, _, _, _, seq, _, _, _): seq
+    case let .accepted(_, _, _, _, _, seq, _, _, _, _): seq
     case let .event(_, _, seq, _): seq
     case let .done(_, _, seq, _): seq
     case let .error(_, _, seq, _, _, _, _): seq
     // Voice frames never reach the reducer (`ChatFeature.consume` returns
     // before `consumeFrame` for one) and carry no resumable-hub `seq` anyway.
-    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: nil
+    case .watched, .commandReceipt, .queueChanged,
+      .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: nil
     }
   }
 
   private static func conversationID(of frame: MobileWSServerFrame) -> String? {
     switch frame {
-    case let .accepted(_, conversationID, _, _, _, _, _, _, _): conversationID
+    case let .accepted(_, conversationID, _, _, _, _, _, _, _, _): conversationID
     case let .event(_, conversationID, _, _): conversationID
     case let .done(_, conversationID, _, _): conversationID
     case let .error(_, conversationID, _, _, _, _, _): conversationID
+    case let .watched(_, conversationID, _, _),
+      let .commandReceipt(_, conversationID, _, _, _, _, _, _),
+      let .queueChanged(conversationID, _, _): conversationID
     case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: nil
     }
   }
@@ -1750,10 +1812,13 @@ enum ChatReducer {
 
   private static func turnID(of frame: MobileWSServerFrame) -> String {
     switch frame {
-    case let .accepted(id, _, _, _, _, _, _, _, _): id
+    case let .accepted(id, _, _, _, _, _, _, _, _, _): id
     case let .event(id, _, _, _): id
     case let .done(id, _, _, _): id
     case let .error(id, _, _, _, _, _, _): id
+    case let .watched(id, _, _, _): id
+    case let .commandReceipt(id, _, _, _, _, _, _, _): id
+    case let .queueChanged(conversationID, _, commandID): commandID ?? conversationID
     case let .voiceState(id, _, _): id
     case let .voiceTranscript(id, _, _, _): id
     case let .voiceSpeech(id, _, _, _, _, _): id
@@ -1777,7 +1842,8 @@ enum ChatReducer {
         // must therefore never overwrite an origin the REST row already knows.
         origin: nil,
         kind: nil,
-        requestId: nil
+        requestId: nil,
+        pendingItemId: nil
       )
     case let .event(event):
       .event(

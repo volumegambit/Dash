@@ -460,6 +460,25 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /conversations/{id}/pending:
+    parameters:
+      - $ref: '#/components/parameters/ConversationId'
+    get:
+      operationId: listConversationPending
+      parameters:
+        - $ref: '#/components/parameters/ConversationLimit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A stable page of accepted pending conversation inputs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPendingPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /conversations/{id}/subagents:
     parameters:
       - $ref: '#/components/parameters/ConversationId'
@@ -872,7 +891,7 @@ components:
         capabilities:
           type: array
           uniqueItems: true
-          items: { enum: [conversation-sync-v1, chat-resume-v1, speech-v1] }
+          items: { enum: [conversation-sync-v1, chat-resume-v1, conversation-control-v2, speech-v1] }
     GatewayIdentity:
       type: object
       additionalProperties: false
@@ -1322,7 +1341,7 @@ components:
     ConversationSummary:
       type: object
       additionalProperties: false
-      required: [id, agentId, agentName, title, revision, status, activeTurnId, owningIssueId, projectId, lastSeq, lastMessagePreview, createdAt, updatedAt, kind]
+      required: [id, agentId, agentName, title, revision, status, activeTurnId, owningIssueId, projectId, lastSeq, lastMessagePreview, createdAt, updatedAt, pendingCount, pendingScheduling, queueRevision, kind]
       properties:
         id: { $ref: '#/components/schemas/ConversationIdentifier' }
         agentId: { type: string, minLength: 1 }
@@ -1339,6 +1358,9 @@ components:
         lastMessagePreview: { type: [string, 'null'] }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+        pendingCount: { type: integer, minimum: 0 }
+        pendingScheduling: { enum: [running, paused] }
+        queueRevision: { type: integer, minimum: 0 }
         deletedAt: { type: string, format: date-time }
         kind: { enum: [user, subagent] }
         parentConversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
@@ -1382,6 +1404,45 @@ components:
             $ref: '#/components/schemas/ConversationMessage'
         nextCursor: { type: [string, 'null'] }
         throughSeq: { type: integer, minimum: 0 }
+    PendingConversationInput:
+      type: object
+      additionalProperties: false
+      required: [id, commandId, conversationId, kind, version, text, state, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        commandId: { type: string, format: uuid }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
+        kind: { enum: [priority, follow_up] }
+        version: { type: integer, minimum: 1 }
+        text: { type: string }
+        images:
+          type: array
+          items: { $ref: '#/components/schemas/MobileImage' }
+        state: { enum: [pending, claimed] }
+        claimedTurnId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ConversationQueueSnapshot:
+      type: object
+      additionalProperties: false
+      required: [revision, scheduling, pendingCount, items]
+      properties:
+        revision: { type: integer, minimum: 0 }
+        scheduling: { enum: [running, paused] }
+        pendingCount: { type: integer, minimum: 0 }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PendingConversationInput' }
+    ConversationPendingPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor, queue]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PendingConversationInput' }
+        nextCursor: { type: [string, 'null'] }
+        queue: { $ref: '#/components/schemas/ConversationQueueSnapshot' }
     ConversationCreateRequest:
       type: object
       additionalProperties: false

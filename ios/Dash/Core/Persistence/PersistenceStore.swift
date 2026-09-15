@@ -12,6 +12,14 @@ enum ConversationRemovalOutcome: Equatable, Sendable {
   case retained(ConversationSummaryDTO)
 }
 
+/// Keeps launch and disk work independent of total conversation length. The
+/// gateway remains the complete archive; iOS keeps a generous recent cache
+/// and requests older pages only when the reader asks for them.
+enum ChatCachePolicy {
+  static let initialMessageLimit = 200
+  static let storedMessageLimitPerConversation = 1_000
+}
+
 private enum ConversationRemovalPrecondition: Sendable {
   case unconditional
   case canonical(ConversationSummaryDTO?)
@@ -429,6 +437,7 @@ actor PersistenceStore {
         )
       }
     }
+    try pruneMessageCache(gatewayID: gatewayID, conversationID: conversationID)
     try modelContext.save()
     recoveryCache[gatewayID] = nil
   }
@@ -439,17 +448,18 @@ actor PersistenceStore {
   ) throws -> [ConversationMessageDTO] {
     let targetGatewayID = gatewayID
     let targetConversationID = conversationID
-    let descriptor = FetchDescriptor<MessageRecord>(
+    var descriptor = FetchDescriptor<MessageRecord>(
       predicate: #Predicate { record in
         record.gatewayID == targetGatewayID && record.conversationID == targetConversationID
       },
       sortBy: [
-        SortDescriptor(\MessageRecord.ordinal),
-        SortDescriptor(\MessageRecord.createdAt),
-        SortDescriptor(\MessageRecord.messageID),
+        SortDescriptor(\MessageRecord.ordinal, order: .reverse),
+        SortDescriptor(\MessageRecord.createdAt, order: .reverse),
+        SortDescriptor(\MessageRecord.messageID, order: .reverse),
       ]
     )
-    return try modelContext.fetch(descriptor).map { record in
+    descriptor.fetchLimit = ChatCachePolicy.initialMessageLimit
+    return try modelContext.fetch(descriptor).reversed().map { record in
       guard let role = MessageRole(rawValue: record.roleRaw) else {
         throw PersistenceStoreError.invalidStoredValue("message role \(record.roleRaw)")
       }
@@ -471,6 +481,42 @@ actor PersistenceStore {
         updatedAt: record.updatedAt,
         origin: record.originRaw
       )
+    }
+  }
+
+  func cachedMessageCount(gatewayID: String, conversationID: String) throws -> Int {
+    let targetGatewayID = gatewayID
+    let targetConversationID = conversationID
+    return try modelContext.fetchCount(
+      FetchDescriptor<MessageRecord>(
+        predicate: #Predicate { record in
+          record.gatewayID == targetGatewayID
+            && record.conversationID == targetConversationID
+        }
+      )
+    )
+  }
+
+  private func pruneMessageCache(gatewayID: String, conversationID: String) throws {
+    let targetGatewayID = gatewayID
+    let targetConversationID = conversationID
+    let predicate = #Predicate<MessageRecord> { record in
+      record.gatewayID == targetGatewayID && record.conversationID == targetConversationID
+    }
+    let count = try modelContext.fetchCount(FetchDescriptor(predicate: predicate))
+    let excess = count - ChatCachePolicy.storedMessageLimitPerConversation
+    guard excess > 0 else { return }
+    var descriptor = FetchDescriptor<MessageRecord>(
+      predicate: predicate,
+      sortBy: [
+        SortDescriptor(\MessageRecord.ordinal),
+        SortDescriptor(\MessageRecord.createdAt),
+        SortDescriptor(\MessageRecord.messageID),
+      ]
+    )
+    descriptor.fetchLimit = excess
+    for record in try modelContext.fetch(descriptor) {
+      modelContext.delete(record)
     }
   }
 
@@ -514,6 +560,251 @@ actor PersistenceStore {
         [DraftAttachment].self,
         from: record.attachmentsData
       ),
+      updatedAt: record.updatedAt
+    )
+  }
+
+  func windowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) throws -> WindowConversationDraft? {
+    let key = scopedWindowDraftID(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
+    guard let record = try windowDraftRecord(scopedWindowID: key) else { return nil }
+    return try windowConversationDraft(from: record)
+  }
+
+  /// Moves a legacy conversation-scoped draft into the first scene that
+  /// claims it. Actor isolation makes the move atomic, so opening a second
+  /// window cannot clone the same unsent text or images.
+  func claimWindowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) throws -> WindowConversationDraft? {
+    if let existing = try windowDraft(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    ) {
+      return existing
+    }
+    let legacyKey = scopedID(gatewayID: gatewayID, resourceID: conversationID)
+    guard let legacy = try draftRecord(scopedConversationID: legacyKey) else { return nil }
+    let attachments = try ContractCoding.decoder().decode(
+      [DraftAttachment].self,
+      from: legacy.attachmentsData
+    )
+    let claimed = WindowConversationDraft(
+      text: legacy.text,
+      attachments: attachments,
+      revision: 0,
+      updatedAt: legacy.updatedAt
+    )
+    let key = scopedWindowDraftID(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
+    modelContext.insert(
+      WindowDraftRecord(
+        scopedWindowID: key,
+        gatewayID: gatewayID,
+        conversationID: conversationID,
+        windowID: windowID,
+        text: claimed.text,
+        attachmentsData: try ContractCoding.encoder().encode(claimed.attachments),
+        revision: 0,
+        updatedAt: claimed.updatedAt
+      )
+    )
+    modelContext.delete(legacy)
+    try modelContext.save()
+    recoveryCache[gatewayID] = nil
+    return claimed
+  }
+
+  /// Stores one window's editor without allowing an older autosave task to
+  /// overwrite a newer keystroke. Empty drafts are removed once the matching
+  /// revision reaches the store.
+  func saveWindowDraft(
+    _ draft: WindowConversationDraft,
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) throws {
+    try requireWritableConversation(gatewayID: gatewayID, conversationID: conversationID)
+    let key = scopedWindowDraftID(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
+    let storedRevision = Int64(clamping: draft.revision)
+    if let record = try windowDraftRecord(scopedWindowID: key) {
+      guard record.revision <= storedRevision else { return }
+      if draft.text.isEmpty, draft.attachments.isEmpty, record.pendingCommandData == nil {
+        modelContext.delete(record)
+      } else {
+        record.text = draft.text
+        record.attachmentsData = try ContractCoding.encoder().encode(draft.attachments)
+        record.revision = storedRevision
+        record.updatedAt = draft.updatedAt
+      }
+    } else if draft.text.isEmpty == false || draft.attachments.isEmpty == false {
+      modelContext.insert(
+        WindowDraftRecord(
+          scopedWindowID: key,
+          gatewayID: gatewayID,
+          conversationID: conversationID,
+          windowID: windowID,
+          text: draft.text,
+          attachmentsData: try ContractCoding.encoder().encode(draft.attachments),
+          revision: storedRevision,
+          updatedAt: draft.updatedAt
+        )
+      )
+    }
+    try modelContext.save()
+  }
+
+  /// Clears only the submitted revision. A later keystroke may already have
+  /// persisted under the same window key and must survive the acknowledgement.
+  func clearWindowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String,
+    submittedRevision: UInt64
+  ) throws {
+    let key = scopedWindowDraftID(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
+    guard let record = try windowDraftRecord(scopedWindowID: key),
+      record.revision == Int64(clamping: submittedRevision)
+    else { return }
+    if record.pendingCommandData == nil {
+      modelContext.delete(record)
+    } else {
+      record.text = ""
+      record.attachmentsData = try ContractCoding.encoder().encode([PreparedAttachment]())
+      record.revision &+= 1
+    }
+    try modelContext.save()
+  }
+
+  /// Persists the exact command before any network write. Re-staging the same
+  /// id is harmless; a different unresolved command is preserved so a second
+  /// window action cannot overwrite work whose admission is still unknown.
+  func stageWindowCommand(
+    _ command: PendingWindowCommand,
+    gatewayID: String,
+    conversationID: String
+  ) throws -> Bool {
+    try requireWritableConversation(gatewayID: gatewayID, conversationID: conversationID)
+    let key = scopedWindowDraftID(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: command.sourceWindowID
+    )
+    let commandData = try ContractCoding.encoder().encode(command)
+    if let record = try windowDraftRecord(scopedWindowID: key) {
+      if let existingData = record.pendingCommandData {
+        let existing = try ContractCoding.decoder().decode(
+          PendingWindowCommand.self,
+          from: existingData
+        )
+        return existing.id == command.id
+      }
+      guard record.revision <= Int64(clamping: command.submittedRevision) else { return false }
+      record.text = command.text
+      record.attachmentsData = try ContractCoding.encoder().encode(command.attachments)
+      record.revision = Int64(clamping: command.submittedRevision)
+      record.pendingCommandData = commandData
+      record.updatedAt = command.createdAt
+    } else {
+      modelContext.insert(
+        WindowDraftRecord(
+          scopedWindowID: key,
+          gatewayID: gatewayID,
+          conversationID: conversationID,
+          windowID: command.sourceWindowID,
+          text: command.text,
+          attachmentsData: try ContractCoding.encoder().encode(command.attachments),
+          revision: Int64(clamping: command.submittedRevision),
+          pendingCommandData: commandData,
+          updatedAt: command.createdAt
+        )
+      )
+    }
+    try modelContext.save()
+    return true
+  }
+
+  /// Applies a receipt to the exact persisted command. Accepted work clears
+  /// only the submitted revision; rejected work becomes an editable draft.
+  func resolveWindowCommand(
+    id: String,
+    accepted: Bool,
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) throws -> WindowConversationDraft? {
+    let key = scopedWindowDraftID(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
+    guard let record = try windowDraftRecord(scopedWindowID: key),
+      let pendingData = record.pendingCommandData
+    else { return nil }
+    let pending = try ContractCoding.decoder().decode(PendingWindowCommand.self, from: pendingData)
+    guard pending.id == id else { return try windowConversationDraft(from: record) }
+    record.pendingCommandData = nil
+    if accepted, record.revision == Int64(clamping: pending.submittedRevision) {
+      record.text = ""
+      record.attachmentsData = try ContractCoding.encoder().encode([PreparedAttachment]())
+      record.revision &+= 1
+    }
+    if record.text.isEmpty,
+      try decodedWindowAttachments(record).isEmpty,
+      record.pendingCommandData == nil
+    {
+      modelContext.delete(record)
+      try modelContext.save()
+      return nil
+    }
+    record.updatedAt = Date()
+    try modelContext.save()
+    return try windowConversationDraft(from: record)
+  }
+
+  func cachedWindowDraftCount() throws -> Int {
+    try modelContext.fetchCount(FetchDescriptor<WindowDraftRecord>())
+  }
+
+  private func decodedWindowAttachments(_ record: WindowDraftRecord) throws
+    -> [PreparedAttachment]
+  {
+    guard let data = record.attachmentsData else { return [] }
+    return try ContractCoding.decoder().decode([PreparedAttachment].self, from: data)
+  }
+
+  private func windowConversationDraft(from record: WindowDraftRecord) throws
+    -> WindowConversationDraft
+  {
+    let pending = try record.pendingCommandData.map {
+      try ContractCoding.decoder().decode(PendingWindowCommand.self, from: $0)
+    }
+    return WindowConversationDraft(
+      text: record.text,
+      attachments: try decodedWindowAttachments(record),
+      revision: UInt64(max(record.revision, 0)),
+      pendingCommand: pending,
       updatedAt: record.updatedAt
     )
   }
@@ -629,7 +920,9 @@ actor PersistenceStore {
         localUserID: pending.localUserID,
         draft: pending.draft,
         attachmentsData: attachments,
-        createdAt: pending.createdAt
+        createdAt: pending.createdAt,
+        sourceWindowID: pending.sourceWindowID,
+        submittedRevision: pending.submittedRevision.map { Int64(clamping: $0) }
       )
     )
     if let draft = try draftRecord(scopedConversationID: key) {
@@ -751,6 +1044,21 @@ actor PersistenceStore {
     guard let pending = try pendingSendRecord(scopedConversationID: key),
       pending.turnID == turnID
     else { return .restored(nil) }
+    if pending.sourceWindowID != nil {
+      let attachments = try ContractCoding.decoder().decode(
+        [PreparedAttachment].self,
+        from: pending.attachmentsData
+      )
+      let restoredDraft = ConversationDraft(
+        text: pending.draft,
+        attachments: attachments,
+        updatedAt: Date()
+      )
+      modelContext.delete(pending)
+      try modelContext.save()
+      recoveryCache[gatewayID] = nil
+      return .restored(restoredDraft)
+    }
     if let draft = try draftRecord(scopedConversationID: key) {
       // Staging removes the old draft atomically, so a coexisting draft was saved afterward.
       return .draftConflict(
@@ -921,6 +1229,13 @@ actor PersistenceStore {
     }
     for record in try modelContext.fetch(
       FetchDescriptor<DraftRecord>(
+        predicate: #Predicate { $0.gatewayID == targetGatewayID }
+      )
+    ) {
+      modelContext.delete(record)
+    }
+    for record in try modelContext.fetch(
+      FetchDescriptor<WindowDraftRecord>(
         predicate: #Predicate { $0.gatewayID == targetGatewayID }
       )
     ) {
@@ -1107,6 +1422,15 @@ actor PersistenceStore {
       }
     }
     for record in try modelContext.fetch(
+      FetchDescriptor<WindowDraftRecord>(
+        predicate: #Predicate {
+          $0.gatewayID == targetGatewayID && $0.conversationID == targetConversationID
+        }
+      )
+    ) {
+      modelContext.delete(record)
+    }
+    for record in try modelContext.fetch(
       FetchDescriptor<ReplayCursorRecord>(
         predicate: #Predicate {
           $0.gatewayID == targetGatewayID && $0.conversationID == targetConversationID
@@ -1234,6 +1558,15 @@ actor PersistenceStore {
     return try modelContext.fetch(descriptor).first
   }
 
+  private func windowDraftRecord(scopedWindowID: String) throws -> WindowDraftRecord? {
+    let key = scopedWindowID
+    var descriptor = FetchDescriptor<WindowDraftRecord>(
+      predicate: #Predicate { $0.scopedWindowID == key }
+    )
+    descriptor.fetchLimit = 1
+    return try modelContext.fetch(descriptor).first
+  }
+
   private func pendingSendRecord(scopedConversationID: String) throws -> PendingSendRecord? {
     let key = scopedConversationID
     var descriptor = FetchDescriptor<PendingSendRecord>(
@@ -1264,7 +1597,9 @@ actor PersistenceStore {
         localUserID: record.localUserID,
         draft: record.draft,
         attachments: attachments,
-        createdAt: record.createdAt
+        createdAt: record.createdAt,
+        sourceWindowID: record.sourceWindowID,
+        submittedRevision: record.submittedRevision.map { UInt64(max($0, 0)) }
       ),
       attachmentIssue
     )
@@ -1329,6 +1664,14 @@ actor PersistenceStore {
 
   private func scopedID(gatewayID: String, resourceID: String) -> String {
     "\(gatewayID)|\(resourceID)"
+  }
+
+  private func scopedWindowDraftID(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) -> String {
+    "\(gatewayID)|\(conversationID)|window|\(windowID)"
   }
 }
 

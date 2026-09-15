@@ -37,6 +37,8 @@ struct AssistantEventViews: View {
   /// `nested={options.depth < MAX_SUBAGENT_DEPTH}`.
   let subagentDepth: Int
   let subagentInteraction: SubagentInteraction
+  let onActivityInspectorOpen: (String, String) -> Void
+  let onActivityInspectorDismiss: () -> Void
 
   init(
     projection: AssistantMessageProjection,
@@ -46,7 +48,9 @@ struct AssistantEventViews: View {
     exposesResponseToAccessibility: Bool,
     identifierPrefix: String = "chat",
     subagentDepth: Int = 0,
-    subagentInteraction: SubagentInteraction = .inert
+    subagentInteraction: SubagentInteraction = .inert,
+    onActivityInspectorOpen: @escaping (String, String) -> Void = { _, _ in },
+    onActivityInspectorDismiss: @escaping () -> Void = {}
   ) {
     self.projection = projection
     self.status = status
@@ -56,6 +60,8 @@ struct AssistantEventViews: View {
     self.identifierPrefix = identifierPrefix
     self.subagentDepth = subagentDepth
     self.subagentInteraction = subagentInteraction
+    self.onActivityInspectorOpen = onActivityInspectorOpen
+    self.onActivityInspectorDismiss = onActivityInspectorDismiss
   }
 
   var body: some View {
@@ -69,8 +75,20 @@ struct AssistantEventViews: View {
         TypingIndicatorView()
       }
 
-      ForEach(Array(projection.timeline.enumerated()), id: \.offset) { index, block in
-        timelineView(block, isLastText: index == lastTextIndex)
+      ForEach(Array(assistantTimelineSections(projection.timeline).enumerated()), id: \.offset) {
+        _, section in
+        switch section {
+        case .content(let index, let block):
+          timelineView(block, isLastText: index == lastTextIndex)
+        case .activity(let index, let blocks):
+          ActivityGroupView(
+            blocks: blocks,
+            identifierPrefix: identifierPrefix,
+            activityIndex: index,
+            onOpenInspector: onActivityInspectorOpen,
+            onDismissInspector: onActivityInspectorDismiss
+          )
+        }
       }
 
       // Chrome trim (audit #17): usage is no longer rendered per-turn.
@@ -97,14 +115,12 @@ struct AssistantEventViews: View {
       ThinkingView(thinking: thinking, isCollapsed: projection.isThinkingCollapsed)
     case let .text(text):
       HStack(alignment: .bottom, spacing: 2) {
-        if exposesResponseToAccessibility {
-          MarkdownTextView(text: text)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(markdownPlainTextAccessibilityLabel(for: text))
-            .accessibilityIdentifier(isLastText ? "chat.final.response" : "chat.response.segment")
-        } else {
-          MarkdownTextView(text: text).accessibilityHidden(true)
-        }
+        LongMessageView(
+          text: text,
+          exposesResponseToAccessibility: exposesResponseToAccessibility,
+          accessibilityIdentifier: isLastText ? "chat.final.response" : "chat.response.segment",
+          accessibilityLabel: isLastText ? projection.text : text
+        )
         if status == .streaming && isLastText { StreamingCaretView() }
       }
     case let .tool(tool):

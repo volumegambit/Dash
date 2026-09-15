@@ -21,7 +21,10 @@ import {
  * hub's own frames keep their `seq` field without an `undefined` branch from
  * a variant this hub can never actually produce.
  */
-type HubServerFrame = Exclude<MobileWsServerFrame, { type: `voice_${string}` }>;
+type HubServerFrame = Exclude<
+  MobileWsServerFrame,
+  { type: `voice_${string}` | 'watched' | 'queue_changed' }
+> & { seq?: number };
 
 function isHubServerFrame(frame: MobileWsServerFrame): frame is HubServerFrame {
   return !frame.type.startsWith('voice_');
@@ -1530,6 +1533,247 @@ describe('ResumableChatHub', () => {
     expect(sink.frames.map((frame) => frame.seq)).toEqual([1, 2, 3]);
   });
 
+  it('watches without a replay gap and fans ordinary turns out to remote viewers', async () => {
+    const conversation = createConversation();
+    const first = register(conversation.id);
+    const author = makeSink();
+    hub.start(sendFrame(conversation, 'turn-history'), author);
+    first.finish();
+    await waitForFrames(author, 2);
+
+    const watcher = makeSink();
+    hub.watch(
+      {
+        type: 'watch',
+        id: 'watch-01',
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        sinceSeq: 1,
+      },
+      watcher,
+    );
+    expect(watcher.frames).toEqual([
+      expect.objectContaining({ type: 'done', id: 'turn-history', seq: 2 }),
+      expect.objectContaining({
+        type: 'watched',
+        id: 'watch-01',
+        throughSeq: 2,
+        queue: expect.objectContaining({ pendingCount: 0 }),
+      }),
+    ]);
+
+    const second = register(conversation.id, makeScriptedStream());
+    hub.start(sendFrame(conversation, 'turn-remote', 'From another device'), author);
+    await waitForFrames(watcher, 3);
+    expect(watcher.frames[2]).toMatchObject({
+      type: 'accepted',
+      id: 'turn-remote',
+      origin: 'user',
+      kind: 'user',
+      seq: 3,
+    });
+    second.finish();
+    await waitForFrames(watcher, 4);
+    expect(watcher.frames[3]).toMatchObject({ type: 'done', id: 'turn-remote', seq: 4 });
+  });
+
+  it('keeps Follow Up pending during a run and advances it once after completion', async () => {
+    const conversation = createConversation();
+    const first = register(conversation.id);
+    const author = makeSink();
+    const watcher = makeSink();
+    hub.watch(
+      {
+        type: 'watch',
+        id: 'watch-01',
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        sinceSeq: 0,
+      },
+      watcher,
+    );
+    hub.start(sendFrame(conversation), author);
+    const second = register(conversation.id, makeScriptedStream());
+
+    const caller = makeSink();
+    hub.followUp(
+      {
+        type: 'follow_up',
+        id: 'command-follow-up',
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        text: 'Do this next',
+      },
+      caller,
+    );
+
+    expect(caller.frames[0]).toMatchObject({
+      type: 'command_receipt',
+      id: 'command-follow-up',
+      status: 'accepted',
+      pendingItem: { text: 'Do this next', state: 'pending' },
+    });
+    expect(harness.chat).toHaveBeenCalledTimes(1);
+
+    first.finish();
+    await vi.waitFor(() => expect(harness.chat).toHaveBeenCalledTimes(2));
+    const pendingAccepted = watcher.frames.find(
+      (frame) => frame.type === 'accepted' && frame.id !== 'turn-01',
+    );
+    expect(pendingAccepted).toMatchObject({
+      type: 'accepted',
+      pendingItemId:
+        caller.frames[0]?.type === 'command_receipt' ? caller.frames[0].pendingItem?.id : undefined,
+    });
+    expect(harness.chat.mock.calls[1]?.[0].text).toBe('Do this next');
+    second.finish();
+    await vi.waitFor(() => expect(conversations.get(conversation.id)?.pendingCount).toBe(0));
+  });
+
+  it('waits for interrupted provider cleanup before admitting priority work', async () => {
+    const cleanup = deferred<void>();
+    const conversation = createConversation();
+    const first = register(conversation.id, makeScriptedStream(cleanup.promise));
+    hub.start(sendFrame(conversation), makeSink());
+    register(conversation.id, makeScriptedStream());
+
+    hub.interruptAndSend(
+      {
+        type: 'interrupt_and_send',
+        id: 'command-interrupt',
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        expectedActiveTurnId: 'turn-01',
+        text: 'Urgent correction',
+      },
+      makeSink(),
+    );
+    first.finish();
+    await vi.waitFor(() => expect(first.return).toHaveBeenCalled());
+    expect(harness.chat).toHaveBeenCalledTimes(1);
+
+    cleanup.resolve();
+    await vi.waitFor(() => expect(harness.chat).toHaveBeenCalledTimes(2));
+    expect(harness.chat.mock.calls[1]?.[0].text).toBe('Urgent correction');
+  });
+
+  it('keeps the conversation fenced until a cancelled provider has settled', async () => {
+    const cleanup = deferred<void>();
+    const conversation = createConversation();
+    const first = register(conversation.id, makeScriptedStream(cleanup.promise));
+    hub.start(sendFrame(conversation), makeSink());
+    await hub.cancel('turn-01', makeSink());
+    first.finish();
+    await vi.waitFor(() => expect(first.return).toHaveBeenCalled());
+
+    register(conversation.id, makeScriptedStream());
+    expect(() => hub.start(sendFrame(conversation, 'turn-02'), makeSink())).toThrowError(
+      expect.objectContaining({ code: 'conversation_busy' }),
+    );
+
+    cleanup.resolve();
+    await first.return.mock.results[0]?.value;
+    expect(() => hub.start(sendFrame(conversation, 'turn-02'), makeSink())).not.toThrow();
+  });
+
+  it('lets a later Stop fence an interrupt that has not started yet', async () => {
+    const cleanup = deferred<void>();
+    const conversation = createConversation();
+    const first = register(conversation.id, makeScriptedStream(cleanup.promise));
+    hub.start(sendFrame(conversation), makeSink());
+    register(conversation.id, makeScriptedStream());
+
+    hub.interruptAndSend(
+      {
+        type: 'interrupt_and_send',
+        id: 'command-interrupt',
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        expectedActiveTurnId: 'turn-01',
+        text: 'Urgent correction',
+      },
+      makeSink(),
+    );
+    first.finish();
+    await vi.waitFor(() => expect(first.return).toHaveBeenCalled());
+    hub.stopConversation(
+      {
+        type: 'stop_conversation',
+        id: 'command-stop',
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+      },
+      makeSink(),
+    );
+    cleanup.resolve();
+    await first.return.mock.results[0]?.value;
+    await Promise.resolve();
+
+    expect(harness.chat).toHaveBeenCalledTimes(1);
+    expect(conversations.get(conversation.id)).toMatchObject({
+      pendingCount: 1,
+      pendingScheduling: 'paused',
+    });
+  });
+
+  it('pauses queued work after failure and never advances it', async () => {
+    const conversation = createConversation();
+    const first = register(conversation.id);
+    hub.start(sendFrame(conversation), makeSink());
+    register(conversation.id, makeScriptedStream());
+    hub.followUp(
+      {
+        type: 'follow_up',
+        id: 'command-follow-up',
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        text: 'Do this next',
+      },
+      makeSink(),
+    );
+
+    first.fail(new Error('provider failed'));
+    await vi.waitFor(() =>
+      expect(conversations.get(conversation.id)).toMatchObject({
+        activeTurnId: null,
+        pendingCount: 1,
+        pendingScheduling: 'paused',
+      }),
+    );
+    expect(harness.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it('replaying a Stop command never cancels a later execution', async () => {
+    const conversation = createConversation();
+    const first = register(conversation.id);
+    hub.start(sendFrame(conversation), makeSink());
+    const stopFrame = {
+      type: 'stop_conversation' as const,
+      id: 'command-stop',
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+    };
+    const caller = makeSink();
+    hub.stopConversation(stopFrame, caller);
+    first.finish();
+    await vi.waitFor(() => expect(first.return).toHaveBeenCalled());
+    await first.return.mock.results[0]?.value;
+
+    const second = register(conversation.id, makeScriptedStream());
+    hub.start(sendFrame(conversation, 'turn-02'), makeSink());
+    hub.stopConversation(stopFrame, caller);
+
+    expect(caller.frames.at(-1)).toMatchObject({
+      type: 'command_receipt',
+      id: 'command-stop',
+      status: 'already_applied',
+      affectedTurnId: 'turn-01',
+    });
+    expect(conversations.get(conversation.id)?.activeTurnId).toBe('turn-02');
+    expect(harness.cancel).toHaveBeenCalledTimes(1);
+    second.finish();
+  });
+
   it('keeps an ordinary user turn off every socket but the one that started it', async () => {
     const conversation = createConversation();
     const first = register(conversation.id);
@@ -1685,6 +1929,8 @@ describe('ResumableChatHub', () => {
     await hub.cancel('turn-01', makeSink());
     scripted.finish();
     await vi.waitFor(() => expect(finishes).toHaveLength(1));
+    await vi.waitFor(() => expect(scripted.return).toHaveBeenCalled());
+    await scripted.return.mock.results[0]?.value;
     expect(finishes[0]).toEqual({ turnId: 'turn-01', outcome: 'cancelled' });
 
     const failing = register(conversation.id, makeScriptedStream());

@@ -113,7 +113,7 @@ export function createVoiceTurnBridge(options: VoiceTurnBridgeOptions): VoiceTur
       // Only the session's own turn is routed. A subscribed conversation can
       // deliver frames for a notification turn or another device's turn, and
       // the session must not speak those.
-      if (!turn || frame.id !== turn.turnId) return;
+      if (!turn || !('id' in frame) || frame.id !== turn.turnId) return;
       if (frame.type === 'event') {
         turn.onEvent(frame.event as AgentEvent);
         return;

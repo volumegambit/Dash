@@ -105,6 +105,36 @@ describe('SqliteEventLogStore', () => {
     expect(entries[1].payload).toEqual({ type: 'done' });
   });
 
+  it('reads only requested turns in stable turn and sequence order', () => {
+    store.append('agent-a', 'conv-1', 'turn-b', evt('b1'));
+    store.append('agent-a', 'conv-1', 'turn-a', evt('a1'));
+    store.append('agent-a', 'conv-1', 'turn-b', evt('b2'));
+    store.append('agent-a', 'conv-2', 'turn-a', evt('other conversation'));
+    store.append('agent-b', 'conv-1', 'turn-a', evt('other agent'));
+
+    const entries = store.readForTurns('agent-a', 'conv-1', ['turn-b', 'turn-a', 'turn-b']);
+
+    expect(entries.map((entry) => [entry.msgId, entry.seq])).toEqual([
+      ['turn-a', 2],
+      ['turn-b', 1],
+      ['turn-b', 3],
+    ]);
+    expect(store.readForTurns('agent-a', 'conv-1', [])).toEqual([]);
+  });
+
+  it('batches more turn IDs than one SQLite parameter window', () => {
+    const turnIds = Array.from(
+      { length: 1_005 },
+      (_, index) => `turn-${String(index).padStart(4, '0')}`,
+    );
+    for (const turnId of turnIds) store.append('agent-a', 'conv-1', turnId, evt(turnId));
+
+    const entries = store.readForTurns('agent-a', 'conv-1', [...turnIds].reverse());
+
+    expect(entries).toHaveLength(turnIds.length);
+    expect(entries.map((entry) => entry.msgId)).toEqual(turnIds);
+  });
+
   // ------------------------------------------------------------------
   // Terminal markers
   // ------------------------------------------------------------------

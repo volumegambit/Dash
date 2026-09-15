@@ -1011,6 +1011,22 @@ export const useChatStore = create<ChatState>((set, get) => {
     async applyFrame(frame) {
       if (isVoiceServerFrame(frame)) return;
       if (!frame.conversationId) return;
+      if (frame.type === 'queue_changed') {
+        set((state) => ({
+          conversations: state.conversations.map((conversation) =>
+            conversation.id === frame.conversationId && conversation.origin === 'gateway'
+              ? {
+                  ...conversation,
+                  pendingCount: frame.queue.pendingCount,
+                  pendingScheduling: frame.queue.scheduling,
+                  queueRevision: frame.queue.revision,
+                }
+              : conversation,
+          ),
+        }));
+        return;
+      }
+      if (frame.type === 'watched' || frame.type === 'command_receipt') return;
       // Ruling 4: a child's frames belong to the child's transcript. Ahead of
       // everything below, because the conversation path would key
       // `messages`/`streamingFrames` by the CHILD's id and then send its `done`

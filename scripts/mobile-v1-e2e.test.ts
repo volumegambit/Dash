@@ -176,7 +176,11 @@ describe('mobile v1 real gateway acceptance', () => {
   it('keeps desktop-shaped and ios-shaped clients on one canonical transcript', async () => {
     const report = await mobileE2E.runMobileV1Acceptance();
 
-    expect(report.healthCapabilities).toEqual(['conversation-sync-v1', 'chat-resume-v1']);
+    expect(report.healthCapabilities).toEqual([
+      'conversation-sync-v1',
+      'chat-resume-v1',
+      'conversation-control-v2',
+    ]);
     expect(report.acceptedTurnId).toBe(report.replayedTurnId);
     expect(report.desktopTranscript).toEqual(report.iosTranscript);
     expect(report.desktopTranscript.map((message) => message.role)).toEqual(['user', 'assistant']);

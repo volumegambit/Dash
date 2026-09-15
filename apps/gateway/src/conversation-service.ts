@@ -8,9 +8,13 @@ import type {
   ConversationNoticeKind,
   ConversationPage,
   ConversationPatchRequest,
+  ConversationPendingPage,
+  ConversationQueueSnapshot,
   ConversationSummary,
   MobileApiError,
   MobileImage,
+  MobileWsServerFrame,
+  PendingConversationInput,
   SubagentInfo,
   SubagentStatus,
 } from '@dash/mobile-contract';
@@ -130,6 +134,39 @@ export interface ListMessagesInput {
   before?: string;
 }
 
+export type ConversationCommandReceipt = Extract<MobileWsServerFrame, { type: 'command_receipt' }>;
+
+export interface ConversationCommandTarget {
+  commandId: string;
+  agentId: string;
+  conversationId: string;
+}
+
+export interface EnqueueFollowUpInput extends ConversationCommandTarget {
+  text: string;
+  images?: MobileImage[];
+}
+
+export interface InterruptAndEnqueueInput extends EnqueueFollowUpInput {
+  expectedActiveTurnId: string;
+}
+
+export interface EditPendingInput extends EnqueueFollowUpInput {
+  pendingId: string;
+  expectedVersion: number;
+}
+
+export interface RemovePendingInput extends ConversationCommandTarget {
+  pendingId: string;
+  expectedVersion: number;
+}
+
+export interface ListPendingInput {
+  conversationId: string;
+  limit: number;
+  cursor?: string;
+}
+
 export interface AcceptTurnInput {
   agentId: string;
   conversationId: string;
@@ -138,6 +175,8 @@ export interface AcceptTurnInput {
   images?: MobileImage[];
   /** Defaults to `'user'`; server-initiated turns pass `'notification'`. */
   origin?: ConversationMessageOrigin;
+  /** Durable queue item that this turn claims, when it was scheduler-admitted. */
+  pendingItemId?: string;
 }
 
 export interface AcceptedTurn {
@@ -148,6 +187,7 @@ export interface AcceptedTurn {
   revision: number;
   created: boolean;
   firstUserMessage: boolean;
+  pendingItemId?: string;
 }
 
 export type FinishTurnInput =
@@ -179,6 +219,18 @@ export interface ConversationService {
   ): ConversationSummary;
   delete(id: string, expectedRevision: number): ConversationSummary;
   listMessages(input: ListMessagesInput): ConversationMessagePage;
+  listPending(input: ListPendingInput): ConversationPendingPage;
+  queueSnapshot(conversationId: string): ConversationQueueSnapshot;
+  enqueueFollowUp(input: EnqueueFollowUpInput): ConversationCommandReceipt;
+  interruptAndEnqueue(input: InterruptAndEnqueueInput): ConversationCommandReceipt;
+  stopConversation(input: ConversationCommandTarget): ConversationCommandReceipt;
+  resumePending(input: ConversationCommandTarget): ConversationCommandReceipt;
+  editPending(input: EditPendingInput): ConversationCommandReceipt;
+  removePending(input: RemovePendingInput): ConversationCommandReceipt;
+  claimNextPending(conversationId: string): PendingConversationInput | null;
+  releasePendingClaim(pendingId: string): void;
+  completePendingClaim(pendingId: string, pauseScheduling?: boolean): void;
+  pausePending(conversationId: string): ConversationQueueSnapshot;
   acceptTurn(input: AcceptTurnInput): AcceptedTurn;
   /** Append a standalone notice message (see the sqlite implementation). */
   appendNotice(input: AppendNoticeInput): ConversationMessage | null;
