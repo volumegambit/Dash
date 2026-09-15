@@ -62,6 +62,19 @@ interface AgentStreamEventRow {
   timestamp: string;
 }
 
+const TURN_ID_BATCH_SIZE = 400;
+
+function mapEventRow(row: AgentStreamEventRow): EventLogEntry {
+  return {
+    seq: row.seq,
+    msgId: row.msg_id,
+    agentId: row.agent_id,
+    conversationId: row.conversation_id,
+    timestamp: row.timestamp,
+    payload: JSON.parse(row.payload) as EventLogPayload,
+  };
+}
+
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS agent_stream_events (
     agent_id         TEXT    NOT NULL,
@@ -187,14 +200,28 @@ export class SqliteEventLogStore implements EventLogStore {
       sinceSeq,
     ) as AgentStreamEventRow[];
 
-    return rows.map((row) => ({
-      seq: row.seq,
-      msgId: row.msg_id,
-      agentId: row.agent_id,
-      conversationId: row.conversation_id,
-      timestamp: row.timestamp,
-      payload: JSON.parse(row.payload) as EventLogPayload,
-    }));
+    return rows.map(mapEventRow);
+  }
+
+  readForTurns(agentId: string, conversationId: string, turnIds: string[]): EventLogEntry[] {
+    const uniqueIds = [...new Set(turnIds)].sort();
+    if (uniqueIds.length === 0) return [];
+    const rows: AgentStreamEventRow[] = [];
+    for (let start = 0; start < uniqueIds.length; start += TURN_ID_BATCH_SIZE) {
+      const batch = uniqueIds.slice(start, start + TURN_ID_BATCH_SIZE);
+      const placeholders = batch.map(() => '?').join(', ');
+      rows.push(
+        ...(this.db
+          .prepare(`
+            SELECT agent_id, conversation_id, seq, msg_id, payload, timestamp
+            FROM agent_stream_events
+            WHERE agent_id = ? AND conversation_id = ? AND msg_id IN (${placeholders})
+            ORDER BY msg_id ASC, seq ASC
+          `)
+          .all(agentId, conversationId, ...batch) as AgentStreamEventRow[]),
+      );
+    }
+    return rows.map(mapEventRow);
   }
 
   listInterrupted(): InterruptedConversation[] {

@@ -419,6 +419,74 @@ describe('SqliteConversationService schema', () => {
     service.close();
   });
 
+  it("reconstructs a page from only that page's turn events in a 10,000-message history", () => {
+    const service = new SqliteConversationService({
+      dataDir: tmpDir,
+      now: () => '2026-07-12T00:00:00.000Z',
+      uuid: () => '00000000-0000-4000-8000-000000000001',
+    });
+    const created = service.create({
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      requestId: 'request-01',
+    });
+    const db = (service as unknown as { db: DatabaseType }).db;
+    const insert = db.prepare(`
+      INSERT INTO conversation_messages
+        (id, conversation_id, turn_id, ordinal, role, content, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?)
+    `);
+    const seed = db.transaction(() => {
+      for (let turn = 1; turn <= 5_000; turn += 1) {
+        const suffix = String(turn).padStart(12, '0');
+        const turnId = `10000000-0000-4000-8000-${suffix}`;
+        const timestamp = `2026-07-12T00:00:00.${String(turn % 1_000).padStart(3, '0')}Z`;
+        insert.run(
+          `20000000-0000-4000-8000-${suffix}`,
+          created.id,
+          turnId,
+          turn * 2 - 1,
+          'user',
+          JSON.stringify({ type: 'user', text: `Question ${turn}` }),
+          timestamp,
+          timestamp,
+        );
+        insert.run(
+          `30000000-0000-4000-8000-${suffix}`,
+          created.id,
+          turnId,
+          turn * 2,
+          'assistant',
+          JSON.stringify({ type: 'assistant', events: [] }),
+          timestamp,
+          timestamp,
+        );
+        service.eventLog.append('agent-01', created.id, turnId, {
+          type: 'event',
+          event: { type: 'text_delta', text: `Answer ${turn}` },
+        });
+      }
+      db.prepare('UPDATE conversations SET last_seq = 5000 WHERE id = ?').run(created.id);
+    });
+    seed();
+    const readSince = vi.spyOn(service.eventLog, 'readSince');
+    const readForTurns = vi.spyOn(service.eventLog, 'readForTurns');
+
+    const page = service.listMessages({ conversationId: created.id, limit: 40 });
+
+    expect(page.items).toHaveLength(40);
+    expect(page.items[0]?.ordinal).toBe(9_961);
+    expect(page.items.at(-1)?.ordinal).toBe(10_000);
+    expect(readSince).not.toHaveBeenCalled();
+    expect(readForTurns).toHaveBeenCalledOnce();
+    expect(readForTurns.mock.calls[0]?.[2]).toHaveLength(20);
+    expect(page.items.at(-1)?.content).toEqual({
+      type: 'assistant',
+      events: [{ type: 'text_delta', text: 'Answer 5000' }],
+    });
+    service.close();
+  });
+
   it('assembles assistant transcript events and computes the newest user preview', () => {
     const service = new SqliteConversationService({
       dataDir: tmpDir,

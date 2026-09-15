@@ -83,6 +83,12 @@ export interface EventLogStore {
   readSince(agentId: string, conversationId: string, sinceSeq: number): EventLogEntry[];
 
   /**
+   * Read events for a bounded set of turn IDs without scanning unrelated
+   * conversation history. Implementations must batch large ID sets.
+   */
+  readForTurns(agentId: string, conversationId: string, turnIds: string[]): EventLogEntry[];
+
+  /**
    * Every conversation whose newest entry is a non-terminal payload,
    * i.e. the log ends mid-turn. Used once at gateway boot to detect
    * turns a previous process died in the middle of; the caller reads

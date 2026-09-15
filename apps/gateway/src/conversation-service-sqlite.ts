@@ -919,7 +919,26 @@ export class SqliteConversationService implements ConversationService {
     const hasMore = rows.length > input.limit;
     const pageRows = hasMore ? rows.slice(1) : rows;
     const boundary = hasMore ? pageRows[0] : undefined;
-    const allEvents = this.eventLog.readSince(conversation.agent_id, conversation.id, 0);
+    const assistantTurnIds = [
+      ...new Set(
+        pageRows
+          .filter(
+            (row) => row.role === 'assistant' && parseContent(row.content).type === 'assistant',
+          )
+          .map((row) => row.turn_id),
+      ),
+    ];
+    const eventsByTurn = new Map<string, MobileAgentEvent[]>();
+    for (const entry of this.eventLog.readForTurns(
+      conversation.agent_id,
+      conversation.id,
+      assistantTurnIds,
+    )) {
+      if (entry.payload.type !== 'event') continue;
+      const events = eventsByTurn.get(entry.msgId);
+      if (events) events.push(entry.payload.event);
+      else eventsByTurn.set(entry.msgId, [entry.payload.event]);
+    }
     const items = pageRows.map((row): ConversationMessage => {
       let content = parseContent(row.content);
       // Notices share the 'assistant' role (the table's CHECK allows only
@@ -927,10 +946,7 @@ export class SqliteConversationService implements ConversationService {
       // the stored content too — otherwise a notice is replaced by an empty
       // assistant message every time the page is read.
       if (row.role === 'assistant' && content.type === 'assistant') {
-        const events: MobileAgentEvent[] = allEvents
-          .filter((entry) => entry.msgId === row.turn_id && entry.payload.type === 'event')
-          .map((entry) => (entry.payload as { type: 'event'; event: MobileAgentEvent }).event);
-        content = { type: 'assistant', events };
+        content = { type: 'assistant', events: eventsByTurn.get(row.turn_id) ?? [] };
       }
       return {
         id: row.id,
