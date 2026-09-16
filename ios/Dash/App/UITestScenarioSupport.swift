@@ -1597,6 +1597,12 @@ extension AppDependenciesFactory {
       enqueued.append((data, sampleRate))
     }
 
+    /// Recorded as an enqueue at the decoded rate a UI test can assert on,
+    /// rather than decoding for real: the scenario's bytes are a stub.
+    func enqueueCompressed(_ data: Data) async {
+      enqueued.append((data, 0))
+    }
+
     func awaitDrain() async {
       drainWaits += 1
     }

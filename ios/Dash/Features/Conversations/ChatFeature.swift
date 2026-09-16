@@ -1435,7 +1435,13 @@ final class ChatFeature {
     makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() },
     makeDictation: @escaping @MainActor @Sendable () -> DictationFeature? = { nil },
     makeReadAloud: @escaping @MainActor @Sendable () -> ReadAloudFeature? = { nil },
-    makeVoiceMode: @escaping ChatVoiceModeFactory = { _, _, _, _ in nil },
+    /// NO DEFAULT, deliberately. This parameter used to default to a factory
+    /// that returned nil, and the app's own wiring simply never passed one —
+    /// so voice mode compiled, showed its button (that gate is the gateway's
+    /// `speech-v1` capability, not this factory) and did nothing when tapped.
+    /// Every construction site now has to say what it wants, and a wiring that
+    /// forgets is a build error rather than a feature shipped switched off.
+    makeVoiceMode: @escaping ChatVoiceModeFactory,
     permission: any SpeechPermissionRequesting = SystemSpeechPermission()
   ) {
     self.gatewayID = gatewayID
