@@ -714,7 +714,8 @@ struct ChatFeatureTests {
         UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
       }),
       recoveryChanges: recoveryChanges,
-      makeID: { ids.next() }
+      makeID: { ids.next() },
+      makeVoiceMode: { _, _, _, _ in nil }
     )
     feature.setConnection(.online)
     await feature.appear()
@@ -1099,7 +1100,8 @@ struct ChatFeatureTests {
         UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
       }),
       recoveryChanges: recoveryChanges,
-      makeID: { ids.next() }
+      makeID: { ids.next() },
+      makeVoiceMode: { _, _, _, _ in nil }
     )
     feature.setConnection(.online)
     await feature.appear()
@@ -1353,7 +1355,8 @@ struct ChatFeatureTests {
       clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
       announcer: FakeChatAccessibilityAnnouncer(),
       validator: ImageAttachmentValidator(),
-      makeID: { ids.next() }
+      makeID: { ids.next() },
+      makeVoiceMode: { _, _, _, _ in nil }
     )
     feature.setConnection(.online)
     await feature.appear()
@@ -1446,7 +1449,8 @@ struct ChatFeatureTests {
       clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
       announcer: FakeChatAccessibilityAnnouncer(),
       validator: ImageAttachmentValidator(),
-      makeID: { ids.next() }
+      makeID: { ids.next() },
+      makeVoiceMode: { _, _, _, _ in nil }
     )
     feature.setConnection(.online)
     await feature.appear()
@@ -1520,7 +1524,8 @@ struct ChatFeatureTests {
       clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
       announcer: FakeChatAccessibilityAnnouncer(),
       validator: ImageAttachmentValidator(),
-      makeID: { ids.next() }
+      makeID: { ids.next() },
+      makeVoiceMode: { _, _, _, _ in nil }
     )
     feature.setConnection(.online)
     await feature.appear()
@@ -2903,7 +2908,8 @@ struct ChatFeatureTests {
       clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
       announcer: FakeChatAccessibilityAnnouncer(),
       validator: ImageAttachmentValidator(),
-      recoveryChanges: recoveryChanges
+      recoveryChanges: recoveryChanges,
+      makeVoiceMode: { _, _, _, _ in nil }
     )
     let appearance = Task { await feature.appear() }
     await subscriptionGate.waitUntilWaiting()
@@ -5610,7 +5616,8 @@ struct ChatFeatureTests {
       clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
       announcer: FakeChatAccessibilityAnnouncer(),
       validator: ImageAttachmentValidator(),
-      makeID: { "req-1" }
+      makeID: { "req-1" },
+      makeVoiceMode: { _, _, _, _ in nil }
     )
     feature.setConnection(.online)
 

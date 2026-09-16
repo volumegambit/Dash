@@ -342,6 +342,37 @@ struct AppDependencies: Sendable {
     self.accountFeatureFactory = accountFeatureFactory
   }
 
+  /// The real hands-free voice session: the microphone, the speaker, and the
+  /// level stream the orb animates from — none of which `ChatFeature` can see.
+  ///
+  /// Named and internal rather than written inline at the call site so a test
+  /// can build one WITHOUT `live()`, which needs machine-local configuration a
+  /// CI runner does not have. The wiring itself is guarded by the compiler:
+  /// `ChatFeature.init` takes this factory with no default.
+  ///
+  /// No `GatewayAPI` here, unlike its dictation and read-aloud siblings: voice
+  /// frames ride the chat socket handed in as `transport`, because the gateway
+  /// keys a voice session by connection.
+  /// Not itself `@MainActor`: `ChatVoiceModeFactory` already carries that
+  /// isolation, and `live()` builds its dependencies off the main actor.
+  static func liveVoiceMode(clock: any AppClock) -> ChatVoiceModeFactory {
+    { id, agentID, conversationID, transport in
+      // One capture per session, and the level stream must come from THAT
+      // instance — a second one would meter a microphone nobody is recording.
+      let capture = AudioCaptureService()
+      return VoiceModeFeature(
+        id: id,
+        agentID: agentID,
+        conversationID: conversationID,
+        transport: transport,
+        capture: capture,
+        player: AudioPlaybackService(),
+        levels: { capture.levels },
+        clock: clock
+      )
+    }
+  }
+
   @MainActor
   static func live() throws -> AppDependencies {
     let schema = PersistenceSchema.make()
@@ -606,19 +637,7 @@ struct AppDependencies: Sendable {
           // siblings can see — the microphone, the speaker, and the level
           // stream the orb animates from, which must come from the SAME
           // capture instance that is recording.
-          makeVoiceMode: { id, agentID, conversationID, transport in
-            let capture = AudioCaptureService()
-            return VoiceModeFeature(
-              id: id,
-              agentID: agentID,
-              conversationID: conversationID,
-              transport: transport,
-              capture: capture,
-              player: AudioPlaybackService(),
-              levels: { capture.levels },
-              clock: clock
-            )
-          }
+          makeVoiceMode: AppDependencies.liveVoiceMode(clock: clock)
         )
       },
       // ONE `GatewayAPI` for the whole screen, unlike A9's deliberate pair:
