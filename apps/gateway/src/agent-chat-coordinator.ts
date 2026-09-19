@@ -229,18 +229,12 @@ export interface AgentChatCoordinatorStats {
 }
 
 /**
- * The gateway's single entry point for chat operations against agents.
- * Coordinates three lower-level pieces — the `ConversationPool` (warm
- * backend cache), the `AgentRegistry` (persisted agent list + lifecycle
- * state), and the `createBackend` factory — and applies the rules every
- * chat entry point needs: identity-prefixed system prompt, disabled-agent
- * gate, pool pin/unpin for in-flight protection, and the
- * `registered → active` lifecycle transition on first message.
- *
- * "Coordinator" rather than "service" because it owns no state of its
- * own — all state lives in the pool and the injected registry. Entry
- * points (`/ws/chat`, channel adapters, direct bridges) call through
- * `chat` / `steer` / `followUp` so the rules stay in exactly one place.
+ * Runtime/backend pool used by the gateway's execution owner.
+ * Coordinates the warm `ConversationPool`, persisted `AgentRegistry`, and
+ * `createBackend` factory. Applies identity-prefixed system prompts, the
+ * disabled-agent gate, pool pin/unpin protection, and the
+ * `registered → active` lifecycle transition on first message. Execution
+ * admission, cancellation ownership, and durable turns live above this layer.
  */
 export interface AgentChatCoordinator {
   chat(request: ChatRequest): AsyncGenerator<AgentEvent>;
@@ -657,6 +651,10 @@ export function createAgentChatCoordinator(
       }
 
       const poolEntry = await pool.getOrCreate(request.agentId, request.conversationId);
+      // Cancellation can arrive while backend creation is pending, before
+      // cancel() can find a pool entry. Do not start provider work after the
+      // owner has already aborted; no pin or swarm attachment exists yet.
+      if (request.signal?.aborted) return;
       if (childSignature) {
         // `getOrCreate` DEDUPES concurrent creates, which leaves a window the
         // check above cannot see: a turn that arrives while an earlier one's
@@ -855,8 +853,30 @@ export function createAgentChatCoordinator(
         // orchestrator, and (inside the coordinator) appending straggler
         // subagent_finished events out-of-band to the event log. The abort listener
         // is `once` and self-cleaning, so there is nothing to remove here.
-        attachment.finalize({ consumerAlive: completedNormally });
-        pool.unpin(request.agentId, request.conversationId);
+        try {
+          try {
+            attachment.finalize({ consumerAlive: completedNormally });
+          } finally {
+            if (!completedNormally) {
+              // Finalization may fail while journaling worker events. Provider
+              // cleanup still owns the pin until its asynchronous finally ends.
+              try {
+                // Attachments without workers have no SwarmRun to abort them.
+                poolEntry.backend.abort();
+              } finally {
+                await genNext?.catch(() => {});
+                let cleanup = await gen.return(undefined).catch(() => undefined);
+                while (cleanup && !cleanup.done) {
+                  cleanup = await gen.next().catch(() => undefined);
+                }
+              }
+            }
+          }
+        } finally {
+          // A settled runtime stream must also mean the provider's finally has
+          // completed, otherwise execution admission could reuse this backend.
+          pool.unpin(request.agentId, request.conversationId);
+        }
       }
     },
 

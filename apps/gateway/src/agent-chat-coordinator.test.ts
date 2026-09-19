@@ -1979,3 +1979,133 @@ describe('AgentChatCoordinator modality threading', () => {
     expect(states[0]?.systemPrompt).not.toContain('<voice>');
   });
 });
+
+describe('cancellation during runtime acquisition', () => {
+  it('never starts a provider when its signal aborted while the backend was being created', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'delayed',
+      model: 'test/model',
+      systemPrompt: 'test',
+    });
+    const acquired = deferred<AgentBackend>();
+    const entered = deferred<void>();
+    const backend = makeStateCapturingBackend();
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 2,
+      createBackend: async () => {
+        entered.resolve();
+        return acquired.promise;
+      },
+    });
+    const abort = new AbortController();
+    const stream = agents.chat({
+      agentId: id,
+      conversationId: 'conversation',
+      text: 'cancel me',
+      signal: abort.signal,
+    });
+    const pending = stream.next();
+    await entered.promise;
+    expect(agents.cancel(id, 'conversation')).toBe(false);
+    abort.abort();
+    acquired.resolve(backend.backend);
+    const result = await pending;
+    // Finish any unexpectedly started provider so a failing assertion leaves no live work.
+    await stream.return(undefined);
+    await agents.stop();
+    expect(result.done).toBe(true);
+    expect(backend.states).toEqual([]);
+    expect(agents.stats().pinned).toBe(0);
+  });
+});
+
+it.each(['signal alone', 'runtime cancel and signal', 'throwing swarm finalizer'])(
+  'retains the swarm runtime pin until provider cleanup finishes after %s',
+  async (cancellation) => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'settling',
+      model: 'test/model',
+      systemPrompt: 'test',
+    });
+    const entered = deferred<void>();
+    const aborted = deferred<void>();
+    const cleanupEntered = deferred<void>();
+    const cleanup = deferred<void>();
+    const backend: AgentBackend = {
+      name: 'cleanup-gated',
+      start: async () => {},
+      stop: async () => {},
+      abort: () => aborted.resolve(),
+      async *run() {
+        try {
+          entered.resolve();
+          await aborted.promise;
+          yield* [];
+        } finally {
+          cleanupEntered.resolve();
+          await cleanup.promise;
+        }
+      },
+    };
+    const { factory } = makeWorkerFactory();
+    const coordinator = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
+    const finalizationFailure = new Error('finalizer journal failed');
+    if (cancellation === 'throwing swarm finalizer') {
+      const attach = coordinator.attach.bind(coordinator);
+      vi.spyOn(coordinator, 'attach').mockImplementation((input) => {
+        const attachment = attach(input);
+        const finalize = attachment.finalize.bind(attachment);
+        attachment.finalize = (options) => {
+          finalize(options);
+          backend.abort();
+          throw finalizationFailure;
+        };
+        return attachment;
+      });
+    }
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 2,
+      createBackend: async () => backend,
+      swarm: { coordinator, isEnabled: () => true },
+    });
+    const abort = new AbortController();
+    const stream = agents.chat({
+      agentId: id,
+      conversationId: 'conversation',
+      text: 'cancel me',
+      signal: abort.signal,
+    });
+    let settled = false;
+    const pending = stream.next().then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
+    await entered.promise;
+    if (cancellation === 'runtime cancel and signal') agents.cancel(id, 'conversation');
+    abort.abort();
+    await cleanupEntered.promise;
+    // Allow the wrapper to observe its abort arm, independently of provider cleanup.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const settledBeforeCleanup = settled;
+    const pinsBeforeCleanup = agents.stats().pinned;
+    cleanup.resolve();
+    const result = await pending;
+    if (cancellation === 'throwing swarm finalizer') expect(result).toBe(finalizationFailure);
+    else expect(result).toMatchObject({ done: true });
+    await stream.return(undefined);
+    await agents.stop();
+    expect(settledBeforeCleanup).toBe(false);
+    expect(pinsBeforeCleanup).toBe(1);
+    expect(agents.stats().pinned).toBe(0);
+  },
+);
