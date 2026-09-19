@@ -7,7 +7,10 @@ import { findCatalogPattern, globToRegex } from '@dash/plugins';
  * listing; neither date nor version is a benchmark or a quality claim. */
 // Advance only after reviewing the full unfamiliar-family report, not on apply.
 // Existing out-of-policy models remain visible in reviewCandidates.
-export const OPENROUTER_FAMILY_REVIEWED_AT = '2026-09-13T09:00:00Z';
+// 2026-09-19: declined prism-ml/ternary-bonsai-2-27b and unbiased/pareto (unreviewed
+// vendors), ~deepseek/deepseek-{pro,flash}-latest (moving redirect aliases), and
+// z-ai/glm-5.3-flashx (speed variant of the already-selected GLM 5.3 Flash).
+export const OPENROUTER_FAMILY_REVIEWED_AT = '2026-09-19T15:19:00Z';
 
 export const OPENROUTER_FRONTIER_FAMILIES = [
   ['OpenAI Astra', /^openai\/gpt-[\d.]+-astra$/],
