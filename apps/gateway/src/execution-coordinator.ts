@@ -121,7 +121,18 @@ export interface StartSystemTurnInput {
   requestId?: string;
 }
 
+export interface ExecutionStatus {
+  /** Process admission gate; individual agents may still be quiescing. */
+  accepting: boolean;
+  /** Owned turns, including cancelled turns whose cleanup has not settled. */
+  activeCanonicalTurns: number;
+  activeLegacyTurns: number;
+  /** Agent admission gates held until allowAgent is called. */
+  quiescingAgents: number;
+}
+
 export interface ExecutionCoordinator {
+  status(): ExecutionStatus;
   start(input: StartTurnInput): AcceptedTurn;
   startSystemTurn(input: StartSystemTurnInput): { turnId: string };
   followUp(input: EnqueueFollowUpInput): ConversationCommandReceipt;
@@ -635,6 +646,12 @@ export function createExecutionCoordinator(
 
   const execution: ExecutionCoordinator = {
     legacy,
+    status: () => ({
+      accepting: !stopped,
+      activeCanonicalTurns: turns.size,
+      activeLegacyTurns: legacy.activeTurnCount(),
+      quiescingAgents: quiescingAgents.size,
+    }),
     start(input) {
       return acceptAndRun(input, input.origin ?? 'user');
     },

@@ -2,7 +2,13 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentClient } from '@dash/agent';
 import { SLASH_HELP, formatSkillList, parseSlashCommand } from '@dash/channels';
-import type { ChannelAdapter, InboundMessage, MessageHook, MessageLogEntry } from '@dash/channels';
+import type {
+  ChannelAdapter,
+  ChannelHealth,
+  InboundMessage,
+  MessageHook,
+  MessageLogEntry,
+} from '@dash/channels';
 import { describeError, withTimeout } from './shutdown.js';
 
 /**
@@ -108,6 +114,8 @@ export interface DynamicGateway {
   stopChannel(channelName: string): Promise<boolean>;
   agentCount(): number;
   channelCount(): number;
+  /** Current adapter health for channels present in the runtime routing map. */
+  channelHealth(): Array<{ name: string; health: ChannelHealth }>;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -429,6 +437,8 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
 
     agentCount: () => agents.size,
     channelCount: () => channels.size,
+    channelHealth: () =>
+      [...channels.entries()].map(([name, { adapter }]) => ({ name, health: adapter.getHealth() })),
 
     async start() {
       // no-op: adapters are started on registerChannel

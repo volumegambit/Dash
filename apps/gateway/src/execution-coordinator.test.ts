@@ -309,6 +309,47 @@ describe('ExecutionCoordinator queue and settlement ownership', () => {
   function command(commandId: string) {
     return { agentId: request.agentId, conversationId: request.conversationId, commandId };
   }
+  it.each(['stop', 'cancelAgent'] as const)(
+    'reports owned canonical and legacy turns until %s finishes provider cleanup',
+    async (operation) => {
+      const canonicalRun = register('first', true);
+      const legacyRun = register('legacy', true);
+      expect(execution.status()).toEqual({
+        accepting: true,
+        activeCanonicalTurns: 0,
+        activeLegacyTurns: 0,
+        quiescingAgents: 0,
+      });
+      execution.start(request);
+      const legacyReading = execution.legacy
+        .chat({ ...request, conversationId: 'legacy-conversation', text: 'legacy' })
+        .next();
+      await vi.waitFor(() => expect(requests).toHaveLength(2));
+      expect(execution.status()).toMatchObject({ activeCanonicalTurns: 1, activeLegacyTurns: 1 });
+      const settling = operation === 'stop' ? execution.stop() : execution.cancelAgent('agent');
+      await vi.waitFor(() => {
+        expect(canonicalRun.cleaning).toBe(true);
+        expect(legacyRun.cleaning).toBe(true);
+      });
+      expect(conversations.get(request.conversationId)?.activeTurnId).toBeNull();
+      expect(execution.status()).toEqual({
+        accepting: operation !== 'stop',
+        activeCanonicalTurns: 1,
+        activeLegacyTurns: 1,
+        quiescingAgents: operation === 'cancelAgent' ? 1 : 0,
+      });
+      canonicalRun.cleanup.resolve();
+      await vi.waitFor(() => expect(execution.status().activeCanonicalTurns).toBe(0));
+      expect(execution.status().activeLegacyTurns).toBe(1);
+      legacyRun.cleanup.resolve();
+      await Promise.all([settling, legacyReading]);
+      expect(execution.status()).toMatchObject({ activeCanonicalTurns: 0, activeLegacyTurns: 0 });
+      execution.allowAgent('agent');
+      expect(execution.status().quiescingAgents).toBe(0);
+      expect(execution.status().accepting).toBe(operation !== 'stop');
+    },
+  );
+
   it('advances multiple durable Follow Ups in FIFO order with no hub or subscribers', async () => {
     const first = register('first');
     const second = register('second');

@@ -139,6 +139,7 @@ function makeGateway(): DynamicGateway {
     stopChannel: vi.fn().mockResolvedValue(true),
     agentCount: vi.fn().mockReturnValue(0),
     channelCount: vi.fn().mockReturnValue(0),
+    channelHealth: vi.fn().mockReturnValue([]),
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
   };
@@ -241,6 +242,7 @@ function makeExecution(agents: AgentChatCoordinator) {
       steer: agents.steer,
       followUp: agents.followUp,
       hasActiveTurn: vi.fn(() => false),
+      activeTurnCount: vi.fn(() => 0),
       ownsTurn: vi.fn(() => false),
       cancelAgent: vi.fn().mockResolvedValue(undefined),
       stop: vi.fn().mockResolvedValue(undefined),
@@ -439,6 +441,34 @@ describe('createGatewayManagementApp', () => {
   });
 
   // Health
+  describe('GET /runtime/status', () => {
+    it('exposes live diagnostics only to the administrative bearer', async () => {
+      const status = {
+        execution: {
+          accepting: true,
+          activeCanonicalTurns: 2,
+          activeLegacyTurns: 1,
+          quiescingAgents: 0,
+        },
+        pool: { size: 3, maxSize: 64, pinned: 3, agents: { a1: 3 } },
+        channels: [{ name: 'telegram', health: 'connected' }],
+        relay: { connection: 'disabled', activeStreams: 0 },
+      };
+      const readStatus = vi.fn(() => status);
+      const { app } = createApp({ runtimeStatus: readStatus });
+      expect((await app.request('/runtime/status')).status).toBe(401);
+      expect((await app.request('/runtime/status', { headers: MOBILE_AUTH })).status).toBe(401);
+      expect(
+        (await app.request('/mobile/v1/runtime/status', { headers: MOBILE_AUTH })).status,
+      ).toBe(404);
+      expect(readStatus).not.toHaveBeenCalled();
+      const response = await app.request('/runtime/status', { headers: AUTH });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(status);
+      expect(readStatus).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('GET /health', () => {
     it('returns healthy without auth', async () => {
       const { app } = createApp();
@@ -1986,6 +2016,24 @@ describe('createGatewayManagementApp', () => {
 
   // Channel routes
   describe('POST /channels', () => {
+    it.each(['credential', 'adapter'])('does not disclose %s failure details', async (failure) => {
+      const { app, credentialStore, gateway } = createApp();
+      const secret = 'private-test-token';
+      if (failure === 'credential') {
+        vi.mocked(credentialStore.get).mockRejectedValue(new Error(secret));
+      } else {
+        await credentialStore.set('channel:bot:token', 'stored-token');
+        vi.mocked(gateway.registerChannel).mockRejectedValue(new Error(secret));
+      }
+      const res = await app.request('/channels', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ name: 'bot', adapter: 'telegram', routing: [] }),
+      });
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'Internal error' });
+    });
+
     it('registers telegram channel using credential store', async () => {
       const { app, credentialStore, gateway, channelRegistry, agentRegistry } = createApp();
       // Pre-store credential and register the referenced agent so the

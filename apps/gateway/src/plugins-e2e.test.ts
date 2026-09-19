@@ -102,6 +102,7 @@ function stubGateway(): DynamicGateway {
     stopChannel: vi.fn().mockResolvedValue(true),
     agentCount: vi.fn().mockReturnValue(0),
     channelCount: vi.fn().mockReturnValue(0),
+    channelHealth: vi.fn().mockReturnValue([]),
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
   } as unknown as DynamicGateway;

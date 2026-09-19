@@ -57,11 +57,14 @@ describe('legacy execution ownership', () => {
     };
     const stream = legacy.chat(full);
     expect(agents.chat).not.toHaveBeenCalled();
+    expect(legacy.activeTurnCount()).toBe(0);
     expect((await stream.next()).value).toBe(event);
+    expect(legacy.activeTurnCount()).toBe(1);
     expect(legacy.hasActiveTurn('agent', 'conversation')).toBe(true);
     expect(agents.chat).toHaveBeenCalledWith({ ...full, signal: expect.any(AbortSignal) });
     expect(await stream.next()).toEqual({ value: undefined, done: true });
     expect(legacy.hasActiveTurn('agent', 'conversation')).toBe(false);
+    expect(legacy.activeTurnCount()).toBe(0);
     expect(agents.cancel).not.toHaveBeenCalled();
   });
 
@@ -122,6 +125,7 @@ describe('legacy execution ownership', () => {
     expect(legacy.cancel('agent', 'conversation')).toBe(true);
     legacy.cancel('agent', 'conversation');
     await enteredCleanup.promise;
+    expect(legacy.activeTurnCount()).toBe(1);
     expect(agents.chat.mock.calls[0][0].signal?.aborted).toBe(true);
     expect(agents.cancel).toHaveBeenCalledTimes(1);
     expect(swarmCoordinator.cancelTurn).toHaveBeenCalledTimes(1);
@@ -134,6 +138,7 @@ describe('legacy execution ownership', () => {
     expect(stopped).toBe(false);
     cleanup.resolve();
     await stop;
+    expect(legacy.activeTurnCount()).toBe(0);
     expect(legacy.hasActiveTurn('agent', 'conversation')).toBe(false);
     expect(await stream.next()).toEqual({ value: undefined, done: true });
   });

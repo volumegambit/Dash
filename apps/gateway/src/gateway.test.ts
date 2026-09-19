@@ -67,6 +67,28 @@ describe('createDynamicGateway', () => {
     expect(gw.channelCount()).toBe(1);
   });
 
+  it('reports current adapter health and removes stopped channels from its health snapshot', async () => {
+    const gw = createDynamicGateway();
+    const adapter = makeFakeAdapter('telegram');
+    const getHealth = vi.spyOn(adapter, 'getHealth').mockReturnValue('connecting');
+    const config = {
+      globalDenyList: [],
+      routing: [
+        { condition: { type: 'default' as const }, agentId: 'agent', allowList: [], denyList: [] },
+      ],
+    };
+    expect(gw.channelHealth()).toEqual([]);
+    await gw.registerChannel('channel-name', adapter, config);
+    expect(gw.channelHealth()).toEqual([{ name: 'channel-name', health: 'connecting' }]);
+    getHealth.mockReturnValue('needs_reauth');
+    expect(gw.channelHealth()).toEqual([{ name: 'channel-name', health: 'needs_reauth' }]);
+    await gw.stopChannel('channel-name');
+    expect(gw.channelHealth()).toEqual([]);
+    await gw.registerChannel('other-channel', adapter, config);
+    await gw.stop();
+    expect(gw.channelHealth()).toEqual([]);
+  });
+
   it('routes messages from a registered channel to the correct agent', async () => {
     const gw = createDynamicGateway();
     const agent = makeFakeAgent();

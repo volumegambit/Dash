@@ -120,6 +120,7 @@ function makeGateway(): DynamicGateway {
     stopChannel: vi.fn().mockResolvedValue(true),
     agentCount: vi.fn().mockReturnValue(0),
     channelCount: vi.fn().mockReturnValue(0),
+    channelHealth: vi.fn().mockReturnValue([]),
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
   };
@@ -192,6 +193,7 @@ function makeExecution(agents: AgentChatCoordinator) {
       steer: agents.steer,
       followUp: agents.followUp,
       hasActiveTurn: vi.fn(() => false),
+      activeTurnCount: vi.fn(() => 0),
       ownsTurn: vi.fn(() => false),
       cancelAgent: vi.fn().mockResolvedValue(undefined),
       stop: vi.fn().mockResolvedValue(undefined),
