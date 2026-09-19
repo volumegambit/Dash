@@ -29,7 +29,7 @@ function makeRealManagementApp(webOrigins: string[] = []): Hono {
     // biome-ignore lint/suspicious/noExplicitAny: stub
     conversationService: {} as any,
     // biome-ignore lint/suspicious/noExplicitAny: stub
-    resumableChatHub: {} as any,
+    execution: {} as any,
     token: ADMIN_TOKEN,
     mobileToken: MOBILE_TOKEN,
     webOrigins,

@@ -17,6 +17,29 @@ describe('SqliteConversationService schema', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
+  it('looks up persisted command identity without mutating the queue', () => {
+    const service = new SqliteConversationService({ dataDir: tmpDir });
+    try {
+      const conversation = service.create({
+        agentId: 'agent',
+        agentName: 'Agent',
+        requestId: 'create',
+      });
+      expect(service.hasCommand('command')).toBe(false);
+      const receipt = service.enqueueFollowUp({
+        agentId: 'agent',
+        conversationId: conversation.id,
+        commandId: 'command',
+        text: 'next',
+      });
+      expect(service.hasCommand('command')).toBe(true);
+      expect(service.hasCommand('unknown')).toBe(false);
+      expect(service.queueSnapshot(conversation.id)).toEqual(receipt.queue);
+    } finally {
+      service.close();
+    }
+  });
+
   it('expands the existing event database without losing rows', () => {
     const legacy = new Database(join(tmpDir, 'agent-stream-events.db'));
     legacy.exec(`

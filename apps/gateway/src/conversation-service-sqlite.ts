@@ -543,6 +543,13 @@ export class SqliteConversationService implements ConversationService {
     return row;
   }
 
+  hasCommand(commandId: string): boolean {
+    return (
+      this.db.prepare('SELECT 1 FROM conversation_commands WHERE command_id = ?').get(commandId) !==
+      undefined
+    );
+  }
+
   private executeCommand(
     target: ConversationCommandTarget,
     command: ConversationCommandReceipt['command'],

@@ -45,13 +45,28 @@ Something not working? Here are the most common issues and how to fix them.
 <AccordionGroup>
   <Accordion title="Conversation is busy">
     **Symptom:** A mutation returns HTTP `409` with `conversation_busy`, or chat returns an error
-    frame with the same code and an `activeTurnId`.
+    frame with the same code. The error may include an `activeTurnId`.
 
     **Fix:** Refresh `GET /mobile/v1/conversations/:id` and use its `activeTurnId`. Replay from
     your last applied sequence, then either send `resume` for that same turn ID or send `cancel`
     for it. Wait until a terminal frame is durable and the refreshed summary no longer has an
     active turn before retrying the mutation or starting another turn. Do not work around the
     lease by sending the prompt again with a new ID; that can duplicate model work.
+
+    If the error says **The previous turn is still settling**, the gateway is waiting for the
+    previous provider run to finish. After cancellation, cleanup can continue even when the
+    conversation summary no longer has an active turn. Wait briefly before retrying. Legacy
+    chat also rejects a second response while the same conversation is running on another
+    connection.
+  </Accordion>
+
+  <Accordion title="No active legacy request for this connection">
+    **Symptom:** Legacy chat returns **No active legacy request for this connection.** when you
+    answer a question, steer a response, or send a Follow Up.
+
+    **Fix:** Send the control on the connection that started the active request. A rejected
+    message does not take ownership of a response running on another connection. Wait for that
+    response to finish before starting a new request from this connection.
   </Accordion>
 
   <Accordion title="Chat has a sequence gap after reconnecting">

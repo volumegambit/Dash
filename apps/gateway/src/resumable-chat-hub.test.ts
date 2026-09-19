@@ -7,6 +7,7 @@ import type { AgentChatCoordinator, ChatRequest } from './agent-chat-coordinator
 import type { ConversationAutoTitleService } from './conversation-auto-title.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { ConversationServiceError } from './conversation-service.js';
+import { createExecutionCoordinator } from './execution-coordinator.js';
 import {
   type ResumableSendFrame,
   type TurnFrameSink,
@@ -212,12 +213,15 @@ describe('ResumableChatHub', () => {
     scripts = [];
     hub = createResumableChatHub({
       conversations,
-      agents: harness.agents,
-      autoTitle,
-      memorySweep,
-      skillReview,
-      swarmCoordinator: { cancelTurn: swarmCancel },
-      onChanged,
+      execution: createExecutionCoordinator({
+        conversations,
+        agents: harness.agents,
+        autoTitle,
+        memorySweep,
+        skillReview,
+        swarmCoordinator: { cancelTurn: swarmCancel },
+        onChanged,
+      }),
     });
   });
 
@@ -1241,9 +1245,12 @@ describe('ResumableChatHub', () => {
     const scripted = register(conversation.id, makeScriptedStream(cleanup.promise));
     const localHub = createResumableChatHub({
       conversations,
-      agents: harness.agents,
-      autoTitle,
-      onChanged,
+      execution: createExecutionCoordinator({
+        conversations,
+        agents: harness.agents,
+        autoTitle,
+        onChanged,
+      }),
     });
     localHub.start(sendFrame(conversation), makeSink());
     scripted.finish();
@@ -2002,5 +2009,200 @@ describe('ResumableChatHub', () => {
     expect(throwing.send).toHaveBeenCalledTimes(throwingCalls);
     expect(healthy.frames.map((item) => item.seq)).toEqual([1, 2, 3, 4]);
     expect(harness.chat).toHaveBeenCalledTimes(1);
+  });
+  it('rolls back a provisional subscription when admission fails', async () => {
+    const conversation = createConversation();
+    const first = register(conversation.id);
+    hub.start(sendFrame(conversation), makeSink());
+    const rejected = makeSink();
+    expect(() => hub.start(sendFrame(conversation, 'rejected'), rejected)).toThrow(
+      'still settling',
+    );
+    first.finish();
+    await vi.waitFor(() => expect(first.return).toHaveBeenCalledOnce());
+    const notification = register(conversation.id);
+    hub.startSystemTurn({
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+      text: 'notice',
+      origin: 'notification',
+    });
+    notification.finish();
+    await vi.waitFor(() => expect(notification.return).toHaveBeenCalledOnce());
+    expect(rejected.frames).toEqual([]);
+  });
+
+  it('disposing an adapter leaves its provider running and stops sink delivery', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+    hub.start(sendFrame(conversation), sink);
+    expect(sink.frames).toHaveLength(1);
+    hub.dispose();
+    expect(harness.cancel).not.toHaveBeenCalled();
+    scripted.emit({ type: 'text_delta', text: 'after disposal' });
+    scripted.finish();
+    await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+    expect(sink.frames).toHaveLength(1);
+    expect(
+      conversations.eventLog
+        .readSince(conversation.agentId, conversation.id, 0)
+        .map((entry) => entry.payload.type),
+    ).toEqual(['accepted', 'event', 'done']);
+  });
+
+  it('delivers a synchronous command receipt before queue and accepted frames to its watcher', () => {
+    const conversation = createConversation();
+    register(conversation.id);
+    const sink = makeSink();
+    hub.watch(
+      {
+        type: 'watch',
+        id: 'watch',
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        sinceSeq: 0,
+      },
+      sink,
+    );
+    hub.followUp(
+      {
+        type: 'follow_up',
+        id: 'follow',
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        text: 'next',
+      },
+      sink,
+    );
+    expect(sink.frames.map((frame) => frame.type)).toEqual([
+      'watched',
+      'command_receipt',
+      'queue_changed',
+      'queue_changed',
+      'accepted',
+    ]);
+  });
+  it('detaches an existing sink when its duplicate accepted replay throws', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    let throwOnSend = false;
+    const sink = makeSink(() => {
+      if (throwOnSend) throw new Error('closed socket');
+    });
+    const frame = sendFrame(conversation);
+    hub.start(frame, sink);
+    throwOnSend = true;
+    hub.start(frame, sink);
+    const calls = sink.send.mock.calls.length;
+    scripted.emit({ type: 'text_delta', text: 'still running' });
+    scripted.finish();
+    await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+    expect(sink.send).toHaveBeenCalledTimes(calls);
+  });
+  it('preserves watcher journal order when a sending sink synchronously cancels on an event', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const watcher = makeSink();
+    hub.watch(
+      {
+        type: 'watch',
+        id: 'watch',
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        sinceSeq: 0,
+      },
+      watcher,
+    );
+    const author = makeSink((frame) => {
+      if (frame.type === 'event') void hub.cancel('turn-01', author);
+    });
+    hub.start(sendFrame(conversation), author);
+    scripted.emit({ type: 'text_delta', text: 'cancel me' });
+    scripted.finish();
+    await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+    const journal = conversations.eventLog
+      .readSince(conversation.agentId, conversation.id, 0)
+      .map((entry) => entry.seq);
+    expect(journal).toEqual([1, 2, 3]);
+    for (const sink of [author, watcher]) {
+      expect(sink.frames.flatMap((frame) => (frame.seq === undefined ? [] : [frame.seq]))).toEqual(
+        journal,
+      );
+    }
+  });
+
+  it('keeps nested accepted-handler command receipts synchronous across same-id retries and rejection', async () => {
+    const conversation = createConversation();
+    const first = register(conversation.id);
+    const watcher = makeSink();
+    hub.watch(
+      {
+        type: 'watch',
+        id: 'watch',
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        sinceSeq: 0,
+      },
+      watcher,
+    );
+    const receipts = [makeSink(), makeSink(), makeSink()];
+    const rejected = makeSink();
+    const counts: number[] = [];
+    let rejection: unknown;
+    const command = {
+      type: 'follow_up' as const,
+      id: 'nested-command',
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+      text: 'next',
+    };
+    const author = makeSink((frame) => {
+      if (frame.type !== 'accepted' || frame.id !== 'turn-01') return;
+      for (const sink of receipts.slice(0, 2)) {
+        hub.followUp(command, sink);
+        counts.push(sink.frames.length);
+      }
+      try {
+        hub.followUp({ ...command, text: 'changed payload' }, rejected);
+      } catch (error) {
+        rejection = error;
+      }
+      const last = receipts[2];
+      if (last) {
+        hub.followUp(command, last);
+        counts.push(last.frames.length);
+      }
+    });
+    hub.start(sendFrame(conversation), author);
+    expect(counts).toEqual([1, 1, 1]);
+    expect(rejection).toMatchObject({ code: 'validation_failed' });
+    expect(rejected.frames).toEqual([]);
+    expect(receipts.map((sink) => sink.frames[0])).toEqual([
+      expect.objectContaining({ type: 'command_receipt', id: command.id, status: 'accepted' }),
+      expect.objectContaining({
+        type: 'command_receipt',
+        id: command.id,
+        status: 'already_applied',
+      }),
+      expect.objectContaining({
+        type: 'command_receipt',
+        id: command.id,
+        status: 'already_applied',
+      }),
+    ]);
+    expect(conversations.queueSnapshot(conversation.id).pendingCount).toBe(1);
+    const second = register(conversation.id);
+    first.finish();
+    await vi.waitFor(() => expect(harness.chat).toHaveBeenCalledTimes(2));
+    second.finish();
+    await vi.waitFor(() => expect(second.return).toHaveBeenCalledOnce());
+    const journal = conversations.eventLog
+      .readSince(conversation.agentId, conversation.id, 0)
+      .map((entry) => entry.seq);
+    expect(watcher.frames.flatMap((frame) => (frame.seq === undefined ? [] : [frame.seq]))).toEqual(
+      journal,
+    );
+    expect(journal).toEqual([1, 2, 3, 4]);
   });
 });

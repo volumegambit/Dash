@@ -183,8 +183,19 @@ function makeConversationService(): ConversationService {
   } as unknown as ConversationService;
 }
 
-function makeResumableChatHub() {
+function makeExecution(agents: AgentChatCoordinator) {
   return {
+    legacy: {
+      chat: vi.fn((request: Parameters<AgentChatCoordinator['chat']>[0]) => agents.chat(request)),
+      cancel: agents.cancel,
+      answerQuestion: agents.answerQuestion,
+      steer: agents.steer,
+      followUp: agents.followUp,
+      hasActiveTurn: vi.fn(() => false),
+      ownsTurn: vi.fn(() => false),
+      cancelAgent: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    },
     cancelAgent: vi.fn().mockResolvedValue(undefined),
     allowAgent: vi.fn(),
   };
@@ -227,19 +238,23 @@ function makeFakeWorkerFactory() {
 }
 
 function createApp(overrides: Record<string, unknown> = {}) {
+  const agents = (overrides.agents as AgentChatCoordinator | undefined) ?? makeAgents();
   const deps = {
     gateway: makeGateway(),
-    agents: makeAgents(),
+    agents,
     agentRegistry: makeAgentRegistry(),
     channelRegistry: makeChannelRegistry(),
     credentialStore: makeCredentialStore(),
     modelsStore: makeModelsStore(),
     conversationService: makeConversationService(),
-    resumableChatHub: makeResumableChatHub(),
     identity: { gatewayId: 'gateway-test-id', publicKey: 'PUBKEY_B64' },
     startedAt: '2026-04-03T00:00:00Z',
     token: 'test-token',
     ...overrides,
+    execution: {
+      ...makeExecution(agents),
+      ...(overrides.execution as Partial<ReturnType<typeof makeExecution>> | undefined),
+    },
   };
   const app = createGatewayManagementApp(deps);
   return { app, ...deps };
@@ -793,22 +808,22 @@ describe('lifecycle cascades', () => {
       expect(agents.evict).toHaveBeenCalledWith(entry.id);
     });
 
-    it('awaits durable resumable cancellation before swarm cleanup and backend eviction', async () => {
+    it('awaits durable execution cancellation before swarm cleanup and backend eviction', async () => {
       const tmpDir = await mkdtemp(join(tmpdir(), 'disable-cancellation-order-'));
       const conversationService = new SqliteConversationService({ dataDir: tmpDir });
       try {
         const cancellation = deferred<void>();
         const order: string[] = [];
-        const resumableChatHub = {
+        const execution = {
           cancelAgent: vi.fn(async (agentId: string) => {
-            order.push('hub-start');
+            order.push('execution-start');
             await cancellation.promise;
             conversationService.finishTurn({
               conversationId: conversation.id,
               turnId: 'turn-01',
               outcome: 'cancelled',
             });
-            order.push(`hub-resolved:${agentId}`);
+            order.push(`execution-resolved:${agentId}`);
           }),
         };
         const cancelRuns = vi.spyOn(coordinator, 'cancelRunsFor').mockImplementation(() => {
@@ -817,7 +832,7 @@ describe('lifecycle cascades', () => {
         const { app, agentRegistry, agents } = createApp({
           swarmCoordinator: coordinator,
           conversationService,
-          resumableChatHub,
+          execution,
         });
         const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
           name: 'x',
@@ -850,13 +865,18 @@ describe('lifecycle cascades', () => {
           method: 'POST',
           headers: AUTH,
         });
-        await vi.waitFor(() => expect(resumableChatHub.cancelAgent).toHaveBeenCalledWith(entry.id));
+        await vi.waitFor(() => expect(execution.cancelAgent).toHaveBeenCalledWith(entry.id));
         expect(cancelRuns).not.toHaveBeenCalled();
         expect(agents.evict).not.toHaveBeenCalled();
 
         cancellation.resolve(undefined);
         expect((await response).status).toBe(200);
-        expect(order).toEqual(['hub-start', `hub-resolved:${entry.id}`, 'swarm', 'evict']);
+        expect(order).toEqual([
+          'execution-start',
+          `execution-resolved:${entry.id}`,
+          'swarm',
+          'evict',
+        ]);
       } finally {
         conversationService.close();
         await rm(tmpDir, { recursive: true, force: true });

@@ -24,6 +24,7 @@ import type { ConversationService } from './conversation-service.js';
 import { type CompleteFn, generateConversationTitle } from './conversation-title.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import type { EventBus, GatewayEvent } from './event-bus.js';
+import type { ExecutionCoordinator } from './execution-coordinator.js';
 import type { DynamicGateway } from './gateway.js';
 import type { McpManagementDeps } from './mcp-management.js';
 import { mountMcpRoutes } from './mcp-management.js';
@@ -31,7 +32,6 @@ import { mobileCors } from './mobile-cors.js';
 import { createModelsController, createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
-import type { ResumableChatHub } from './resumable-chat-hub.js';
 import { retireLesson } from './skill-review.js';
 import type { SpeechConfigStore } from './speech-config-store.js';
 import { createSpeechRoutes } from './speech-routes.js';
@@ -101,8 +101,8 @@ export interface GatewayManagementOptions {
   modelsStore: ModelsStore;
   /** Canonical conversation metadata, messages, and the shared durable event journal. */
   conversationService: ConversationService;
-  /** Process-wide resumable turn owner used to quiesce an agent before backend eviction. */
-  resumableChatHub: Pick<ResumableChatHub, 'allowAgent' | 'cancelAgent'>;
+  /** Process-wide execution owner used to quiesce an agent before backend eviction. */
+  execution: Pick<ExecutionCoordinator, 'allowAgent' | 'cancelAgent' | 'legacy'>;
   /** Shared projects DB. When present, mounts /projects + /issues + /inbox. */
   projectsDb?: ProjectsDb;
   /**
@@ -579,7 +579,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   function buildBridgeClient(agentId: string): AgentClient {
     return {
       chat(channelId, conversationId, text) {
-        return agents.chat({ agentId, conversationId, channelId, text });
+        return options.execution.legacy.chat({ agentId, conversationId, channelId, text });
       },
       listSkills() {
         return agents.listSkills(agentId);
@@ -892,7 +892,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         const entry = agentRegistry.get(id);
         if (!entry) return c.json(mobileAgentNotFound(), 404);
         try {
-          await options.resumableChatHub.cancelAgent(id);
+          await options.execution.cancelAgent(id);
           const removedChannels = await gateway.deregisterAgent(id);
           for (const name of removedChannels) {
             channelRegistry.remove(name);
@@ -947,8 +947,14 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         if (!entry) return c.json(mobileAgentNotFound(), 404);
         try {
           agentRegistry.disable(id);
-          await agentRegistry.save();
-          await options.resumableChatHub.cancelAgent(id);
+          // Cancellation closes admission synchronously. Persist the disabled state
+          // while provider cleanup runs, and keep lifecycle serialization until both settle.
+          const results = await Promise.allSettled([
+            options.execution.cancelAgent(id),
+            Promise.resolve().then(() => agentRegistry.save()),
+          ]);
+          const failure = results.find((result) => result.status === 'rejected');
+          if (failure) throw failure.reason;
           // Disable must actually stop a running orchestrator: cancel its live swarm
           // runs, then evict the warm backend (which aborts the pinned in-flight
           // turn — intentional per the design, disable is a hard stop). Ordered so
@@ -980,7 +986,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         try {
           agentRegistry.enable(id);
           await agentRegistry.save();
-          options.resumableChatHub.allowAgent(id);
+          options.execution.allowAgent(id);
           eventBus?.emit({
             type: 'agent:config-changed',
             agent: entry.name,

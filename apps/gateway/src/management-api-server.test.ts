@@ -16,6 +16,7 @@ import { SqliteConversationService } from './conversation-service-sqlite.js';
 import type { ConversationService } from './conversation-service.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
+import { createExecutionCoordinator } from './execution-coordinator.js';
 import type { DynamicGateway } from './gateway.js';
 import type { JsonBody } from './json-body.test-helpers.js';
 import { createGatewayManagementApp } from './management-api.js';
@@ -231,8 +232,19 @@ function makeConversationService(): ConversationService {
   } as unknown as ConversationService;
 }
 
-function makeResumableChatHub() {
+function makeExecution(agents: AgentChatCoordinator) {
   return {
+    legacy: {
+      chat: vi.fn((request: Parameters<AgentChatCoordinator['chat']>[0]) => agents.chat(request)),
+      cancel: agents.cancel,
+      answerQuestion: agents.answerQuestion,
+      steer: agents.steer,
+      followUp: agents.followUp,
+      hasActiveTurn: vi.fn(() => false),
+      ownsTurn: vi.fn(() => false),
+      cancelAgent: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    },
     cancelAgent: vi.fn().mockResolvedValue(undefined),
     allowAgent: vi.fn(),
   };
@@ -247,15 +259,15 @@ function deferred<T>() {
 }
 
 function createApp(overrides: Record<string, unknown> = {}) {
+  const agents = (overrides.agents as AgentChatCoordinator | undefined) ?? makeAgents();
   const deps = {
     gateway: makeGateway(),
-    agents: makeAgents(),
+    agents,
     agentRegistry: makeAgentRegistry(),
     channelRegistry: makeChannelRegistry(),
     credentialStore: makeCredentialStore(),
     modelsStore: makeModelsStore(),
     conversationService: makeConversationService(),
-    resumableChatHub: makeResumableChatHub(),
     eventBus: new EventBus(),
     identity: { gatewayId: 'gateway-test-id', publicKey: 'PUBKEY_B64' },
     startedAt: '2026-04-03T00:00:00Z',
@@ -263,6 +275,10 @@ function createApp(overrides: Record<string, unknown> = {}) {
     mobileToken: 'mobile-test-token',
     lanTlsFingerprint: 'a'.repeat(64),
     ...overrides,
+    execution: {
+      ...makeExecution(agents),
+      ...(overrides.execution as Partial<ReturnType<typeof makeExecution>> | undefined),
+    },
   };
   const app = createGatewayManagementApp(deps);
   return { app, ...deps };
@@ -1293,7 +1309,7 @@ describe('createGatewayManagementApp', () => {
 
   describe('DELETE /agents/:id', () => {
     it('removes agent and cleans up channels, pool, and registry', async () => {
-      const { app, agentRegistry, gateway, channelRegistry, agents, resumableChatHub, eventBus } =
+      const { app, agentRegistry, gateway, channelRegistry, agents, execution, eventBus } =
         createApp();
       const emit = vi.spyOn(eventBus, 'emit');
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
@@ -1307,14 +1323,14 @@ describe('createGatewayManagementApp', () => {
         headers: AUTH,
       });
       expect(res.status).toBe(200);
-      expect(resumableChatHub.cancelAgent).toHaveBeenCalledWith(entry.id);
+      expect(execution.cancelAgent).toHaveBeenCalledWith(entry.id);
       expect(gateway.deregisterAgent).toHaveBeenCalledWith(entry.id);
       expect(channelRegistry.remove).toHaveBeenCalledWith('ch1');
       expect(channelRegistry.removeRoutesForAgent).toHaveBeenCalledWith(entry.id);
       // Warm pool entries must be evicted so in-flight streams are aborted
       // and backend.stop() runs on any cached DashAgent / AgentBackend.
       expect(agents.evict).toHaveBeenCalledWith(entry.id);
-      expect(resumableChatHub.cancelAgent.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(execution.cancelAgent.mock.invocationCallOrder[0]).toBeLessThan(
         vi.mocked(agents.evict).mock.invocationCallOrder[0] as number,
       );
       expect(agentRegistry.remove).toHaveBeenCalledWith(entry.id);
@@ -1348,6 +1364,7 @@ describe('createGatewayManagementApp', () => {
       const deregistered = deferred<string[]>();
       let deleteRequest: Promise<Response> | undefined;
       let enableRequest: Promise<Response> | undefined;
+      let execution: ReturnType<typeof createExecutionCoordinator> | undefined;
       let resumableChatHub: ReturnType<typeof createResumableChatHub> | undefined;
       try {
         const agents = makeAgents();
@@ -1368,17 +1385,22 @@ describe('createGatewayManagementApp', () => {
           schedule: vi.fn(),
           flush: vi.fn().mockResolvedValue(undefined),
         };
-        resumableChatHub = createResumableChatHub({
+        execution = createExecutionCoordinator({
           conversations: conversationService,
           agents,
           autoTitle,
         });
+        resumableChatHub = createResumableChatHub({
+          conversations: conversationService,
+          execution,
+        });
+        const allowAgent = vi.spyOn(execution, 'allowAgent');
         const gateway = makeGateway();
         vi.mocked(gateway.deregisterAgent).mockImplementation(() => deregistered.promise);
         const { app, agentRegistry } = createApp({
           agents,
           conversationService,
-          resumableChatHub,
+          execution,
           gateway,
         });
         const agent = (agentRegistry.register as ReturnType<typeof vi.fn>)({
@@ -1445,7 +1467,6 @@ describe('createGatewayManagementApp', () => {
 
         cleanupReleased.resolve(undefined);
         await vi.waitFor(() => expect(gateway.deregisterAgent).toHaveBeenCalledWith(agent.id));
-        const allowAgent = vi.spyOn(resumableChatHub, 'allowAgent');
         let enableSettled = false;
         enableRequest = Promise.resolve(
           app.request(`/mobile/v1/agents/${agent.id}/enable`, {
@@ -1490,7 +1511,8 @@ describe('createGatewayManagementApp', () => {
         deregistered.resolve([]);
         if (deleteRequest) await deleteRequest;
         if (enableRequest) await enableRequest;
-        if (resumableChatHub) await resumableChatHub.stop();
+        if (execution) await execution.stop();
+        resumableChatHub?.dispose();
         conversationService.close();
         await rm(tmpDir, { recursive: true, force: true });
       }
@@ -1498,15 +1520,15 @@ describe('createGatewayManagementApp', () => {
 
     it('serializes overlapping disable, delete, and enable operations for one agent', async () => {
       const firstCancellation = deferred<void>();
-      const resumableChatHub = {
+      const execution = {
         cancelAgent: vi.fn(async () => {
-          if (resumableChatHub.cancelAgent.mock.calls.length === 1) {
+          if (execution.cancelAgent.mock.calls.length === 1) {
             await firstCancellation.promise;
           }
         }),
         allowAgent: vi.fn(),
       };
-      const { app, agentRegistry, gateway } = createApp({ resumableChatHub });
+      const { app, agentRegistry, gateway } = createApp({ execution });
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'Serialized Helper',
         model: 'test/model',
@@ -1517,7 +1539,7 @@ describe('createGatewayManagementApp', () => {
         method: 'POST',
         headers: AUTH,
       });
-      await vi.waitFor(() => expect(resumableChatHub.cancelAgent).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(execution.cancelAgent).toHaveBeenCalledOnce());
       const deleting = app.request(`/agents/${entry.id}`, { method: 'DELETE', headers: AUTH });
       const enabling = app.request(`/agents/${entry.id}/enable`, {
         method: 'POST',
@@ -1526,10 +1548,10 @@ describe('createGatewayManagementApp', () => {
 
       try {
         await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(resumableChatHub.cancelAgent).toHaveBeenCalledOnce();
+        expect(execution.cancelAgent).toHaveBeenCalledOnce();
         expect(gateway.deregisterAgent).not.toHaveBeenCalled();
         expect(agentRegistry.enable).not.toHaveBeenCalled();
-        expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
+        expect(execution.allowAgent).not.toHaveBeenCalled();
       } finally {
         firstCancellation.resolve(undefined);
       }
@@ -1542,8 +1564,8 @@ describe('createGatewayManagementApp', () => {
       expect(disableResponse.status).toBe(200);
       expect(deleteResponse.status).toBe(200);
       expect(enableResponse.status).toBe(404);
-      expect(resumableChatHub.cancelAgent).toHaveBeenCalledTimes(2);
-      expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
+      expect(execution.cancelAgent).toHaveBeenCalledTimes(2);
+      expect(execution.allowAgent).not.toHaveBeenCalled();
     });
   });
 
@@ -1576,18 +1598,173 @@ describe('createGatewayManagementApp', () => {
       );
     });
 
+    it.each(['canonical', 'legacy'])(
+      'fences %s admission while disable persistence is pending',
+      async (mode) => {
+        const tmpDir = await mkdtemp(join(tmpdir(), 'management-disable-admission-'));
+        const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+        const saveStarted = deferred<void>();
+        const saveReleased = deferred<void>();
+        const agents = makeAgents();
+        vi.mocked(agents.chat).mockImplementation(async function* (): AsyncGenerator<AgentEvent> {
+          yield { type: 'text_delta', text: 'This turn must not start' };
+        });
+        const execution = createExecutionCoordinator({
+          conversations: conversationService,
+          agents,
+          autoTitle: { schedule: vi.fn(), flush: vi.fn().mockResolvedValue(undefined) },
+        });
+        let disableRequest: Promise<Response> | undefined;
+        try {
+          const { app, agentRegistry } = createApp({ agents, conversationService, execution });
+          const entry = agentRegistry.register({
+            name: 'Pending Disable',
+            model: 'test/model',
+            systemPrompt: '',
+          });
+          const conversation = conversationService.create({
+            agentId: entry.id,
+            agentName: entry.name,
+            requestId: 'create-during-disable',
+          });
+          vi.mocked(agentRegistry.save).mockImplementation(async () => {
+            saveStarted.resolve(undefined);
+            await saveReleased.promise;
+          });
+          let disableSettled = false;
+          disableRequest = Promise.resolve(
+            app.request(`/agents/${entry.id}/disable`, { method: 'POST', headers: AUTH }),
+          ).then((response) => {
+            disableSettled = true;
+            return response;
+          });
+          await saveStarted.promise;
+          expect(agentRegistry.get(entry.id)?.status).toBe('disabled');
+          expect(disableSettled).toBe(false);
+
+          const request = {
+            agentId: entry.id,
+            conversationId: conversation.id,
+            text: 'Race registry persistence',
+          };
+          if (mode === 'canonical') {
+            expect(() => execution.start({ ...request, turnId: 'turn-during-disable' })).toThrow(
+              'Agent is being disabled. Try again shortly.',
+            );
+          } else {
+            await expect(execution.legacy.chat(request).next()).rejects.toThrow(
+              'Agent is being disabled. Try again shortly.',
+            );
+          }
+          expect(agents.chat).not.toHaveBeenCalled();
+          expect(conversationService.get(conversation.id)).toMatchObject({
+            status: 'idle',
+            activeTurnId: null,
+          });
+          expect(
+            conversationService.listMessages({ conversationId: conversation.id, limit: 10 }).items,
+          ).toEqual([]);
+
+          saveReleased.resolve(undefined);
+          expect((await disableRequest).status).toBe(200);
+        } finally {
+          saveReleased.resolve(undefined);
+          if (disableRequest) await disableRequest;
+          await execution.stop();
+          conversationService.close();
+          await rm(tmpDir, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it.each(['saved', 'failed'])(
+      'persists disable during provider cleanup and waits for settlement when persistence %s',
+      async (persistence) => {
+        const tmpDir = await mkdtemp(join(tmpdir(), 'management-disable-settlement-'));
+        const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+        const streamReleased = deferred<void>();
+        const cleanupStarted = deferred<void>();
+        const cleanupReleased = deferred<void>();
+        const agents = makeAgents();
+        vi.mocked(agents.chat).mockImplementation(async function* (): AsyncGenerator<AgentEvent> {
+          try {
+            await streamReleased.promise;
+            yield* [];
+          } finally {
+            cleanupStarted.resolve(undefined);
+            await cleanupReleased.promise;
+          }
+        });
+        vi.mocked(agents.cancel).mockImplementation(() => {
+          streamReleased.resolve(undefined);
+          return true;
+        });
+        const execution = createExecutionCoordinator({
+          conversations: conversationService,
+          agents,
+          autoTitle: { schedule: vi.fn(), flush: vi.fn().mockResolvedValue(undefined) },
+        });
+        let disableRequest: Promise<Response> | undefined;
+        try {
+          const { app, agentRegistry } = createApp({ agents, conversationService, execution });
+          const entry = agentRegistry.register({
+            name: 'Slow Provider Cleanup',
+            model: 'test/model',
+            systemPrompt: '',
+          });
+          const conversation = conversationService.create({
+            agentId: entry.id,
+            agentName: entry.name,
+            requestId: 'create-before-disable',
+          });
+          if (persistence === 'failed') {
+            vi.mocked(agentRegistry.save).mockRejectedValueOnce(new Error('injected save failure'));
+          }
+          execution.start({
+            agentId: entry.id,
+            conversationId: conversation.id,
+            turnId: 'turn-before-disable',
+            text: 'Run until disabled',
+          });
+          let disableSettled = false;
+          disableRequest = Promise.resolve(
+            app.request(`/agents/${entry.id}/disable`, { method: 'POST', headers: AUTH }),
+          ).then((response) => {
+            disableSettled = true;
+            return response;
+          });
+
+          await cleanupStarted.promise;
+          await vi.waitFor(() => expect(agentRegistry.save).toHaveBeenCalledOnce());
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(disableSettled).toBe(false);
+          expect(agents.evict).not.toHaveBeenCalled();
+
+          cleanupReleased.resolve(undefined);
+          expect((await disableRequest).status).toBe(persistence === 'saved' ? 200 : 500);
+        } finally {
+          streamReleased.resolve(undefined);
+          cleanupReleased.resolve(undefined);
+          if (disableRequest) await disableRequest;
+          await execution.stop();
+          conversationService.close();
+          await rm(tmpDir, { recursive: true, force: true });
+        }
+      },
+    );
+
     it('returns 404 for unknown ID', async () => {
-      const { app, agents, resumableChatHub } = createApp();
+      const { app, agents, execution } = createApp();
       const res = await app.request('/agents/nope/disable', { method: 'POST', headers: AUTH });
       expect(res.status).toBe(404);
-      expect(resumableChatHub.cancelAgent).not.toHaveBeenCalled();
+      expect(execution.cancelAgent).not.toHaveBeenCalled();
       expect(agents.evict).not.toHaveBeenCalled();
     });
   });
 
   describe('POST /agents/:id/enable', () => {
     it('enables agent', async () => {
-      const { app, agentRegistry, resumableChatHub, eventBus } = createApp();
+      const { app, agentRegistry, execution, eventBus } = createApp();
       const emit = vi.spyOn(eventBus, 'emit');
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
@@ -1602,16 +1779,16 @@ describe('createGatewayManagementApp', () => {
       });
       expect(res.status).toBe(200);
       expect(agentRegistry.enable).toHaveBeenCalledWith(entry.id);
-      expect(resumableChatHub.allowAgent).toHaveBeenCalledWith(entry.id);
+      expect(execution.allowAgent).toHaveBeenCalledWith(entry.id);
       expect(vi.mocked(agentRegistry.save).mock.invocationCallOrder[0]).toBeLessThan(
-        resumableChatHub.allowAgent.mock.invocationCallOrder[0] as number,
+        execution.allowAgent.mock.invocationCallOrder[0] as number,
       );
       expect(emit).toHaveBeenCalledWith({
         type: 'agent:config-changed',
         agent: 'x',
         fields: ['enabled'],
       });
-      expect(resumableChatHub.allowAgent.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(execution.allowAgent.mock.invocationCallOrder[0]).toBeLessThan(
         emit.mock.invocationCallOrder[0] as number,
       );
     });
@@ -1706,7 +1883,7 @@ describe('createGatewayManagementApp', () => {
     });
 
     it.each(['enable', 'disable'])('contains an injected %s failure', async (action) => {
-      const { app, agentRegistry, resumableChatHub, eventBus } = createApp();
+      const { app, agentRegistry, execution, eventBus } = createApp();
       const emit = vi.spyOn(eventBus, 'emit');
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
@@ -1729,13 +1906,13 @@ describe('createGatewayManagementApp', () => {
         error: 'Internal gateway error',
         retryable: true,
       });
-      if (action === 'enable') expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
+      if (action === 'enable') expect(execution.allowAgent).not.toHaveBeenCalled();
       expect(emit).not.toHaveBeenCalled();
     });
 
     it('keeps a failed delete fenced until explicit enable recovery or a safe retry', async () => {
       let fenced = false;
-      const resumableChatHub = {
+      const execution = {
         cancelAgent: vi.fn(async () => {
           fenced = true;
         }),
@@ -1745,7 +1922,7 @@ describe('createGatewayManagementApp', () => {
       };
       const eventBus = new EventBus();
       const emit = vi.spyOn(eventBus, 'emit');
-      const { app, agentRegistry, gateway } = createApp({ resumableChatHub, eventBus });
+      const { app, agentRegistry, gateway } = createApp({ execution, eventBus });
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
         model: 'test/model',
@@ -1773,7 +1950,7 @@ describe('createGatewayManagementApp', () => {
         await new Promise<void>((resolve) => setImmediate(resolve));
         expect(recoverySettled).toBe(false);
         expect(fenced).toBe(true);
-        expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
+        expect(execution.allowAgent).not.toHaveBeenCalled();
         expect(emit).not.toHaveBeenCalled();
       } finally {
         failDelete.resolve(undefined);
@@ -1794,7 +1971,7 @@ describe('createGatewayManagementApp', () => {
 
       const recovery = await recovering;
       expect(recovery.status).toBe(200);
-      expect(resumableChatHub.allowAgent).toHaveBeenCalledOnce();
+      expect(execution.allowAgent).toHaveBeenCalledOnce();
       expect(fenced).toBe(false);
 
       const retry = await app.request(`/agents/${entry.id}`, {
@@ -1802,7 +1979,7 @@ describe('createGatewayManagementApp', () => {
         headers: AUTH,
       });
       expect(retry.status).toBe(200);
-      expect(resumableChatHub.cancelAgent).toHaveBeenCalledTimes(2);
+      expect(execution.cancelAgent).toHaveBeenCalledTimes(2);
       expect(fenced).toBe(true);
     });
   });
@@ -3171,7 +3348,7 @@ describe('canonical and legacy conversation replay', () => {
       const emit = vi.spyOn(eventBus, 'emit');
       const deleteAgentEvents = vi.spyOn(conversationService.eventLog, 'deleteAgent');
       let liveConversationId = '';
-      const resumableChatHub = {
+      const execution = {
         cancelAgent: vi.fn(async () => {
           conversationService.finishTurn({
             conversationId: liveConversationId,
@@ -3183,7 +3360,7 @@ describe('canonical and legacy conversation replay', () => {
       const { app, agentRegistry, agents } = createApp({
         conversationService,
         eventBus,
-        resumableChatHub,
+        execution,
       });
       const agent = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'Archived Helper',
@@ -3214,8 +3391,8 @@ describe('canonical and legacy conversation replay', () => {
 
       const removed = await app.request(`/agents/${agent.id}`, { method: 'DELETE', headers: AUTH });
       expect(removed.status).toBe(200);
-      expect(resumableChatHub.cancelAgent).toHaveBeenCalledWith(agent.id);
-      expect(resumableChatHub.cancelAgent.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(execution.cancelAgent).toHaveBeenCalledWith(agent.id);
+      expect(execution.cancelAgent.mock.invocationCallOrder[0]).toBeLessThan(
         vi.mocked(agents.evict).mock.invocationCallOrder[0] as number,
       );
       expect(agentRegistry.get(agent.id)).toBeUndefined();

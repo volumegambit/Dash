@@ -53,18 +53,25 @@ describe('recoverGatewayTurns', () => {
 });
 
 describe('gateway conversation composition', () => {
-  it('shares one database, auto-title service, and hub across recovery, management, and chat', () => {
+  it('shares one database, auto-title service, execution owner, and hub across gateway entrypoints', () => {
     const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
 
     expect(source.match(/new SqliteConversationService/g)).toHaveLength(1);
     expect(source).toContain('const eventLogStore = conversationService.eventLog');
     expect(source.match(/createConversationAutoTitleService\(/g)).toHaveLength(1);
+    expect(source.match(/createExecutionCoordinator\(/g)).toHaveLength(1);
     expect(source.match(/createResumableChatHub\(/g)).toHaveLength(1);
+    expect(source.indexOf('recoverGatewayTurns({')).toBeLessThan(
+      source.indexOf('createExecutionCoordinator({'),
+    );
+    expect(source.indexOf('createExecutionCoordinator({')).toBeLessThan(
+      source.indexOf('createResumableChatHub({'),
+    );
     expect(source).toContain('autoTitle: conversationAutoTitle');
     expect(source).toContain('recoverGatewayTurns({');
     expect(source).not.toContain('recoverInterruptedSwarmTurns({');
     expect(source).not.toContain('restoreFinalizedRun');
-    // §7.5: what recovery queued has to be DELIVERED once the hub exists.
+    // §7.5: what recovery queued has to be DELIVERED once execution exists.
     expect(source).toContain('recoveredNotificationTargets');
     expect(source).toContain('deliverPending(target.agentId, target.conversationId)');
     // A throw inside recovery must not take boot down (the child sweep is one
@@ -81,21 +88,24 @@ describe('gateway conversation composition', () => {
     );
     const autoTitle = source.slice(
       source.indexOf('createConversationAutoTitleService({'),
-      source.indexOf('const resumableChatHub'),
+      source.indexOf('const execution ='),
     );
     expect(autoTitle).toContain('registry.get(agentId)');
     expect(autoTitle).toContain('credentialStore.readProviderApiKeys()');
     expect(autoTitle).toContain('pluginModelCatalog: wiringState.pluginModelCatalog');
     expect(autoTitle).toContain('...(entry.config.providerApiKeys ?? {})');
     expect(managementMount).toContain('conversationService');
-    expect(managementMount).toContain('resumableChatHub');
+    expect(managementMount).toContain('execution,');
+    expect(managementMount).not.toContain('resumableChatHub');
+    expect(chatMount).toContain('execution,');
     expect(chatMount).toContain('resumableChatHub');
   });
 
-  it('stops the shared hub and titles before workers and closes conversation storage once', () => {
+  it('stops execution, disposes the hub, and flushes titles before workers and storage', () => {
     const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
     const steps = [
-      "safeStep('resumableChatHub.stop'",
+      "safeStep('execution.stop'",
+      'resumableChatHub.dispose()',
       "safeFlush('conversationAutoTitle.flush'",
       "safeStep('swarmCoordinator.stop'",
       "safeStep('agents.stop'",

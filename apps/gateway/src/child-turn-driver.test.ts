@@ -9,6 +9,7 @@ import type { AgentChatCoordinator, ChatRequest } from './agent-chat-coordinator
 import { createChildTurnDriver } from './child-turn-driver.js';
 import type { ConversationAutoTitleService } from './conversation-auto-title.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
+import { type ExecutionCoordinator, createExecutionCoordinator } from './execution-coordinator.js';
 import { type ResumableChatHub, createResumableChatHub } from './resumable-chat-hub.js';
 
 /** A chat coordinator whose every conversation replays a fixed script. */
@@ -51,6 +52,7 @@ describe('createChildTurnDriver', () => {
   let tmpDir: string;
   let conversations: SqliteConversationService;
   let hub: ResumableChatHub;
+  let execution: ExecutionCoordinator;
   let scripts: Map<string, AgentEvent[]>;
   let uuidCounter: number;
 
@@ -67,11 +69,12 @@ describe('createChildTurnDriver', () => {
       dataDir: tmpDir,
       uuid: () => `00000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`,
     });
-    hub = createResumableChatHub({
+    execution = createExecutionCoordinator({
       conversations,
       agents: makeAgents(scripts),
       autoTitle,
     });
+    hub = createResumableChatHub({ conversations, execution });
   });
 
   afterEach(async () => {
@@ -81,8 +84,8 @@ describe('createChildTurnDriver', () => {
     vi.useRealTimers();
   });
 
-  function makeDriver(hubRef: () => ResumableChatHub | undefined = () => hub) {
-    const driver = createChildTurnDriver({ conversations, hub: hubRef });
+  function makeDriver(executionRef: () => ExecutionCoordinator | undefined = () => execution) {
+    const driver = createChildTurnDriver({ conversations, execution: executionRef });
     driver.attachObserver();
     return driver;
   }
@@ -217,7 +220,7 @@ describe('createChildTurnDriver', () => {
       },
     }) as SqliteConversationService;
 
-    const driver = createChildTurnDriver({ conversations: fragile, hub: () => hub });
+    const driver = createChildTurnDriver({ conversations: fragile, execution: () => execution });
     const childId = childConversationId();
     driver.prepareChild(specFor(childId, parent.id));
     driver.createChild(childInput(childId, parent.id));
@@ -480,7 +483,7 @@ describe('createChildTurnDriver', () => {
     });
 
     it('reports "stopped" before the hub exists at all', () => {
-      const driver = createChildTurnDriver({ conversations, hub: () => undefined });
+      const driver = createChildTurnDriver({ conversations, execution: () => undefined });
       expect(() =>
         driver.startTurn({
           agentId: 'agent-01',

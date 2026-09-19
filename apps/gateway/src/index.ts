@@ -56,6 +56,7 @@ import { generateConversationTitle } from './conversation-title.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { createDialTokenManager } from './dial-token-manager.js';
 import { EventBus } from './event-bus.js';
+import { type ExecutionCoordinator, createExecutionCoordinator } from './execution-coordinator.js';
 import { loadOrCreateGatewayId, loadOrCreateGatewayIdentity } from './gateway-identity.js';
 import { type GatewayRecoveryResult, recoverGatewayTurns } from './gateway-recovery.js';
 import { createDynamicGateway } from './gateway.js';
@@ -77,7 +78,7 @@ import {
   reloadPluginsUnderMutex,
 } from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
-import { type ResumableChatHub, createResumableChatHub } from './resumable-chat-hub.js';
+import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeFlush, safeStep } from './shutdown.js';
 import {
   DEFAULT_MIN_TOOL_CALLS,
@@ -540,14 +541,14 @@ async function main() {
 
   /**
    * The child transport (design §7.1): a child is a real conversation whose
-   * turns run through the SAME `ResumableChatHub` as a user's. The hub is
+   * turns run through the same `ExecutionCoordinator` as a user's. It is
    * constructed later in this file, so it is read through a late-bound getter
    * and its observer is attached once it exists.
    */
-  const hubRef: { current?: ResumableChatHub } = {};
+  const executionRef: { current?: ExecutionCoordinator } = {};
   const childTurnDriver = createChildTurnDriver({
     conversations: conversationService,
-    hub: () => hubRef.current,
+    execution: () => executionRef.current,
     warn: (message) => logger.warn(message),
   });
 
@@ -624,12 +625,10 @@ async function main() {
         });
       },
     },
-    // Completion notifications (design §7.3). The hub is constructed further
-    // down this file, so it is read through the SAME late-bound ref the child
-    // transport uses — there is no `hub` binding in this scope.
+    // Completion notifications share the child driver's late-bound execution owner.
     notifications: createNotificationDriver({
       conversations: conversationService,
-      hub: () => hubRef.current,
+      execution: () => executionRef.current,
       agentRegistry: registry,
       warn: (message) => logger.warn(message),
     }),
@@ -1244,7 +1243,7 @@ async function main() {
     logger,
   });
 
-  const resumableChatHub = createResumableChatHub({
+  const execution = createExecutionCoordinator({
     conversations: conversationService,
     agents,
     autoTitle: conversationAutoTitle,
@@ -1253,15 +1252,19 @@ async function main() {
     swarmCoordinator,
     onChanged: emitConversationChanged,
   });
+  const resumableChatHub = createResumableChatHub({
+    conversations: conversationService,
+    execution,
+  });
   // Close the child transport's late binding: from here a spawn can start a
   // real child turn, and the coordinator observes those turns' events and
-  // completions through the hub.
-  hubRef.current = resumableChatHub;
+  // completions through execution.
+  executionRef.current = execution;
   childTurnDriver.attachObserver();
 
   // Design §7.5: boot recovery QUEUED an `interrupted` notification for every
-  // parent whose child the restart killed; it is delivered "once the hub is
-  // up", which is here. Without this an IDLE parent — the normal case for a
+  // parent whose child the restart killed; it is delivered "once execution is
+  // ready", which is here. Without this an IDLE parent — the normal case for a
   // detached background child — would hold its queue until the user happened
   // to type again, because the only other trigger is that parent's own
   // `finishTurn`. Fire-and-forget and individually caught: delivery is bounded
@@ -1278,8 +1281,8 @@ async function main() {
   }
 
   // Drain and deliver pending notifications when a parent turn finishes
-  // (design §7.3, ruling 3). Register a hub observer to catch finishTurn.
-  resumableChatHub.addObserver({
+  // (design §7.3, ruling 3). Observe execution settlement before starting another turn.
+  execution.addObserver({
     onEvent() {
       // No-op; we only care about finishTurn.
     },
@@ -1377,7 +1380,7 @@ async function main() {
       const agentId = entry.id;
       const bridgeClient: AgentClient = {
         chat(channelId: string, conversationId: string, text: string) {
-          return agents.chat({ agentId, conversationId, channelId, text });
+          return execution.legacy.chat({ agentId, conversationId, channelId, text });
         },
         listSkills() {
           return agents.listSkills(agentId);
@@ -1440,7 +1443,7 @@ async function main() {
           const ruleAgentId = rule.agentId;
           const bridgeClient: AgentClient = {
             chat(channelId: string, conversationId: string, text: string) {
-              return agents.chat({
+              return execution.legacy.chat({
                 agentId: ruleAgentId,
                 conversationId,
                 channelId,
@@ -1494,7 +1497,7 @@ async function main() {
     // runs at request time, long after it exists.
     onShutdown: () => shutdown('POST /lifecycle/shutdown'),
     conversationService,
-    resumableChatHub,
+    execution,
     // Mounts the swarm panel routes + threads the cancel cascade into the
     // disable/delete agent handlers. Same instance the chat coordinator attaches
     // turns to, so the panel reads live runs.
@@ -1564,13 +1567,12 @@ async function main() {
   // chat-frame logging implicitly.
   const verboseWs = flags.verbose === true;
   mountChatWs(channelApp, {
-    agents,
+    execution,
     resumableChatHub,
     token: flags.chatToken,
     upgradeWebSocket,
     eventLogStore,
     verbose: verboseWs,
-    swarmCoordinator,
     // Hands-free voice mode: one VoiceSession per socket, gated on the
     // speech provider actually being available at `voice_start` time.
     speech,
@@ -1599,13 +1601,12 @@ async function main() {
     const { injectWebSocket: injectLanWebSocket, upgradeWebSocket: lanUpgradeWebSocket } =
       createNodeWebSocket({ app: lanApp });
     mountChatWs(lanApp, {
-      agents,
+      execution,
       resumableChatHub,
       token: flags.chatToken,
       upgradeWebSocket: lanUpgradeWebSocket,
       eventLogStore,
       verbose: verboseWs,
-      swarmCoordinator,
       speech,
       conversations: conversationService,
       wsTickets,
@@ -1709,10 +1710,13 @@ async function main() {
     }
     shuttingDown = true;
     console.log(`\nReceived ${signal}, shutting down...`);
+    // Close execution admission before the first shutdown await. Providers
+    // retain their MCP connections until their cancellation cleanup settles.
+    await safeStep('execution.stop', () => execution.stop());
+    resumableChatHub.dispose();
     await safeStep('relayClient.stop', () => relayClient?.stop());
     await safeStep('dialTokenManager.stop', () => dialTokenManager?.stop());
     await safeStep('mcpManager.stop', () => mcpManager.stop());
-    await safeStep('resumableChatHub.stop', () => resumableChatHub.stop());
     // Both flushes wait on provider completions that carry no AbortSignal, so
     // they are deadline-bounded: a hung provider socket must not keep the
     // process alive until SIGKILL with its databases still open.

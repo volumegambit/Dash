@@ -17,6 +17,7 @@ import {
 } from './chat-ws.js';
 import { ConversationServiceError } from './conversation-service.js';
 import type { EventLogStore } from './event-log-store.js';
+import { createLegacyExecution } from './legacy-execution.js';
 import type { ResumableChatHub, TurnFrameSink } from './resumable-chat-hub.js';
 import { WsTicketStore } from './ws-ticket-store.js';
 
@@ -493,6 +494,7 @@ function makeResumableHub() {
     .mockReturnValue({ turnId: 'turn-system' });
   const addObserver = vi.fn<ResumableChatHub['addObserver']>().mockReturnValue(() => {});
   const hub: ResumableChatHub = {
+    dispose: vi.fn(),
     start,
     resume,
     watch,
@@ -593,12 +595,17 @@ function makeWsHarness(
     return () => new Response(null, { status: 200 });
   }) as unknown as UpgradeWebSocket;
   const app = new Hono();
-  mountChatWs(app, {
+  const legacy = createLegacyExecution({
     agents,
+    swarmCoordinator: { cancelTurn: swarmCancel },
+    assertAccepting: () => {},
+    hasCanonicalTurn: () => false,
+  });
+  mountChatWs(app, {
+    execution: { legacy },
     token: options.token,
     upgradeWebSocket,
     resumableChatHub: hub.hub,
-    swarmCoordinator: { cancelTurn: swarmCancel },
     verbose: options.verbose,
     eventLogStore: options.eventLogStore,
     wsTickets: options.wsTickets,
@@ -1224,6 +1231,86 @@ describe('mountChatWs protocol ownership', () => {
     await vi.waitFor(() => expect(harness.agents.cancel).toHaveBeenCalledTimes(2));
   });
 
+  it.each(['cancel', 'disconnect'] as const)(
+    'does not cancel another socket when a rejected legacy request is followed by %s',
+    async (action) => {
+      const harness = makeWsHarness();
+      const owner = harness.connect();
+      const rejected = harness.connect();
+      dispatch(owner, { ...RESUMABLE_MESSAGE, resumable: false });
+      await vi.waitFor(() => expect(harness.agents.chat).toHaveBeenCalledOnce());
+      try {
+        // Admission rejects synchronously, but its async iterator rejection has
+        // not yet removed this socket's provisional activeStreams entry.
+        dispatch(rejected, { ...RESUMABLE_MESSAGE, id: 'rejected-turn', resumable: false });
+        if (action === 'cancel') dispatch(rejected, { type: 'cancel', id: 'rejected-turn' });
+        else rejected.handlers.onClose?.({}, rejected.socket);
+
+        expect(harness.requests[0]?.signal?.aborted).toBe(false);
+        expect(harness.agents.cancel).not.toHaveBeenCalled();
+        expect(harness.swarmCancel).not.toHaveBeenCalled();
+        harness.streams[0]?.emit({ type: 'text_delta', text: 'Still running' });
+        harness.streams[0]?.finish();
+        await vi.waitFor(() =>
+          expect(sentFrames(owner.socket)).toContainEqual({ type: 'done', id: 'turn-01' }),
+        );
+        expect(sentFrames(owner.socket)).toContainEqual({
+          type: 'event',
+          id: 'turn-01',
+          event: { type: 'text_delta', text: 'Still running' },
+        });
+      } finally {
+        owner.handlers.onClose?.({}, owner.socket);
+        rejected.handlers.onClose?.({}, rejected.socket);
+      }
+    },
+  );
+
+  it.each(['answer', 'steer', 'followUp'] as const)(
+    'rejects %s controls from another socket whose legacy admission failed',
+    async (action) => {
+      const harness = makeWsHarness();
+      const owner = harness.connect();
+      const rejected = harness.connect();
+      dispatch(owner, { ...RESUMABLE_MESSAGE, resumable: false });
+      await vi.waitFor(() => expect(harness.agents.chat).toHaveBeenCalledOnce());
+      try {
+        dispatch(rejected, { ...RESUMABLE_MESSAGE, id: 'rejected-turn', resumable: false });
+        if (action === 'answer') {
+          dispatch(rejected, {
+            type: 'answer',
+            id: 'rejected-turn',
+            questionId: 'q',
+            answer: 'yes',
+          });
+        } else {
+          dispatch(rejected, {
+            ...RESUMABLE_MESSAGE,
+            id: 'rejected-control',
+            resumable: false,
+            streamingBehavior: action,
+            text: 'Do something else',
+          });
+        }
+        expect(harness.agents.answerQuestion).not.toHaveBeenCalled();
+        expect(harness.agents.steer).not.toHaveBeenCalled();
+        expect(harness.agents.followUp).not.toHaveBeenCalled();
+        await vi.waitFor(() =>
+          expect(sentFrames(rejected.socket)).toContainEqual(
+            expect.objectContaining({
+              type: 'error',
+              id: action === 'answer' ? 'rejected-turn' : 'rejected-control',
+            }),
+          ),
+        );
+        expect(harness.requests[0]?.signal?.aborted).toBe(false);
+      } finally {
+        owner.handlers.onClose?.({}, owner.socket);
+        rejected.handlers.onClose?.({}, rejected.socket);
+      }
+    },
+  );
+
   it('preserves legacy event/done frames, images, steer, and follow-up behavior', async () => {
     let streamCount = 0;
     const harness = makeWsHarness({
@@ -1332,7 +1419,10 @@ describe('gateway resumable chat composition', () => {
   it('stops resumable turns and flushes titles before swarm, agents, and conversation storage', () => {
     const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
     const orderedShutdownSteps = [
-      "safeStep('resumableChatHub.stop'",
+      "safeStep('execution.stop'",
+      "safeStep('relayClient.stop'",
+      "safeStep('dialTokenManager.stop'",
+      "safeStep('mcpManager.stop'",
       "safeFlush('conversationAutoTitle.flush'",
       "safeStep('swarmCoordinator.stop'",
       "safeStep('agents.stop'",
