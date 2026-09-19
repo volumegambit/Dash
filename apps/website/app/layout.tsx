@@ -15,7 +15,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://dashsquad.ai'),
+  metadataBase: new URL('https://www.dashsquad.ai'),
   title: 'DashSquad — Your AI Team, Always On',
   description:
     "DashSquad lets you create AI agents — each with its own role. They work on their own, around the clock, even when you're not watching.",

@@ -3,7 +3,7 @@
 import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
 
-const INSTALL_COMMAND = 'curl -fsSL dashsquad.ai/install.sh | sh';
+const INSTALL_COMMAND = 'curl -fsSL https://www.dashsquad.ai/install.sh | sh';
 
 export function InstallSnippet() {
   const [copied, setCopied] = useState(false);

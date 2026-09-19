@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InstallSnippet } from './InstallSnippet';
 
-const INSTALL_COMMAND = 'curl -fsSL dashsquad.ai/install.sh | sh';
+const INSTALL_COMMAND = 'curl -fsSL https://www.dashsquad.ai/install.sh | sh';
 
 // happy-dom replaces navigator.clipboard with a managed stub after render().
 // The only reliable way to intercept writeText in this environment is to
