@@ -305,6 +305,9 @@
         "output": 30,
         "cacheRead": 0.5,
         "cacheWrite": 0
+      },
+      "thinkingLevelMap": {
+        "xhigh": "xhigh"
       }
     },
     {
@@ -322,6 +325,12 @@
         "output": 180,
         "cacheRead": 0,
         "cacheWrite": 0
+      },
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": null,
+        "xhigh": "xhigh"
       }
     },
     {
