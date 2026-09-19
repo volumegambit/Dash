@@ -107,7 +107,7 @@ describe('resolveModelString', () => {
     it('injects HTTP-Referer and X-Title on OpenRouter models from pi-ai', () => {
       const resolved = resolveModelString('openrouter/anthropic/claude-opus-4.8', undefined);
       expect(resolved.headers).toMatchObject({
-        'HTTP-Referer': 'https://dashsquad.ai',
+        'HTTP-Referer': 'https://www.dashsquad.ai',
         'X-Title': 'DashSquad',
       });
     });
@@ -130,7 +130,7 @@ describe('resolveModelString', () => {
           provider === 'openrouter' && modelId === 'openai/gpt-6-astra' ? orModel : undefined,
       });
       expect(resolved.headers).toMatchObject({
-        'HTTP-Referer': 'https://dashsquad.ai',
+        'HTTP-Referer': 'https://www.dashsquad.ai',
         'X-Title': 'DashSquad',
       });
     });
@@ -155,7 +155,7 @@ describe('resolveModelString', () => {
       });
       // Attribution headers are defaults; model's own headers override them.
       expect(resolved.headers).toMatchObject({
-        'HTTP-Referer': 'https://dashsquad.ai',
+        'HTTP-Referer': 'https://www.dashsquad.ai',
         'X-Title': 'Override',
         'X-Custom': 'custom-value',
       });
@@ -185,7 +185,7 @@ describe('resolveModelString', () => {
           provider === 'custom-proxy' && modelId === 'some-model' ? proxyModel : undefined,
       });
       expect(resolved.headers).toMatchObject({
-        'HTTP-Referer': 'https://dashsquad.ai',
+        'HTTP-Referer': 'https://www.dashsquad.ai',
         'X-Title': 'DashSquad',
       });
     });

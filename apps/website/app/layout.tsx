@@ -15,10 +15,10 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://dashsquad.ai'),
-  title: 'DashSquad — Your AI Team, Always On',
+  metadataBase: new URL('https://www.dashsquad.ai'),
+  title: 'DashSquad — Your AI Team, Built Around You',
   description:
-    "DashSquad lets you create AI agents — each with its own role. They work on their own, around the clock, even when you're not watching.",
+    'Build a personal AI team for research, writing, and project work. Choose its models and tools, follow its progress, and keep useful context. Early access for Mac.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

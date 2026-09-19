@@ -4,7 +4,7 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'Terms of Service — DashSquad',
   description:
-    'The terms that govern your use of the DashSquad desktop application, the optional remote access service, and the dashsquad.ai website.',
+    'The terms that govern your use of the DashSquad desktop application, the optional remote access service, and the www.dashsquad.ai website.',
 };
 
 const CONTACT = 'hello@dashsquad.ai';

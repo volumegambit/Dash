@@ -1,86 +1,61 @@
-import { Badge } from '@/components/ui/badge';
-import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Brain, Network, Sparkles, Zap } from 'lucide-react';
-
-const PROVIDERS = [
-  {
-    gradient: 'linear-gradient(180deg, #D97706, #F59E0B)',
-    Icon: Brain,
-    name: 'Anthropic',
-    description:
-      'Claude models — exceptional reasoning, nuanced writing, and reliable tool use for complex tasks.',
-    recommended: true,
-  },
-  {
-    gradient: 'linear-gradient(180deg, #4285F4, #34A853 33%, #FBBC05 66%, #EA4335)',
-    Icon: Sparkles,
-    name: 'Google Gemini',
-    description:
-      'Gemini models — multimodal intelligence with massive context windows and deep Google integration.',
-    recommended: false,
-  },
-  {
-    gradient: 'linear-gradient(180deg, #10A37F, #1A7F5A)',
-    Icon: Zap,
-    name: 'OpenAI',
-    description:
-      'GPT models — versatile language models with broad capabilities and a massive ecosystem of integrations.',
-    recommended: false,
-  },
-  {
-    gradient: 'linear-gradient(180deg, #0EA5E9, #2563EB)',
-    Icon: Network,
-    name: 'OpenRouter',
-    description:
-      'One key, hundreds of models — DeepSeek, Llama, Qwen, Grok, and more, with automatic failover across providers.',
-    recommended: false,
-  },
+const DIRECT_PROVIDERS = [
+  { name: 'Anthropic', models: 'Claude' },
+  { name: 'OpenAI', models: 'GPT' },
+  { name: 'Google', models: 'Gemini' },
+  { name: 'Moonshot AI', models: 'Kimi' },
 ];
 
 export function AIProviders() {
   return (
-    <section className="bg-cream py-[100px] px-8 lg:px-[160px]">
-      {/* Header */}
-      <div className="flex flex-col items-center gap-4">
-        <span className="font-mono text-[11px] font-semibold uppercase tracking-[3px] text-brand">
-          FLEXIBLE AI
-        </span>
-        <h2 className="font-outfit text-[32px] lg:text-[48px] font-extrabold text-text-dark tracking-tight text-center">
-          Your AI, your choice.
-        </h2>
-        <p className="text-[18px] text-text-secondary text-center max-w-[600px] leading-relaxed">
-          Bring your own API keys — connect Anthropic, OpenAI, or Google directly with no middleman
-          and no markup, or reach hundreds more models through a single OpenRouter key. Your keys,
-          your usage, your bill.
-        </p>
-      </div>
+    <section className="bg-cream px-6 py-20 sm:px-8 lg:py-24">
+      <div className="mx-auto max-w-[1120px]">
+        <div className="max-w-[680px]">
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-[3px] text-brand">
+            FLEXIBLE AI
+          </p>
+          <h2 className="mt-4 font-outfit text-[32px] font-extrabold leading-tight tracking-tight text-text-dark sm:text-[40px] lg:text-[48px]">
+            Your squad. Your choice of AI.
+          </h2>
+          <p className="mt-5 text-[18px] leading-relaxed text-[#555]">
+            Connect a supported account or bring an API key. Choose the models that fit each
+            teammate&apos;s work.
+          </p>
+        </div>
 
-      {/* Cards */}
-      <div className="flex flex-col md:flex-row gap-6 pt-10">
-        {PROVIDERS.map(({ gradient, Icon, name, description, recommended }) => (
-          <Card
-            key={name}
-            className="bg-white shadow-sm p-8 flex-1 flex flex-col items-center gap-5"
-          >
-            <CardHeader>
-              <div
-                className="w-16 h-16 flex items-center justify-center"
-                style={{ background: gradient }}
-              >
-                <Icon size={28} color="white" />
-              </div>
-              <CardTitle className="text-[22px] font-bold text-text-dark">{name}</CardTitle>
-              {recommended && (
-                <Badge variant="default" size="sm">
-                  Recommended
-                </Badge>
-              )}
-              <CardDescription className="text-[15px] text-text-secondary text-center leading-relaxed">
-                {description}
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        ))}
+        <div className="mt-10 grid gap-6 md:grid-cols-[1.15fr_1fr]">
+          <div className="border border-cream-border bg-white p-6 sm:p-8">
+            <h3 className="text-[24px] font-bold tracking-tight text-text-dark">
+              Connect directly
+            </h3>
+            <p className="mt-2 text-[16px] leading-relaxed text-[#555]">
+              Use your own API key with these providers.
+            </p>
+            <dl className="mt-6 divide-y divide-cream-border">
+              {DIRECT_PROVIDERS.map(({ name, models }) => (
+                <div key={name} className="flex items-baseline justify-between gap-4 py-4">
+                  <dt className="text-[17px] font-semibold text-text-dark">{name}</dt>
+                  <dd className="text-[16px] text-[#666]">{models}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+
+          <div className="flex flex-col border border-[#cad6ee] bg-[#edf2fc] p-6 sm:p-8">
+            <p className="text-[16px] font-semibold text-brand">OpenRouter</p>
+            <h3 className="mt-5 max-w-[320px] text-[32px] font-bold leading-tight tracking-tight text-text-dark sm:text-[36px]">
+              More models, one key.
+            </h3>
+            <p className="mt-4 max-w-[360px] text-[17px] leading-relaxed text-[#555]">
+              Connect OpenRouter to choose from a wider model catalog with a single API key. Explore
+              different models as your squad grows.
+            </p>
+            <div className="mt-auto pt-8">
+              <p className="border-t border-[#cad6ee] pt-5 text-[14px] leading-relaxed text-[#555]">
+                Model access and usage charges depend on your provider account.
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   );

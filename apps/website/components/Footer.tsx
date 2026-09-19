@@ -1,14 +1,13 @@
 import { Logo } from '@/components/Logo';
-
-const RELEASES_URL = 'https://github.com/volumegambit/Dash/releases/latest';
-const REPO_URL = 'https://github.com/volumegambit/Dash';
+import { DOCS_URL, DOWNLOAD_URL, REPO_URL } from '@/lib/site';
 
 const LINK_COLUMNS = [
   {
-    title: 'Product',
+    title: 'Get started',
     links: [
-      { label: 'Download for Mac', href: RELEASES_URL, external: true },
-      { label: 'Source on GitHub', href: REPO_URL, external: true },
+      { label: 'Download for Mac', href: DOWNLOAD_URL, external: true },
+      { label: 'User guide', href: `${DOCS_URL}/introduction`, external: true },
+      { label: 'GitHub', href: REPO_URL, external: true },
     ],
   },
   {
@@ -22,49 +21,45 @@ const LINK_COLUMNS = [
 
 export function Footer() {
   return (
-    <footer className="bg-footer-bg py-14 px-8 lg:px-[160px] flex flex-col gap-10">
-      {/* Top row */}
-      <div className="flex flex-col md:flex-row gap-16">
-        {/* Brand column */}
-        <div className="md:w-[300px]">
-          <a href="/" className="flex items-center gap-2.5">
-            <span className="shadow-[0_0_16px_rgba(37,99,235,0.25)] rounded-md">
+    <footer className="border-t border-surface-border bg-footer-bg px-6 py-14 sm:px-8">
+      <div className="mx-auto max-w-[1120px]">
+        <div className="flex flex-col justify-between gap-10 md:flex-row">
+          <div className="max-w-[320px]">
+            <a href="/" aria-label="DashSquad home" className="flex items-center gap-2.5">
               <Logo size={28} className="rounded-md" />
-            </span>
-            <span className="text-xl font-extrabold text-white tracking-tight">dashsquad</span>
-          </a>
-          <p className="text-[14px] text-text-muted mt-3">Your AI team, always on.</p>
-          <p className="text-xs text-text-dim mt-1">DashSquad.ai &middot; 2026</p>
+              <span className="text-xl font-extrabold tracking-tight text-white">dashsquad</span>
+            </a>
+            <p className="mt-4 text-sm leading-relaxed text-[#a3a3a3]">
+              Your AI team. Built around you.
+            </p>
+          </div>
+          <nav aria-label="Footer" className="flex flex-wrap gap-x-12 gap-y-8 sm:gap-x-20">
+            {LINK_COLUMNS.map((column) => (
+              <div key={column.title}>
+                <h2 className="font-mono text-[10px] font-semibold uppercase tracking-[2px] text-[#a3a3a3]">
+                  {column.title}
+                </h2>
+                <ul className="mt-4 space-y-3">
+                  {column.links.map((link) => (
+                    <li key={link.label}>
+                      <a
+                        href={link.href}
+                        {...(link.external ? { target: '_blank', rel: 'noreferrer' } : {})}
+                        className="text-sm text-[#b3b3b3] transition-colors hover:text-white"
+                      >
+                        {link.label}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </nav>
         </div>
-
-        {/* Link columns */}
-        <nav aria-label="Footer" className="flex flex-row gap-16">
-          {LINK_COLUMNS.map((column) => (
-            <div key={column.title} className="flex flex-col gap-3">
-              <span className="font-mono text-[11px] font-semibold uppercase tracking-[2px] text-text-faint">
-                {column.title}
-              </span>
-              <ul className="flex flex-col gap-2.5">
-                {column.links.map((link) => (
-                  <li key={link.label}>
-                    <a
-                      href={link.href}
-                      {...(link.external ? { target: '_blank', rel: 'noreferrer' } : {})}
-                      className="text-[14px] text-text-muted hover:text-white transition-colors"
-                    >
-                      {link.label}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </nav>
+        <p className="mt-12 border-t border-surface-border pt-6 text-xs text-[#a3a3a3]">
+          &copy; {new Date().getFullYear()} DashSquad. All rights reserved.
+        </p>
       </div>
-
-      <hr className="border-divider" />
-
-      <p className="text-xs text-text-dim">&copy; 2026 DashSquad.ai — All rights reserved.</p>
     </footer>
   );
 }

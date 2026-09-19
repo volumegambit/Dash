@@ -46,17 +46,18 @@ export default function PrivacyPolicy() {
       <LegalSection id="who-we-are" title="2. Who we are">
         <p>
           DashSquad (&ldquo;DashSquad&rdquo;, &ldquo;we&rdquo;, &ldquo;us&rdquo;) publishes the
-          DashSquad desktop application and operates the website at dashsquad.ai. We are the data
-          controller for the limited personal data described in this policy. You can reach us at{' '}
-          <a href={`mailto:${CONTACT}`}>{CONTACT}</a>.
+          DashSquad desktop application and operates the website at www.dashsquad.ai. We are the
+          data controller for the limited personal data described in this policy. You can reach us
+          at <a href={`mailto:${CONTACT}`}>{CONTACT}</a>.
         </p>
       </LegalSection>
 
       <LegalSection id="website" title="3. This website">
         <p>
-          dashsquad.ai is a static site. It sets no cookies, includes no analytics or advertising
-          scripts, and does not fingerprint or profile visitors. Web fonts are bundled at build time
-          and served from our own domain, so loading a page does not call third-party font servers.
+          www.dashsquad.ai is a static site. It sets no cookies, includes no analytics or
+          advertising scripts, and does not fingerprint or profile visitors. Web fonts are bundled
+          at build time and served from our own domain, so loading a page does not call third-party
+          font servers.
         </p>
         <p>
           Our hosting provider processes standard server request logs — IP address, user agent,
