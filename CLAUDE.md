@@ -257,6 +257,8 @@ cd docs/plans && git add . && git commit -m "add <feature> plan" && git push
 
 ## Documentation Maintenance
 
+`docs/` is a git submodule pointing at **https://github.com/volumegambit/mintlify-docs** (the Mintlify site source). Run `git submodule update --init` after cloning. To change docs, commit and push inside `docs/` first, then commit the updated `docs` pointer in this repo. `docs/plans/` sits inside that checkout but is ignored by it.
+
 Docs in `docs/` are **user-facing only**. They help users set up, configure, and use Dash. Do not add developer-facing details (CI, internal tooling, contribution workflows, linter configs).
 
 After each successful change, evaluate whether any docs pages need updating. Only update when the change affects something a user would see or do.

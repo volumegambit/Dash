@@ -12,6 +12,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          # docs/ is the mintlify-docs submodule; scripts/mobile-docs.test.ts reads it
+          submodules: true
 
       - uses: actions/setup-node@v6
         with:
