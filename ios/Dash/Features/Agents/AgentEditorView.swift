@@ -25,13 +25,13 @@ struct AgentEditorView: View {
 
   var body: some View {
     Form {
-      Section("Agent") {
+      Section("Squad member") {
         TextField("Name", text: $draft.name)
           .textInputAutocapitalization(.words)
           .disabled(original != nil)
           .accessibilityIdentifier("agent.editor.name")
         if original != nil {
-          Text("Agent names are read-only after creation.")
+          Text("Squad member names are read-only after creation.")
             .font(.caption)
             .foregroundStyle(.secondary)
         }
@@ -60,7 +60,7 @@ struct AgentEditorView: View {
       }
 
       Section("System prompt") {
-        TextField("Instructions for this agent", text: $draft.systemPrompt, axis: .vertical)
+        TextField("Instructions for this squad member", text: $draft.systemPrompt, axis: .vertical)
           .lineLimit(5...12)
           .accessibilityIdentifier("agent.editor.prompt")
       }
@@ -74,7 +74,7 @@ struct AgentEditorView: View {
             if isSaving {
               ProgressView()
             } else {
-              Text(original == nil ? "Create agent" : "Save changes")
+              Text(original == nil ? "Create squad member" : "Save changes")
             }
             Spacer()
           }
@@ -87,7 +87,7 @@ struct AgentEditorView: View {
     }
     .frame(maxWidth: DashTheme.Layout.readableWidth)
     .frame(maxWidth: .infinity)
-    .navigationTitle(original == nil ? "Create agent" : "Edit agent")
+    .navigationTitle(original == nil ? "Create squad member" : "Edit squad member")
     .searchable(text: $modelSearch, prompt: "Search models")
     .task { await feature.loadModels() }
   }

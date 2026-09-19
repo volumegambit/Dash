@@ -6,6 +6,23 @@
   "api": "openai-completions",
   "models": [
     {
+      "id": "kimi-k3",
+      "name": "Kimi K3",
+      "contextWindow": 1048576,
+      "maxTokens": 1048576,
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 3,
+        "output": 15,
+        "cacheRead": 0.3,
+        "cacheWrite": 0
+      }
+    },
+    {
       "id": "kimi-k2.6",
       "contextWindow": 262144,
       "maxTokens": 262144,
@@ -37,6 +54,9 @@
         "output": 4,
         "cacheRead": 0.19,
         "cacheWrite": 0
+      },
+      "thinkingLevelMap": {
+        "off": null
       }
     }
   ],
@@ -81,12 +101,12 @@
       "tier": 5
     }
   ],
-  "reviewedAt": "2026-09-07",
+  "reviewedAt": "2026-09-13",
   "ui": {
     "keyConsoleUrl": "https://platform.moonshot.ai/console/api-keys",
     "keyPlaceholder": "sk-...",
     "docsUrl": "https://platform.moonshot.ai/docs/api/overview",
-    "description": "Kimi K2 — strong agentic and coding models from Moonshot AI.",
+    "description": "Kimi K3 — long-context reasoning, coding, and visual understanding.",
     "sortOrder": 3
   }
 }

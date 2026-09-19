@@ -13,7 +13,7 @@ import type {
 } from '../shared/ipc.js';
 
 export const REMOTE_GATEWAY_TEST_FAILURE =
-  'Could not reach that gateway. Check the URL and tokens, then try again.';
+  'Could not reach that HQ. Check the URL and tokens, then try again.';
 
 export const RELAY_CREDENTIAL_HEADER = 'x-dash-relay-credential';
 
@@ -50,14 +50,14 @@ export function classifyConversationGatewayFailure(error: unknown): GatewayConne
     if (error.status === 401 || code === 'unauthorized') {
       return {
         kind: 'repair_required',
-        message: 'Gateway authorization failed. Reconnect this gateway to continue.',
+        message: 'HQ authorization failed. Reconnect this HQ to continue.',
         retryable: false,
       };
     }
     if (error.status === 429 || code === 'rate_limited') {
       return {
         kind: 'rate_limited',
-        message: error.apiError?.error ?? 'Gateway rate limit reached. Try again shortly.',
+        message: error.apiError?.error ?? 'HQ rate limit reached. Try again shortly.',
         retryable: error.apiError?.retryable ?? true,
         ...(retryAfterFromGatewayError(error) !== undefined
           ? { retryAfterMs: retryAfterFromGatewayError(error) }
@@ -67,14 +67,14 @@ export function classifyConversationGatewayFailure(error: unknown): GatewayConne
     if (error.status === 426 || code === 'capability_required') {
       return {
         kind: 'update_required',
-        message: `Update Dash: ${error.apiError?.error ?? 'the gateway requires a newer client'}`,
+        message: `Update Dash: ${error.apiError?.error ?? 'the HQ requires a newer client'}`,
         retryable: error.apiError?.retryable ?? false,
       };
     }
     if (error.status >= 500 || code === 'gateway_offline') {
       return {
         kind: 'gateway_offline',
-        message: 'Gateway offline — cached conversations are read-only.',
+        message: 'HQ offline — cached conversations are read-only.',
         retryable: true,
       };
     }
@@ -85,7 +85,7 @@ export function classifyConversationGatewayFailure(error: unknown): GatewayConne
   ) {
     return {
       kind: 'gateway_offline',
-      message: 'Gateway offline — cached conversations are read-only.',
+      message: 'HQ offline — cached conversations are read-only.',
       retryable: true,
     };
   }

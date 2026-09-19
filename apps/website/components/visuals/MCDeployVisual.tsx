@@ -8,7 +8,7 @@ export function MCDeployVisual() {
         <span className="w-2.5 h-2.5 rounded-full bg-[#f87171]" />
         <span className="w-2.5 h-2.5 rounded-full bg-[#facc15]" />
         <span className="w-2.5 h-2.5 rounded-full bg-[#4ade80]" />
-        <span className="font-mono text-xs text-text-muted ml-2">Mission Control</span>
+        <span className="font-mono text-xs text-text-muted ml-2">Desktop</span>
       </div>
 
       {/* Body */}

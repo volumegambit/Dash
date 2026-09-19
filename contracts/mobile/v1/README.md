@@ -51,8 +51,15 @@ The root fixtures are:
   and `replay.json`.
 - Chat frames: `chat-send.json`, `chat-resume.json`, `chat-answer.json`, `chat-cancel.json`,
   `chat-accepted.json`, `chat-event.json`, `chat-done.json`, and `chat-error.json`.
+- Hands-free voice frames: `voice-start.json`, `voice-audio.json`, `voice-mute.json`,
+  `voice-stop.json`, `voice-played.json` (client), and `voice-state.json`,
+  `voice-transcript.json`, `voice-speech.json`, `voice-error.json`, `voice-stopped.json`
+  (server).
 - Streams: `chat-stream.jsonl`, `chat-resume.jsonl`, `sse-conversation-changed.txt`, and
   `sse-conversation-deleted.txt`.
+- Speech: `speech-config.json` (the shared `GET`/`PATCH /speech/config` body),
+  `speech-config-patch.json`, `speech-models.json`, `speech-transcription-request.json`,
+  `speech-transcription.json`, and `speech-synthesis-request.json`.
 
 Structured error fixtures live under `fixtures/errors/`:
 
@@ -78,6 +85,7 @@ Negative conformance fixtures live under `fixtures/invalid/`:
   `chat-answer-missing-question-id.json`, `chat-cancel-missing-id.json`,
   `chat-accepted-missing-seq.json`, `chat-event-missing-conversation-id.json`,
   `chat-done-missing-outcome.json`, and `chat-error-missing-error.json`.
+- Voice: `voice-audio-missing-pcm.json`.
 - Errors: `structured-error-missing-code.json`.
 
 ## Compatibility rules
@@ -100,6 +108,45 @@ Negative conformance fixtures live under `fixtures/invalid/`:
   Schema.
 - Pairing producers emit lowercase SHA-256 certificate fingerprints. Native clients may accept
   uppercase input but normalize the stored pin to lowercase before connecting.
+- `GET /health` advertises `speech-v1` only while a speech provider can actually transcribe
+  and speak, so the capability comes and goes with the gateway's credentials. Clients gate the
+  `/speech/*` operations on it and must tolerate capability strings they do not know — a client
+  that rejects an unfamiliar capability cannot be deployed before the gateway that adds one.
+- `POST /speech/speech` is the only operation whose success body is not JSON: it streams
+  `audio/mpeg`, or answers `audio/wav` whole for a PCM-only model that cannot produce MP3.
+  Clients send `Accept: audio/mpeg, audio/wav` and must still be ready to decode a JSON
+  `MobileApiError` on the same request — a failure raised before the first audio chunk comes
+  back as the ordinary error envelope.
+- `/speech/*` reuses `MobileApiError` but passes the provider-level `SpeechErrorCode`
+  (`too_large`, `too_long`, `provider`, `network`, `unavailable`, `invalid`) through
+  untranslated, which is why `MobileApiErrorCode` carries them. The WebSocket `error` frame does
+  not carry them (those codes are unreachable there), but the hands-free voice `voice_error`
+  frame does: its `code` is the narrower `SpeechErrorCode` union
+  (`unauthorized, unavailable, too_long, too_large, invalid, provider, network`), its own
+  `chat-ws.schema.json` `$defs.SpeechErrorCode` def.
+- `voice_audio.pcm` is at most 16 KiB (16384 bytes) decoded per frame. A frame decoding to
+  exactly 16384 bytes is accepted; one byte more fails parsing and the socket answers the
+  ordinary `error` frame with `code: 'validation_failed'`.
+- A socket holds at most one voice session. Sending `voice_start` while a session is already open
+  replaces it: the old session gets `voice_stopped { reason: 'replaced' }` before the new one
+  starts, keyed on the new `voice_start.id`.
+- `voice_audio` sent before the gateway's own `voice_state listening` is dropped rather than
+  rejected, since the phone starts streaming the moment it sends `voice_start`, before the gateway
+  has confirmed the speech provider is available.
+- The `voice_transcript` carrying the `turnId` that starts a turn is always emitted before that
+  turn's `ChatAccepted`, so a client can render the optimistic user row before the turn is
+  confirmed.
+- `voice_state.state` is one of `listening`, `transcribing`, `thinking`, `speaking`, `muted`, or
+  `stopped` on the wire, but the gateway never actually sends `stopped`; a session's end is always
+  a `voice_stopped { reason }` frame, never a terminal `voice_state`.
+- After the last `voice_speech` of a turn the session stays in `speaking` until the client sends
+  `voice_played { seq }` with a `seq` at least as high as that chunk's, or until an 8-second
+  safety timer fires. It reports audio that has finished PLAYING, not audio received; a client
+  that flushes playback when it leaves `speaking` must send it or the reply's tail is truncated.
+  A stale or out-of-order `seq` is ignored.
+- `message.modality` is `'voice'` only for the turn a hands-free voice session starts on the
+  user's behalf; a dictated message that a client sends as a `message` frame must omit `modality`
+  or send `'text'`.
 - Mutating a tombstoned conversation with `PATCH`, or repeating its `DELETE`, returns HTTP 410
   with a non-retryable `not_found` error. `GET` still returns the revisioned tombstone.
 - Any change to a TypeScript wire type or schema requires coordinated updates to the other

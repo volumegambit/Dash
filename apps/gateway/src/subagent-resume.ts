@@ -1,0 +1,239 @@
+import type { ChildSpec } from '@dash/swarm';
+import { parentBuiltinTools } from '@dash/swarm';
+import type { AgentChatAttachOverrides } from './agent-chat-coordinator.js';
+import type { GatewayAgentConfig } from './agent-registry.js';
+import type { ConversationService, SubagentGrant } from './conversation-service.js';
+import { isSubagentsEnabled } from './subagent-config.js';
+
+/**
+ * RESUME (design §5.2): rebuilding the resolved spec of a child this process
+ * holds no live one for — it finished and its spec was dropped, it was
+ * LRU-evicted, or it belongs to a previous gateway process.
+ *
+ * The security property of the whole sub-agent feature has to survive this
+ * path: a child can never hold a tool or an MCP server its parent lacks. A
+ * stored grant is a snapshot of a parent that may since have had tools taken
+ * away, so every rebuild is RE-INTERSECTED against what the parent holds NOW —
+ * its live spec if it is mid-turn, its own stored grant if it is itself a
+ * child, and the agent's current config at the root. Every step is an
+ * intersection, never a union, and any link that cannot be resolved (a deleted
+ * row, a removed agent, a row written before grants were persisted) refuses the
+ * rebuild rather than guessing.
+ */
+
+/** How far up the parent chain a rebuild will walk before giving up. */
+const MAX_PARENT_WALK = 8;
+
+export interface ChildSpecReconstructionDeps {
+  conversations: Pick<ConversationService, 'get' | 'getSubagentGrant'>;
+  /** The coordinator's live spec for a conversation, when it still holds one. */
+  liveSpec(subagentId: string): ChildSpec | undefined;
+  /** The agent's config as it is NOW. Undefined = the agent is gone. */
+  agentConfig(agentId: string): GatewayAgentConfig | undefined;
+  /** The fully-qualified `server__tool` names that agent holds NOW. */
+  agentMcpTools(agentId: string): string[];
+  /**
+   * Where an `isolation: 'worktree'` child's checkout lives. A LIVE isolated
+   * parent's spec still names the REPO — its worktree is minted by the runtime
+   * after the spec is built — so without this a grandchild rebuilt while its
+   * parent is running would be handed the repo its parent was isolated FROM,
+   * disagreeing with the live spawn path. The path is deterministic.
+   */
+  worktreePath?(spec: Omit<ChildSpec, 'extraTools'>): string;
+}
+
+/** What of a resolved spec has to outlive the process. */
+export function grantFromSpec(spec: Omit<ChildSpec, 'extraTools'>): SubagentGrant {
+  return {
+    tools: [...spec.tools],
+    ...(spec.mcpTools !== undefined ? { mcpTools: [...spec.mcpTools] } : {}),
+    ...(spec.spawnableTypes !== undefined ? { spawnableTypes: [...spec.spawnableTypes] } : {}),
+    ...(spec.canSpawn !== undefined ? { canSpawn: spec.canSpawn } : {}),
+    workspace: spec.workspace,
+    depth: spec.depth ?? 1,
+    ...(spec.systemPrompt !== undefined ? { systemPrompt: spec.systemPrompt } : {}),
+    ...(spec.skipMemory !== undefined ? { skipMemory: spec.skipMemory } : {}),
+    ...(spec.maxTurns !== undefined ? { maxTurns: spec.maxTurns } : {}),
+  };
+}
+
+/** What one conversation may pass DOWN right now: tools, MCP names, and WHERE. */
+interface EffectiveGrant {
+  tools: string[];
+  mcpTools: string[];
+  /**
+   * The directory a child of this conversation runs in — the agent's CURRENT
+   * workspace at the root, or an isolated parent's own worktree. `workspace` is
+   * a grant field like any other: an agent whose workspace moved must not
+   * resume a child pointed at the directory it used to have.
+   */
+  workspace?: string;
+}
+
+/**
+ * What `conversationId` holds at this moment, walking up to the agent.
+ * `undefined` means "cannot be established" — which is a refusal, not an empty
+ * grant: an unresolvable parent must never read as "nothing to intersect with".
+ */
+function effectiveGrantOf(
+  conversationId: string,
+  deps: ChildSpecReconstructionDeps,
+  depth = 0,
+): EffectiveGrant | undefined {
+  if (depth > MAX_PARENT_WALK) return undefined;
+  // A parent that is mid-turn: its LIVE grant is narrower than (or equal to)
+  // whatever its row says, and it is the grant its own children run under.
+  const live = deps.liveSpec(conversationId);
+  if (live) {
+    return {
+      tools: [...live.tools],
+      mcpTools: [...(live.mcpTools ?? [])],
+      workspace:
+        live.isolation === 'worktree' && deps.worktreePath
+          ? deps.worktreePath(live)
+          : live.workspace,
+    };
+  }
+
+  // Deleted rows are excluded on purpose: a tombstoned conversation cascades to
+  // its children, and none of them may run again.
+  const row = deps.conversations.get(conversationId);
+  if (!row) return undefined;
+
+  if (row.kind === 'subagent') {
+    const grant = deps.conversations.getSubagentGrant(conversationId);
+    if (!grant || !row.parentConversationId) return undefined;
+    const above = effectiveGrantOf(row.parentConversationId, deps, depth + 1);
+    if (!above) return undefined;
+    return intersect(grant, above, row.subagent);
+  }
+
+  const config = deps.agentConfig(row.agentId);
+  // The operator's off switch has to reach an existing child too: with
+  // sub-agents turned off, nothing under this agent may take another turn.
+  if (!config || !isSubagentsEnabled(config)) return undefined;
+  return {
+    // The same function the `agent` tool and `validateTools` bound a spawn
+    // with, so the roster, the spawn gate and this rebuild cannot drift.
+    tools: parentBuiltinTools(config.tools),
+    mcpTools: deps.agentMcpTools(row.agentId),
+    workspace: config.workspace,
+  };
+}
+
+/**
+ * One level of narrowing. `info` is the conversation's own persisted subagent
+ * row when it HAS one, which is what decides where its children run: an
+ * isolated child hands down its worktree, everyone else hands down whatever it
+ * was handed.
+ */
+function intersect(
+  grant: SubagentGrant,
+  parent: EffectiveGrant,
+  info?: { isolation?: 'worktree'; workspace?: string },
+): EffectiveGrant {
+  return {
+    tools: grant.tools.filter((tool) => parent.tools.includes(tool)),
+    mcpTools: (grant.mcpTools ?? []).filter((tool) => parent.mcpTools.includes(tool)),
+    workspace:
+      info?.isolation === 'worktree' ? (info.workspace ?? grant.workspace) : parent.workspace,
+  };
+}
+
+/**
+ * Rebuild one child's resolved spec from its persisted row + grant, narrowed to
+ * what its parent holds NOW. `undefined` = this child cannot run again.
+ */
+export function reconstructChildSpec(
+  subagentId: string,
+  deps: ChildSpecReconstructionDeps,
+): Omit<ChildSpec, 'extraTools'> | undefined {
+  const row = deps.conversations.get(subagentId);
+  if (!row || row.kind !== 'subagent' || !row.subagent || !row.parentConversationId) {
+    return undefined;
+  }
+  const grant = deps.conversations.getSubagentGrant(subagentId);
+  if (!grant) return undefined;
+  const parent = effectiveGrantOf(row.parentConversationId, deps);
+  if (!parent) return undefined;
+  const info = row.subagent;
+  const narrowed = intersect(grant, parent, info);
+  return {
+    agentId: row.agentId,
+    agentName: row.agentName,
+    // The run that spawned it is long over; its turn id is the stable label.
+    runId: row.parentTurnId ?? subagentId,
+    workerId: subagentId,
+    childConversationId: subagentId,
+    parentConversationId: row.parentConversationId,
+    parentTurnId: row.parentTurnId ?? '',
+    role: info.name ?? info.type,
+    brief: info.prompt,
+    model: info.model,
+    // An isolated child resumes in its OWN worktree (also where the work it
+    // left behind is); everyone else resumes in whatever its parent's workspace
+    // is NOW, which is not necessarily the one it ran in.
+    workspace: narrowed.workspace ?? info.workspace ?? grant.workspace,
+    // An isolated child's worktree is cut from its PARENT's current repo, which
+    // is not where the child itself runs — see `WorkerSpec.isolationSource`.
+    // `grant.workspace` is the repo this child was actually cut from, recorded
+    // at spawn: the fallback for an agent whose config names no workspace (the
+    // coordinator used `process.cwd()` then), where leaving the source unset
+    // would send the deleted worktree path to `git worktree add` again.
+    ...(info.isolation === 'worktree'
+      ? { isolationSource: parent.workspace ?? grant.workspace }
+      : {}),
+    tools: narrowed.tools,
+    mcpTools: narrowed.mcpTools,
+    spawnableTypes: grant.spawnableTypes,
+    canSpawn: grant.canSpawn,
+    subagentType: info.type,
+    description: info.description,
+    name: info.name,
+    systemPrompt: grant.systemPrompt,
+    background: info.background,
+    oneShot: info.oneShot,
+    skipMemory: grant.skipMemory,
+    maxTurns: grant.maxTurns,
+    depth: info.depth,
+    ...(info.isolation !== undefined ? { isolation: info.isolation } : {}),
+  };
+}
+
+/**
+ * The `attach()` overrides one child's turn runs under. A nested spawn is
+ * validated against the CHILD's grant, never the top-level agent's.
+ *
+ * Both model keys are cleared EXPLICITLY rather than omitted, and both for the
+ * same reason: they are grants the operator gave the agent, not an inheritance
+ * the child earned. Leaving `orchestratorFallbackModels` in force widens a
+ * grandchild past the model its parent's definition pinned; leaving
+ * `allowedModels` (the agent-level `subagents.allowedModels` allow-list) in
+ * force lets a grandchild request anything on it.
+ */
+export function childAttachOverrides(
+  spec: Omit<ChildSpec, 'extraTools'>,
+  /**
+   * Where an `isolation: 'worktree'` child's checkout lives. Needed because a
+   * LIVE isolated child's spec still names the repo — its worktree is minted
+   * later, by the runtime — so without this a grandchild spawned during its
+   * turn would be sandboxed in the very repo its parent was isolated FROM. The
+   * path is deterministic, so it can be named before it exists.
+   */
+  worktreePath?: (spec: Omit<ChildSpec, 'extraTools'>) => string,
+): AgentChatAttachOverrides {
+  const workspace =
+    spec.isolation === 'worktree' && worktreePath ? worktreePath(spec) : spec.workspace;
+  return {
+    orchestratorModel: spec.model,
+    orchestratorFallbackModels: undefined,
+    allowedModels: undefined,
+    orchestratorTools: spec.tools,
+    // Unset means NONE (fail-closed), so an empty list is what a child with no
+    // MCP grant must send — omitting the key inherits the agent's.
+    orchestratorMcpTools: spec.mcpTools ?? [],
+    // Its own worktree when it was isolated, so a grandchild is sandboxed where
+    // its parent actually ran.
+    workspace,
+  };
+}

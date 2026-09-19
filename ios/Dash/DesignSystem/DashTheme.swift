@@ -63,6 +63,11 @@ enum DashTheme {
   }
 
   enum Opacity {
+    /// The trough of the running-row breathing wash
+    /// (`ConversationListView.RunningRowWash`): the row pulses between this
+    /// and `fillSubtle`, keeping its peak below `fillMuted` so an animated
+    /// row can never be mistaken for the selected one.
+    static let fillFaint = 0.04
     static let fillSubtle = 0.08
     static let strokeSubtle = 0.08
     static let fillMuted = 0.12
@@ -79,5 +84,10 @@ enum DashTheme {
   /// transcript, composer and agent forms at regular width.
   enum Layout {
     static let readableWidth: CGFloat = 760
+    /// Voice mode's centred column (speech Phase B, Task B9). Narrower than
+    /// the reading column on purpose: the cover is an orb, a state line and
+    /// two captions, and stretching those across an iPad leaves the eye
+    /// travelling between elements that belong together.
+    static let voiceWidth: CGFloat = 560
   }
 }

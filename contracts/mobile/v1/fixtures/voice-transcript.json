@@ -1,0 +1,7 @@
+{
+  "type": "voice_transcript",
+  "id": "018f0f4a-5c42-7a8b-9c01-6234567890ab",
+  "text": "What's the weather like today?",
+  "final": true,
+  "turnId": "018f0f4a-5c42-7a8b-9c01-7234567890ab"
+}

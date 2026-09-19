@@ -106,6 +106,15 @@ const SWARM_ENV_VARS = [
   ['SWARM_DEFAULT_MAX_WORKERS_PER_RUN', 'maxWorkersPerRun', 'defaults'],
   ['SWARM_DEFAULT_MAX_STEERS_PER_WORKER', 'maxSteersPerWorker', 'defaults'],
   ['SWARM_DEFAULT_MAX_RUN_SECONDS', 'maxRunSeconds', 'defaults'],
+  // `SUBAGENTS_*` aliases for the same caps under the sub-agent vocabulary.
+  // Listed AFTER the `SWARM_*` entries on purpose: the loop assigns in order,
+  // so a SUBAGENTS value overwrites the SWARM one when both are set. An
+  // invalid SUBAGENTS value is warned about and skipped, leaving any SWARM
+  // value in place.
+  ['SUBAGENTS_MAX_CONCURRENT_GLOBAL', 'maxConcurrentWorkersGlobal', null],
+  ['SUBAGENTS_MAX_CONCURRENT', 'maxConcurrentWorkers', 'defaults'],
+  ['SUBAGENTS_MAX_PER_TURN', 'maxWorkersPerRun', 'defaults'],
+  ['SUBAGENTS_MAX_RUN_SECONDS', 'maxRunSeconds', 'defaults'],
 ] as const;
 
 /**

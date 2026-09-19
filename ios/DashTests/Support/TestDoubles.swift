@@ -36,6 +36,7 @@ private final class URLProtocolStubState: @unchecked Sendable {
 
   private let lock = NSLock()
   private var responses: [Response] = []
+  private var standing: [(suffix: String, response: Response)] = []
   private var recordedRequests: [URLRequest] = []
   private var recordedStopLoadingCount = 0
 
@@ -43,8 +44,22 @@ private final class URLProtocolStubState: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     responses.removeAll()
+    standing.removeAll()
     recordedRequests.removeAll()
     recordedStopLoadingCount = 0
+  }
+
+  func addStanding(suffix: String, response: Response) {
+    lock.lock()
+    defer { lock.unlock() }
+    standing.append((suffix: suffix, response: response))
+  }
+
+  func standingResponse(for path: String?) -> Response? {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let path else { return nil }
+    return standing.first(where: { path.hasSuffix($0.suffix) })?.response
   }
 
   func enqueue(_ response: Response) {
@@ -148,6 +163,30 @@ final class URLProtocolStub: URLProtocol, @unchecked Sendable {
     )
   }
 
+  /// Answer every request whose path ends in `/subagents` with an empty list,
+  /// OUT OF BAND from the FIFO queue and without consuming anything.
+  ///
+  /// `ChatFeature.appear()` reads the conversation's children (§8.4), so a test
+  /// that drives a `LiveChatSynchronizer` through a POSITIONAL queue would
+  /// otherwise have one of its own responses eaten by a request it is not
+  /// about — and would then fail on whatever came after, several assertions
+  /// away from the cause. Standing rather than queued on purpose: a positional
+  /// entry would make the test depend on exactly WHEN that read happens, which
+  /// is the coupling this exists to remove.
+  static func stubEmptySubagentList() {
+    state.addStanding(
+      suffix: "/subagents",
+      response: .init(
+        status: 200,
+        headers: [:],
+        chunks: [Data(#"{"subagents":[]}"#.utf8)],
+        failure: nil,
+        holdOpen: false,
+        responseGate: nil
+      )
+    )
+  }
+
   static func enqueue(failure: URLError) {
     state.enqueue(
       .init(
@@ -171,7 +210,10 @@ final class URLProtocolStub: URLProtocol, @unchecked Sendable {
 
   override func startLoading() {
     Self.state.record(requestWithCapturedBody(request))
-    guard let response = Self.state.dequeue() else {
+    // Standing responses are consulted BEFORE the queue and never consume it.
+    guard let response = Self.state.standingResponse(for: request.url?.path)
+      ?? Self.state.dequeue()
+    else {
       client?.urlProtocol(self, didFailWithError: URLError(.resourceUnavailable))
       return
     }

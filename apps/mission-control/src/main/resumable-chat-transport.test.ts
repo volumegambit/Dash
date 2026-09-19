@@ -99,6 +99,8 @@ interface MakeTransportOptions {
   ) => Promise<ReplayEntry[]>;
   onError?: (conversationId: string, error: ResumableChatTransportError) => void;
   onProtocolError?: (conversationId: string, message: string) => void;
+  onSubscriptionLost?: (conversationId: string) => void;
+  onSubscriptionRestored?: (conversationId: string) => void;
 }
 
 function makeTransport(
@@ -117,6 +119,10 @@ function makeTransport(
     onFrame,
     onConnectionError: options.onError ?? vi.fn(),
     onProtocolError: options.onProtocolError ?? vi.fn(),
+    ...(options.onSubscriptionLost ? { onSubscriptionLost: options.onSubscriptionLost } : {}),
+    ...(options.onSubscriptionRestored
+      ? { onSubscriptionRestored: options.onSubscriptionRestored }
+      : {}),
   });
 }
 
@@ -936,5 +942,479 @@ describe('ResumableChatTransport', () => {
     expect(socket.sent.some((frame) => frame.type === 'cancel')).toBe(false);
     await vi.runAllTimersAsync();
     expect(socket.readyState).toBe(3);
+  });
+
+  // ---------------------------------------------------------------------
+  // Conversation subscriptions (design §7.6) — task D7b
+  // ---------------------------------------------------------------------
+
+  describe('conversation subscriptions', () => {
+    const childId = '018f0f4a-5c42-7a8b-9c01-33445566aabb';
+    const childTurn = '018f0f4a-5c42-7a8b-9c01-9988776655ff';
+
+    function event(seq: number, text: string, conversationId = childId): MobileWsServerFrame {
+      return {
+        type: 'event',
+        id: childTurn,
+        conversationId,
+        seq,
+        event: { type: 'text_delta', text },
+      } as MobileWsServerFrame;
+    }
+
+    function done(seq: number): MobileWsServerFrame {
+      return {
+        type: 'done',
+        id: childTurn,
+        conversationId: childId,
+        seq,
+        outcome: 'completed',
+      } as MobileWsServerFrame;
+    }
+
+    it('writes subscribe, not resume, and keeps the socket after a done', async () => {
+      const socket = new FakeSocket();
+      const factory = vi.fn(() => socket);
+      const delivered: MobileWsServerFrame[] = [];
+      const transport = makeTransport(factory, (frame) => delivered.push(frame));
+
+      transport.watchConversation('agent-01', childId);
+      socket.open();
+
+      expect(socket.sent).toHaveLength(1);
+      expect(socket.sent[0]).toMatchObject({
+        type: 'subscribe',
+        agentId: 'agent-01',
+        conversationId: childId,
+      });
+      expect(socket.sent.some((frame) => frame.type === 'resume')).toBe(false);
+
+      socket.frame(event(7, 'one'));
+      socket.frame(done(8));
+      await vi.waitFor(() => expect(delivered).toHaveLength(2));
+      // The turn path deletes the entry and closes the socket on `done`; a
+      // conversation subscription outlives every turn it carries.
+      expect(socket.readyState).toBe(1);
+      socket.frame(event(9, 'after the done'));
+      await vi.waitFor(() => expect(delivered).toHaveLength(3));
+    });
+
+    it('delivers the first frame whatever its seq, then only strictly newer ones', async () => {
+      const socket = new FakeSocket();
+      const delivered: MobileWsServerFrame[] = [];
+      const replay = vi.fn().mockResolvedValue([]);
+      const transport = makeTransport(
+        () => socket,
+        (frame) => delivered.push(frame),
+        { replay },
+      );
+
+      transport.watchConversation('agent-01', childId);
+      socket.open();
+      // A subscription lands mid-turn: seq 42 is the first frame this client
+      // sees, and the turn path's `lastSeq + 1` gate would drop it forever.
+      socket.frame(event(42, 'mid-turn'));
+      socket.frame(event(42, 'duplicate'));
+      socket.frame(event(41, 'older'));
+      socket.frame(event(44, 'newer, with a hole before it'));
+
+      await vi.waitFor(() => expect(delivered).toHaveLength(2));
+      expect(delivered.map((frame) => ('seq' in frame ? frame.seq : null))).toEqual([42, 44]);
+      // No replay: a subscription has no cursor to replay from, and the gap is
+      // healed by the renderer's REST re-read.
+      expect(replay).not.toHaveBeenCalled();
+    });
+
+    it('re-sends subscribe after a drop and reports the restore, never on the first open', async () => {
+      vi.useFakeTimers();
+      const sockets: FakeSocket[] = [];
+      const restored = vi.fn();
+      const transport = new ResumableChatTransport({
+        connection: { url: 'wss://gateway.example.com/ws/chat?token=chat-token' },
+        channelId: 'mission-control',
+        replay: vi.fn().mockResolvedValue([]),
+        onFrame: vi.fn(),
+        onConnectionError: vi.fn(),
+        onProtocolError: vi.fn(),
+        onSubscriptionRestored: restored,
+        socketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      transport.watchConversation('agent-01', childId);
+      sockets[0].open();
+      expect(restored).not.toHaveBeenCalled();
+
+      sockets[0].drop();
+      await vi.runAllTimersAsync();
+      expect(sockets).toHaveLength(2);
+      sockets[1].open();
+
+      expect(sockets[1].sent[0]).toMatchObject({ type: 'subscribe', conversationId: childId });
+      expect(restored).toHaveBeenCalledExactlyOnceWith(childId);
+      transport.closeAll();
+    });
+
+    it('writes unsubscribe and closes the socket on release, and holds one socket per conversation', () => {
+      const sockets: FakeSocket[] = [];
+      const factory = vi.fn(() => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const transport = makeTransport(factory, vi.fn());
+
+      transport.watchConversation('agent-01', childId);
+      transport.watchConversation('agent-01', childId);
+      sockets[0].open();
+      expect(factory).toHaveBeenCalledOnce();
+
+      transport.unwatchConversation(childId);
+      expect(sockets[0].sent[1]).toMatchObject({
+        type: 'unsubscribe',
+        agentId: 'agent-01',
+        conversationId: childId,
+      });
+      expect(sockets[0].readyState).toBe(3);
+      expect(transport.watchedConversations()).toEqual([]);
+    });
+
+    it('swallows an older gateway rejecting its own subscribe frame', async () => {
+      const socket = new FakeSocket();
+      const delivered = vi.fn();
+      const onError = vi.fn();
+      const transport = makeTransport(() => socket, delivered, { onError });
+
+      transport.watchConversation('agent-01', childId);
+      socket.open();
+      const sent = socket.sent[0];
+      socket.frame({
+        type: 'error',
+        id: sent.id,
+        conversationId: childId,
+        error: 'Invalid message: missing required fields',
+        code: 'validation_failed',
+        retryable: false,
+      });
+
+      await vi.waitFor(() => expect(socket.readyState).toBe(1));
+      expect(delivered).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('forwards a turn error on the watched conversation without bannering the app', async () => {
+      const socket = new FakeSocket();
+      const delivered = vi.fn();
+      const onError = vi.fn();
+      const transport = makeTransport(() => socket, delivered, { onError });
+
+      transport.watchConversation('agent-01', childId);
+      socket.open();
+      const failure = {
+        type: 'error' as const,
+        id: childTurn,
+        conversationId: childId,
+        error: 'the child fell over',
+      };
+      socket.frame(failure);
+
+      await vi.waitFor(() => expect(delivered).toHaveBeenCalledWith(failure));
+      // `onConnectionError` raises the app-wide banner over the PARENT's
+      // transcript; a child's own turn failing is not that.
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('drops a frame for a conversation it is not watching', async () => {
+      const socket = new FakeSocket();
+      const delivered = vi.fn();
+      const transport = makeTransport(() => socket, delivered, {});
+
+      transport.watchConversation('agent-01', childId);
+      socket.open();
+      socket.frame(event(3, 'somebody else', conversation.id));
+      socket.frame(event(4, 'ours'));
+
+      await vi.waitFor(() => expect(delivered).toHaveBeenCalledOnce());
+      expect(delivered).toHaveBeenCalledWith(event(4, 'ours'));
+    });
+
+    it('drops the subscription on an auth close instead of reconnecting or bannering', async () => {
+      vi.useFakeTimers();
+      const sockets: FakeSocket[] = [];
+      const onError = vi.fn();
+      const transport = makeTransport(
+        () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        vi.fn(),
+        { onError },
+      );
+
+      transport.watchConversation('agent-01', childId);
+      sockets[0].open();
+      sockets[0].drop(4401, 'unauthorized');
+      await vi.runAllTimersAsync();
+
+      expect(sockets).toHaveLength(1);
+      expect(onError).not.toHaveBeenCalled();
+      expect(transport.watchedConversations()).toEqual([]);
+    });
+
+    // C2, all of it. `isSubagentSubscribed` is the renderer's whole test for
+    // whether an `accepted` can ever arrive, and NOTHING told it a watch had
+    // died. Every path that leaves a hold without an open socket has to say
+    // so, or the renderer writes an optimistic row nothing can pair and the
+    // merge keeps it forever (iOS D5 Critical 2, on a third client).
+    it('says the watch is lost when the socket factory throws', () => {
+      const lost = vi.fn();
+      const transport = makeTransport(
+        () => {
+          throw new Error('no socket for you');
+        },
+        vi.fn(),
+        { onSubscriptionLost: lost },
+      );
+
+      transport.watchConversation('agent-01', childId);
+
+      expect(lost).toHaveBeenCalledExactlyOnceWith(childId);
+      expect(transport.watchedConversations()).toEqual([]);
+    });
+
+    it('says the watch is lost on an auth close, which never reconnects', async () => {
+      vi.useFakeTimers();
+      const sockets: FakeSocket[] = [];
+      const lost = vi.fn();
+      const transport = makeTransport(
+        () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        vi.fn(),
+        { onSubscriptionLost: lost },
+      );
+
+      transport.watchConversation('agent-01', childId);
+      sockets[0].open();
+      sockets[0].drop(4401, 'unauthorized');
+      await vi.runAllTimersAsync();
+
+      expect(lost).toHaveBeenCalledExactlyOnceWith(childId);
+      expect(sockets).toHaveLength(1);
+    });
+
+    // The path that turns this from a disclosure into a Critical, because it
+    // is DESIGNED IN. `subscribe` first ships on this branch (`1aec5152`), so
+    // every gateway that predates it answers ours with
+    // `{type:'error', id:<ours>, code:'validation_failed'}`
+    // (`1aec5152^:apps/gateway/src/chat-ws.ts:393-404`). The socket stays
+    // open, the gateway has registered nothing, and the swallow made it
+    // silent. Still swallowed — forwarding it would finalize a row that never
+    // started — but no longer silent.
+    it('says the watch is lost when an older gateway refuses its own subscribe', async () => {
+      const socket = new FakeSocket();
+      const delivered = vi.fn();
+      const lost = vi.fn();
+      const transport = makeTransport(() => socket, delivered, { onSubscriptionLost: lost });
+
+      transport.watchConversation('agent-01', childId);
+      socket.open();
+      socket.frame({
+        type: 'error',
+        id: socket.sent[0].id,
+        conversationId: childId,
+        error: 'Invalid message: missing required fields',
+        code: 'validation_failed',
+        retryable: false,
+      });
+
+      await vi.waitFor(() => expect(lost).toHaveBeenCalledExactlyOnceWith(childId));
+      expect(delivered).not.toHaveBeenCalled();
+      expect(transport.watchedConversations()).toEqual([]);
+      expect(socket.readyState).toBe(3);
+    });
+
+    // The fifth path, which the review did not enumerate: an ordinary 1006.
+    // The watch comes back, but until it does the socket is not open, and a
+    // resume typed in that window earns no `accepted` either.
+    it('says the watch is lost across an ordinary reconnect, and restored after it', async () => {
+      vi.useFakeTimers();
+      const sockets: FakeSocket[] = [];
+      const lost = vi.fn();
+      const restored = vi.fn();
+      const transport = makeTransport(
+        () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        vi.fn(),
+        { onSubscriptionLost: lost, onSubscriptionRestored: restored },
+      );
+
+      transport.watchConversation('agent-01', childId);
+      sockets[0].open();
+      sockets[0].drop();
+      expect(lost).toHaveBeenCalledExactlyOnceWith(childId);
+      expect(restored).not.toHaveBeenCalled();
+
+      await vi.runAllTimersAsync();
+      sockets[1].open();
+
+      expect(restored).toHaveBeenCalledExactlyOnceWith(childId);
+      transport.closeAll();
+    });
+
+    // A transport SWAP is a reconnect nobody names, and `ChatService` used to
+    // announce the restore itself — synchronously, next to the re-watch,
+    // before any socket had opened. Two things were wrong with that. The
+    // socket may never open at all (the factory throws), in which case `lost`
+    // fired first and `restored` overwrote it, leaving the renderer believing
+    // a dead watch was live. And even when it does open, "restored" meant
+    // "asked for" rather than "open", which is the exact thing ruling 2 says
+    // it must not mean.
+    it('treats a re-watch as a restore, and only once the socket is open', () => {
+      const sockets: FakeSocket[] = [];
+      const restored = vi.fn();
+      const transport = makeTransport(
+        () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        vi.fn(),
+        { onSubscriptionRestored: restored },
+      );
+
+      transport.watchConversation('agent-01', childId, { reopened: true });
+      expect(restored).not.toHaveBeenCalled();
+
+      sockets[0].open();
+
+      expect(restored).toHaveBeenCalledExactlyOnceWith(childId);
+      expect(sockets[0].sent[0]).toMatchObject({ type: 'subscribe', conversationId: childId });
+    });
+
+    it('reports a re-watch whose socket never opens as lost, never as restored', () => {
+      const lost = vi.fn();
+      const restored = vi.fn();
+      const transport = makeTransport(
+        () => {
+          throw new Error('no socket for you');
+        },
+        vi.fn(),
+        { onSubscriptionLost: lost, onSubscriptionRestored: restored },
+      );
+
+      transport.watchConversation('agent-01', childId, { reopened: true });
+
+      expect(lost).toHaveBeenCalledExactlyOnceWith(childId);
+      expect(restored).not.toHaveBeenCalled();
+    });
+
+    // M4: every subscribe and unsubscribe frame added a uuid and only a
+    // matching `error` ever removed one, so a watch that reconnected for an
+    // hour accumulated one id per reconnect. Only the ids still outstanding
+    // are ever needed, and a previous socket's are not: it is closed, so its
+    // error frame can no longer arrive.
+    it('remembers only the outstanding subscribe frame id across reconnects', async () => {
+      vi.useFakeTimers();
+      const sockets: FakeSocket[] = [];
+      const delivered = vi.fn();
+      const transport = makeTransport(
+        () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        delivered,
+        {},
+      );
+
+      transport.watchConversation('agent-01', childId);
+      sockets[0].open();
+      const firstSubscribeId = sockets[0].sent[0].id;
+      sockets[0].drop();
+      await vi.runAllTimersAsync();
+      sockets[1].open();
+
+      // The FIRST socket's subscribe id is forgotten, so an error carrying it
+      // is no longer swallowed as ours — it is a stranger's id now.
+      sockets[1].frame({
+        type: 'error',
+        id: firstSubscribeId,
+        conversationId: childId,
+        error: 'the child fell over',
+      });
+
+      await vi.waitFor(() => expect(delivered).toHaveBeenCalledOnce());
+      transport.closeAll();
+    });
+
+    it('closeAll tears the subscriptions down with the turns', async () => {
+      vi.useFakeTimers();
+      const socket = new FakeSocket();
+      const transport = makeTransport(() => socket, vi.fn());
+
+      transport.watchConversation('agent-01', childId);
+      socket.open();
+      transport.closeAll();
+
+      await vi.runAllTimersAsync();
+      expect(socket.readyState).toBe(3);
+      expect(transport.watchedConversations()).toEqual([]);
+    });
+  });
+});
+
+/**
+ * D5 / D3 — the transient `subagent_progress` frame.
+ *
+ * `subagent_progress` is live-stream only (spec §7.2), so
+ * `resumable-chat-hub.ts:382-390` broadcasts it with NO `seq` and never
+ * persists it, and `MobileWsServerFrame` declares `event.seq` optional for
+ * exactly that reason. This transport required it, so every heartbeat a real
+ * child emits raised `invalidFrame()` — "Update Dash: the gateway sent an
+ * unsupported chat frame" (D5) — and, because the turn socket's `.catch`
+ * routes that through `fail()`, terminalized the turn: the `tool_result`, the
+ * `done` and the composer's re-enable never landed (D3).
+ *
+ * The stream is `subagent-progress-frames.jsonl`, captured verbatim from a
+ * real gateway by `scripts/subagents-e2e/capture-fixtures.mjs`. Three of its
+ * fourteen frames carry no `seq`.
+ */
+describe('ResumableChatTransport — a captured stream with transient frames', () => {
+  it('delivers a real turn end to end, seq-less heartbeats included', async () => {
+    const captured = await jsonl<MobileWsServerFrame>('subagent-progress-frames.jsonl');
+    const seqless = captured.filter((f) => f.type === 'event' && f.seq === undefined);
+    expect(seqless).toHaveLength(3);
+    expect(
+      seqless.map((f) => (f as Extract<MobileWsServerFrame, { type: 'event' }>).event.type),
+    ).toEqual(['subagent_progress', 'subagent_progress', 'subagent_progress']);
+
+    const conversationId = (captured[0] as { conversationId: string }).conversationId;
+    const capturedTurn = captured[0].id;
+    const socket = new FakeSocket();
+    const delivered = vi.fn();
+    const onError = vi.fn();
+    const transport = makeTransport(() => socket, delivered, { onError });
+    void transport
+      .send({ ...conversation, id: conversationId, activeTurnId: capturedTurn }, capturedTurn, 'go')
+      .catch(() => {});
+    socket.open();
+    for (const frame of captured) socket.raw(JSON.stringify(frame));
+
+    await vi.waitFor(() => expect(delivered).toHaveBeenCalledTimes(captured.length));
+    expect(onError).not.toHaveBeenCalled();
+    const types = delivered.mock.calls.map(([f]) => (f.type === 'event' ? f.event.type : f.type));
+    expect(types).toContain('subagent_progress');
+    // The turn reached its own terminal frame: this is the half D3 lost.
+    expect(types.at(-1)).toBe('done');
   });
 });

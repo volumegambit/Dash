@@ -72,7 +72,7 @@ describe('Skills', () => {
   it('offers an agent picker only when there is more than one agent', async () => {
     const { unmount } = render(<Skills client={client([LEARNED])} />);
     await screen.findByText('write-files');
-    expect(screen.queryByLabelText('Agent')).toBeNull();
+    expect(screen.queryByLabelText('Squad member')).toBeNull();
     unmount();
 
     render(
@@ -80,6 +80,6 @@ describe('Skills', () => {
         client={client([LEARNED], [AGENT, { id: 'a2', name: 'Researcher' } as MobileAgent])}
       />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Agent')).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText('Squad member')).toBeTruthy());
   });
 });

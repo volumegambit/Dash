@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
 import { MemoryOpError, persistBook, readBook } from '@dash/agent';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_SPEECH_CONFIG } from '@dash/speech';
+import type { SpeechService } from '@dash/speech';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Hono } from 'hono';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
@@ -14,9 +16,12 @@ import { SqliteConversationService } from './conversation-service-sqlite.js';
 import type { ConversationService } from './conversation-service.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
+import { createExecutionCoordinator } from './execution-coordinator.js';
 import type { DynamicGateway } from './gateway.js';
+import type { JsonBody } from './json-body.test-helpers.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
+import { SpeechConfigStore } from './speech-config-store.js';
 
 // --- Mock factories ---
 
@@ -134,6 +139,7 @@ function makeGateway(): DynamicGateway {
     stopChannel: vi.fn().mockResolvedValue(true),
     agentCount: vi.fn().mockReturnValue(0),
     channelCount: vi.fn().mockReturnValue(0),
+    channelHealth: vi.fn().mockReturnValue([]),
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
   };
@@ -148,6 +154,7 @@ function makeAgents(): AgentChatCoordinator {
     cancel: vi.fn().mockReturnValue(false),
     evict: vi.fn().mockResolvedValue(undefined),
     evictAll: vi.fn().mockResolvedValue(undefined),
+    refreshCustomTools: vi.fn().mockResolvedValue(undefined),
     listSkills: vi.fn().mockResolvedValue([]),
     getSkill: vi.fn().mockResolvedValue(null),
     createSkill: vi.fn().mockResolvedValue({ name: 'x', location: '/x/SKILL.md' }),
@@ -176,6 +183,30 @@ function makeModelsStore() {
   } as unknown as import('./models-store.js').ModelsStore;
 }
 
+function makeSpeechService(overrides: Partial<SpeechService> = {}): SpeechService {
+  return {
+    currentConfig: vi.fn().mockResolvedValue(DEFAULT_SPEECH_CONFIG),
+    providers: vi.fn().mockResolvedValue([
+      {
+        id: 'openrouter',
+        capabilities: { transcription: true, speech: true, realtime: false },
+        available: true,
+      },
+    ]),
+    listModels: vi.fn().mockResolvedValue([]),
+    transcribe: vi.fn().mockResolvedValue({ text: 'hi' }),
+    synthesize: vi.fn().mockResolvedValue({
+      format: 'mp3',
+      audio: (async function* () {
+        yield new Uint8Array([1]);
+      })(),
+    }),
+    available: vi.fn().mockResolvedValue(true),
+    invalidate: vi.fn(),
+    ...overrides,
+  };
+}
+
 function makeConversationService(): ConversationService {
   return {
     eventLog: {
@@ -202,8 +233,20 @@ function makeConversationService(): ConversationService {
   } as unknown as ConversationService;
 }
 
-function makeResumableChatHub() {
+function makeExecution(agents: AgentChatCoordinator) {
   return {
+    legacy: {
+      chat: vi.fn((request: Parameters<AgentChatCoordinator['chat']>[0]) => agents.chat(request)),
+      cancel: agents.cancel,
+      answerQuestion: agents.answerQuestion,
+      steer: agents.steer,
+      followUp: agents.followUp,
+      hasActiveTurn: vi.fn(() => false),
+      activeTurnCount: vi.fn(() => 0),
+      ownsTurn: vi.fn(() => false),
+      cancelAgent: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    },
     cancelAgent: vi.fn().mockResolvedValue(undefined),
     allowAgent: vi.fn(),
   };
@@ -218,15 +261,15 @@ function deferred<T>() {
 }
 
 function createApp(overrides: Record<string, unknown> = {}) {
+  const agents = (overrides.agents as AgentChatCoordinator | undefined) ?? makeAgents();
   const deps = {
     gateway: makeGateway(),
-    agents: makeAgents(),
+    agents,
     agentRegistry: makeAgentRegistry(),
     channelRegistry: makeChannelRegistry(),
     credentialStore: makeCredentialStore(),
     modelsStore: makeModelsStore(),
     conversationService: makeConversationService(),
-    resumableChatHub: makeResumableChatHub(),
     eventBus: new EventBus(),
     identity: { gatewayId: 'gateway-test-id', publicKey: 'PUBKEY_B64' },
     startedAt: '2026-04-03T00:00:00Z',
@@ -234,6 +277,10 @@ function createApp(overrides: Record<string, unknown> = {}) {
     mobileToken: 'mobile-test-token',
     lanTlsFingerprint: 'a'.repeat(64),
     ...overrides,
+    execution: {
+      ...makeExecution(agents),
+      ...(overrides.execution as Partial<ReturnType<typeof makeExecution>> | undefined),
+    },
   };
   const app = createGatewayManagementApp(deps);
   return { app, ...deps };
@@ -253,13 +300,181 @@ describe('createGatewayManagementApp', () => {
     agentIdCounter = 0;
   });
 
+  // Sub-agent definition routes (Ruling 5: BOTH namespaces; Ruling 4:
+  // invalidate on every mutation, including a PUT/DELETE of the agent itself).
+  describe('sub-agent definition wiring', () => {
+    function makeDefinitions() {
+      const invalidate = vi.fn();
+      const listFor = vi.fn().mockResolvedValue({
+        types: [
+          {
+            name: 'general-purpose',
+            description: 'd',
+            systemPrompt: 'body',
+            source: 'builtin',
+            skipMemory: false,
+            oneShot: false,
+          },
+        ],
+        unknownAllowedTypes: [],
+      });
+      const definitions = {
+        resolverFor: vi.fn(),
+        listFor,
+        invalidate,
+        perAgentDir: (name: string) => join('/tmp/dash-test-subagents', name),
+        onChange: vi.fn(() => () => {}),
+      };
+      return { definitions, invalidate, listFor };
+    }
+
+    function withAgent() {
+      const { definitions, invalidate, listFor } = makeDefinitions();
+      const created = createApp({ subagentDefinitions: definitions });
+      (created.agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'alpha',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      return { ...created, invalidate, listFor };
+    }
+
+    it('serves the roster on the loopback app AND on /mobile/v1', async () => {
+      const { app, listFor } = withAgent();
+      const loopback = await app.request('/agents/a1/subagent-types', { headers: AUTH });
+      expect(loopback.status).toBe(200);
+      const mobile = await app.request('/mobile/v1/agents/a1/subagent-types', {
+        headers: MOBILE_AUTH,
+      });
+      expect(mobile.status).toBe(200);
+      // Both namespaces read the same registry, so a definition written from
+      // the web app is immediately visible to the phone.
+      expect(listFor).toHaveBeenCalledTimes(2);
+      expect((await mobile.json()) as JsonBody).toEqual({
+        types: [{ name: 'general-purpose', description: 'd', source: 'builtin' }],
+        unknownAllowedTypes: [],
+      });
+    });
+
+    it('returns the typed MobileApiError envelope on the mobile mount only', async () => {
+      const { app } = withAgent();
+      // The /mobile/v1 contract declares MobileApiError with
+      // additionalProperties:false and required [code, error, retryable], and
+      // the 401 from the surrounding middleware is already typed — a second,
+      // untyped shape in the same namespace breaks a strict client decoder.
+      const mobile404 = await app.request('/mobile/v1/agents/nope/subagent-types', {
+        headers: MOBILE_AUTH,
+      });
+      expect(mobile404.status).toBe(404);
+      expect((await mobile404.json()) as JsonBody).toEqual({
+        code: 'not_found',
+        error: 'not found',
+        retryable: false,
+      });
+
+      const mobile400 = await app.request('/mobile/v1/agents/a1/subagent-definitions/UPPER', {
+        headers: MOBILE_AUTH,
+      });
+      expect(mobile400.status).toBe(400);
+      expect((await mobile400.json()) as JsonBody).toMatchObject({
+        code: 'validation_failed',
+        retryable: false,
+      });
+
+      const mobile422 = await app.request('/mobile/v1/agents/a1/subagent-definitions/broken', {
+        method: 'PUT',
+        headers: MOBILE_JSON_HEADERS,
+        body: JSON.stringify({ raw: 'no frontmatter\n' }),
+      });
+      expect(mobile422.status).toBe(422);
+      expect((await mobile422.json()) as JsonBody).toEqual({
+        code: 'validation_failed',
+        error: 'frontmatter is required',
+        retryable: false,
+      });
+
+      // The loopback mount keeps the management shape the swarm/plugin/skills
+      // routes use — it is not part of the frozen mobile contract.
+      const loopback404 = await app.request('/agents/nope/subagent-types', { headers: AUTH });
+      expect((await loopback404.json()) as JsonBody).toEqual({ error: 'not found' });
+    });
+
+    it('requires the namespace bearer on each mount', async () => {
+      const { app } = withAgent();
+      expect((await app.request('/agents/a1/subagent-types')).status).toBe(401);
+      expect((await app.request('/mobile/v1/agents/a1/subagent-types')).status).toBe(401);
+      // The mobile bearer is not an administrative bearer.
+      expect(
+        (await app.request('/agents/a1/subagent-types', { headers: MOBILE_AUTH })).status,
+      ).toBe(401);
+    });
+
+    it('is simply absent when no registry is wired', async () => {
+      const { app, agentRegistry } = createApp();
+      (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'alpha',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      expect((await app.request('/agents/a1/subagent-types', { headers: AUTH })).status).toBe(404);
+    });
+
+    it('invalidates the agent roster on PUT /agents/:id', async () => {
+      const { app, invalidate } = withAgent();
+      const res = await app.request('/agents/a1', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ workspace: '/tmp/new-workspace' }),
+      });
+      expect(res.status).toBe(200);
+      // The registry snapshots `workspace` (it is where `.dash/agents` lives),
+      // so a PUT that did not invalidate would serve the old roster forever.
+      expect(invalidate).toHaveBeenCalledWith('a1');
+    });
+
+    it('invalidates on DELETE /agents/:id so the cache does not outlive the agent', async () => {
+      const { app, invalidate } = withAgent();
+      const res = await app.request('/agents/a1', { method: 'DELETE', headers: AUTH });
+      expect(res.status).toBe(200);
+      expect(invalidate).toHaveBeenCalledWith('a1');
+    });
+  });
+
   // Health
+  describe('GET /runtime/status', () => {
+    it('exposes live diagnostics only to the administrative bearer', async () => {
+      const status = {
+        execution: {
+          accepting: true,
+          activeCanonicalTurns: 2,
+          activeLegacyTurns: 1,
+          quiescingAgents: 0,
+        },
+        pool: { size: 3, maxSize: 64, pinned: 3, agents: { a1: 3 } },
+        channels: [{ name: 'telegram', health: 'connected' }],
+        relay: { connection: 'disabled', activeStreams: 0 },
+      };
+      const readStatus = vi.fn(() => status);
+      const { app } = createApp({ runtimeStatus: readStatus });
+      expect((await app.request('/runtime/status')).status).toBe(401);
+      expect((await app.request('/runtime/status', { headers: MOBILE_AUTH })).status).toBe(401);
+      expect(
+        (await app.request('/mobile/v1/runtime/status', { headers: MOBILE_AUTH })).status,
+      ).toBe(404);
+      expect(readStatus).not.toHaveBeenCalled();
+      const response = await app.request('/runtime/status', { headers: AUTH });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(status);
+      expect(readStatus).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('GET /health', () => {
     it('returns healthy without auth', async () => {
       const { app } = createApp();
       const res = await app.request('/health');
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.status).toBe('healthy');
       expect(body.startedAt).toBe('2026-04-03T00:00:00Z');
       expect(body.agents).toBe(0);
@@ -276,16 +491,16 @@ describe('createGatewayManagementApp', () => {
       });
       channelRegistry as unknown as { _addForTest: boolean }; // channels already empty
       const res = await app.request('/health');
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.agents).toBe(1);
     });
 
     it('advertises the frozen mobile capabilities without auth', async () => {
       const { app } = createApp();
       const response = await app.request('/health');
-      expect(await response.json()).toMatchObject({
+      expect((await response.json()) as JsonBody).toMatchObject({
         apiVersion: 1,
-        capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+        capabilities: ['conversation-sync-v1', 'chat-resume-v1', 'conversation-control-v2'],
       });
     });
   });
@@ -311,7 +526,7 @@ describe('createGatewayManagementApp', () => {
       const { app } = createApp();
       expect((await app.request('/identity')).status).toBe(401);
       const response = await app.request('/identity', { headers: AUTH });
-      expect(await response.json()).toEqual({
+      expect((await response.json()) as JsonBody).toEqual({
         gatewayId: 'gateway-test-id',
         publicKey: 'PUBKEY_B64',
       });
@@ -324,7 +539,7 @@ describe('createGatewayManagementApp', () => {
       const { app } = createApp();
       const res = await app.request('/agents');
       expect(res.status).toBe(401);
-      expect(await res.json()).toEqual({
+      expect((await res.json()) as JsonBody).toEqual({
         code: 'unauthorized',
         error: 'Unauthorized',
         retryable: false,
@@ -421,6 +636,70 @@ describe('createGatewayManagementApp', () => {
       });
       expect(error.mock.calls[0]?.[1]).toBeUndefined();
     });
+
+    it('omits even the hasJsonBody shape flag for the two speech audio/text routes, on both mounts', async () => {
+      const info = vi.fn();
+      const speech = makeSpeechService();
+      const speechDataDir = await mkdtemp(join(tmpdir(), 'speech-log-'));
+      const speechConfigStore = new SpeechConfigStore(speechDataDir);
+      try {
+        const { app } = createApp({ speech, speechConfigStore, logger: { info } });
+
+        // Each response must actually succeed (200) — otherwise this test
+        // would pass just as well if /speech/* were never mounted at all
+        // (a 404 also carries no hasJsonBody, which would be a false green).
+        const transcriptionRes = await app.request('/speech/transcriptions', {
+          method: 'POST',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({
+            audio: Buffer.from('secret-audio-bytes').toString('base64'),
+            format: 'wav',
+          }),
+        });
+        expect(transcriptionRes.status).toBe(200);
+
+        const mobileTranscriptionRes = await app.request('/mobile/v1/speech/transcriptions', {
+          method: 'POST',
+          headers: MOBILE_JSON_HEADERS,
+          body: JSON.stringify({
+            audio: Buffer.from('secret-audio-bytes-2').toString('base64'),
+            format: 'wav',
+          }),
+        });
+        expect(mobileTranscriptionRes.status).toBe(200);
+
+        const speechRes = await app.request('/speech/speech', {
+          method: 'POST',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ text: 'private dictated text' }),
+        });
+        expect(speechRes.status).toBe(200);
+
+        const mobileSpeechRes = await app.request('/mobile/v1/speech/speech', {
+          method: 'POST',
+          headers: MOBILE_JSON_HEADERS,
+          body: JSON.stringify({ text: 'private dictated text 2' }),
+        });
+        expect(mobileSpeechRes.status).toBe(200);
+
+        for (const path of [
+          '/speech/transcriptions',
+          '/mobile/v1/speech/transcriptions',
+          '/speech/speech',
+          '/mobile/v1/speech/speech',
+        ]) {
+          const call = info.mock.calls.find(([msg]) => msg === `→ POST ${path}`);
+          expect(call, path).toBeDefined();
+          expect(call?.[1]).not.toHaveProperty('hasJsonBody');
+        }
+
+        const output = JSON.stringify(info.mock.calls);
+        expect(output).not.toContain('secret-audio-bytes');
+        expect(output).not.toContain('private dictated text');
+      } finally {
+        await rm(speechDataDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('explicit mobile v1 namespace', () => {
@@ -445,7 +724,9 @@ describe('createGatewayManagementApp', () => {
       expect(mobileResponse.status).toBe(200);
       expect(coldLoadsBeforeRelease).toBe(1);
       expect(modelsStore.load).toHaveBeenCalledOnce();
-      expect(await mobileResponse.json()).toEqual(await legacyResponse.json());
+      expect((await mobileResponse.json()) as JsonBody).toEqual(
+        (await legacyResponse.json()) as JsonBody,
+      );
     });
 
     it('mounts health, identity, models, and the full agent lifecycle', async () => {
@@ -459,7 +740,7 @@ describe('createGatewayManagementApp', () => {
         headers: MOBILE_AUTH,
       });
       expect(debugModels.status).toBe(400);
-      expect(await debugModels.json()).toMatchObject({
+      expect((await debugModels.json()) as JsonBody).toMatchObject({
         code: 'validation_failed',
         retryable: false,
       });
@@ -528,6 +809,7 @@ describe('createGatewayManagementApp', () => {
         maxTokens: 1,
         mcpServers: [],
         swarm: {},
+        subagents: {},
         plugins: [],
         providers: [],
       };
@@ -544,7 +826,7 @@ describe('createGatewayManagementApp', () => {
           }),
         });
         expect(response.status, key).toBe(400);
-        expect(await response.json()).toMatchObject({
+        expect((await response.json()) as JsonBody).toMatchObject({
           code: 'validation_failed',
           retryable: false,
         });
@@ -568,7 +850,7 @@ describe('createGatewayManagementApp', () => {
           body: JSON.stringify({ [key]: value }),
         });
         expect(response.status, key).toBe(400);
-        expect(await response.json()).toMatchObject({
+        expect((await response.json()) as JsonBody).toMatchObject({
           code: 'validation_failed',
           retryable: false,
         });
@@ -650,7 +932,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ name: 'bot', model: 'claude', systemPrompt: 'hello' }),
       });
       expect(res.status).toBe(201);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.id).toBeDefined();
       expect(body.name).toBe('bot');
       expect(body.status).toBe('registered');
@@ -671,7 +953,7 @@ describe('createGatewayManagementApp', () => {
           providerApiKeys: { anthropic: 'sk-secret' },
         }),
       });
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.config.providerApiKeys).toBeUndefined();
     });
 
@@ -696,7 +978,7 @@ describe('createGatewayManagementApp', () => {
       });
       const res = await app.request('/agents', { headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body).toHaveLength(1);
       expect(body[0].name).toBe('a1');
     });
@@ -712,7 +994,7 @@ describe('createGatewayManagementApp', () => {
       });
       const res = await app.request(`/agents/${entry.id}`, { headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.name).toBe('x');
     });
 
@@ -737,7 +1019,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ model: 'gpt-4' }),
       });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.config.model).toBe('gpt-4');
       expect(agentRegistry.save).toHaveBeenCalled();
     });
@@ -750,6 +1032,189 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ model: 'gpt-4' }),
       });
       expect(res.status).toBe(404);
+    });
+  });
+
+  // Per-agent `subagents` block (Task A6). Validation lives next to the swarm
+  // block's; the PUT eviction snapshot must cover BOTH blocks so a delegation /
+  // caps change actually reaches warm backends.
+  describe('agent subagents block', () => {
+    it('rejects an unknown delegation mode', async () => {
+      const { app, agentRegistry } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      const res = await app.request(`/agents/${entry.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ subagents: { delegation: 'sometimes' } }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()) as JsonBody).toMatchObject({
+        code: 'validation_failed',
+        error: 'subagents.delegation must be "auto" or "explicit"',
+      });
+      expect(agentRegistry.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects unknown subagents keys and non-integer caps', async () => {
+      const { app, agentRegistry } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      for (const [value, message] of [
+        [{ nope: 1 }, 'subagents contains unknown or invalid fields'],
+        [{ enabled: 'yes' }, 'subagents.enabled must be a boolean'],
+        [{ maxConcurrent: 0 }, 'subagents.maxConcurrent must be a positive integer'],
+        [{ maxDepth: 1.5 }, 'subagents.maxDepth must be a non-negative integer'],
+        [{ maxDepth: -1 }, 'subagents.maxDepth must be a non-negative integer'],
+        [{ allowedTypes: [''] }, 'subagents.allowedTypes must be an array of nonblank strings'],
+      ] as const) {
+        const res = await app.request(`/agents/${entry.id}`, {
+          method: 'PUT',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ subagents: value }),
+        });
+        expect(res.status, message).toBe(400);
+        expect((await res.json()) as JsonBody).toMatchObject({
+          code: 'validation_failed',
+          error: message,
+        });
+      }
+    });
+
+    // C2: `subagents.modelAliases` was named by the spec and never built, so
+    // the key was REJECTED here while `resolve-spawn.ts` warned about it by
+    // name — a warning pointing at a config key that did not exist.
+    it('accepts subagents.modelAliases and stores it verbatim', async () => {
+      const { app, agentRegistry } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      const res = await app.request(`/agents/${entry.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          subagents: { modelAliases: { sonnet: 'anthropic/claude-sonnet-4-6' } },
+        }),
+      });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as JsonBody).config.subagents).toEqual({
+        modelAliases: { sonnet: 'anthropic/claude-sonnet-4-6' },
+      });
+    });
+
+    it('rejects a modelAliases map that could never resolve', async () => {
+      const { app, agentRegistry } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      for (const [value, message] of [
+        [{ modelAliases: [] }, 'subagents.modelAliases must be an object of alias → model id'],
+        [
+          // A `/` in the KEY is unreachable: `resolveChildModel` treats any
+          // value containing `/` as a provider id and never looks it up.
+          { modelAliases: { 'anthropic/sonnet': 'anthropic/claude-sonnet-4-6' } },
+          'subagents.modelAliases key "anthropic/sonnet" must be a bare name (no "/")',
+        ],
+        [
+          { modelAliases: { sonnet: '' } },
+          'subagents.modelAliases.sonnet must be a non-empty model id',
+        ],
+        [
+          { modelAliases: { sonnet: 3 } },
+          'subagents.modelAliases.sonnet must be a non-empty model id',
+        ],
+      ] as const) {
+        const res = await app.request(`/agents/${entry.id}`, {
+          method: 'PUT',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ subagents: value }),
+        });
+        expect(res.status, message).toBe(400);
+        expect((await res.json()) as JsonBody).toMatchObject({
+          code: 'validation_failed',
+          error: message,
+        });
+      }
+    });
+
+    it('accepts maxDepth: 0 — "may not nest at all" must be expressible', async () => {
+      const { app, agentRegistry } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      const res = await app.request(`/agents/${entry.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ subagents: { maxDepth: 0 } }),
+      });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as JsonBody).config.subagents).toEqual({ maxDepth: 0 });
+    });
+
+    it('stores a valid subagents block and evicts warm backends when it changes', async () => {
+      const { app, agentRegistry, agents } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      const res = await app.request(`/agents/${entry.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ subagents: { enabled: false, allowedTypes: ['Explore'] } }),
+      });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as JsonBody).config.subagents).toEqual({
+        enabled: false,
+        allowedTypes: ['Explore'],
+      });
+      // The block changed → the warm backend caches the delegation section and
+      // caps, so it must be rebuilt on the next chat.
+      expect(agents.evict).toHaveBeenCalledWith(entry.id);
+
+      // An unrelated field change leaves the block identical → no eviction.
+      vi.mocked(agents.evict).mockClear();
+      const noop = await app.request(`/agents/${entry.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ systemPrompt: 'q' }),
+      });
+      expect(noop.status).toBe(200);
+      expect(agents.evict).not.toHaveBeenCalled();
+    });
+
+    it('POST /agents accepts subagents and round-trips it through GET', async () => {
+      const { app } = createApp();
+      const created = await app.request('/agents', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: 'deleg',
+          model: 'claude',
+          systemPrompt: 'hi',
+          subagents: { delegation: 'auto', maxPerTurn: 4 },
+        }),
+      });
+      expect(created.status).toBe(201);
+      const body = (await created.json()) as JsonBody;
+      expect(body.config.subagents).toEqual({ delegation: 'auto', maxPerTurn: 4 });
+      const fetched = await app.request(`/agents/${body.id}`, { headers: AUTH });
+      expect(((await fetched.json()) as JsonBody).config.subagents).toEqual({
+        delegation: 'auto',
+        maxPerTurn: 4,
+      });
     });
   });
 
@@ -771,12 +1236,12 @@ describe('createGatewayManagementApp', () => {
         }),
       });
       expect(created.status).toBe(201);
-      const createdBody = await created.json();
+      const createdBody = (await created.json()) as JsonBody;
       expect(createdBody.config.plugins).toEqual(['alpha', 'beta']);
 
       const fetched = await app.request(`/agents/${createdBody.id}`, { headers: AUTH });
       expect(fetched.status).toBe(200);
-      const fetchedBody = await fetched.json();
+      const fetchedBody = (await fetched.json()) as JsonBody;
       expect(fetchedBody.config.plugins).toEqual(['alpha', 'beta']);
     });
 
@@ -788,7 +1253,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ name: 'legacy', model: 'claude', systemPrompt: 'hi' }),
       });
       expect(created.status).toBe(201);
-      const body = await created.json();
+      const body = (await created.json()) as JsonBody;
       // No selection → backward compat: the agent sees ALL loaded plugins. The
       // key must be absent (undefined), never coerced to an empty array.
       expect(body.config.plugins).toBeUndefined();
@@ -803,7 +1268,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ name: 'none', model: 'claude', systemPrompt: 'hi', plugins: [] }),
       });
       expect(created.status).toBe(201);
-      const body = await created.json();
+      const body = (await created.json()) as JsonBody;
       expect(body.config.plugins).toEqual([]);
     });
 
@@ -820,10 +1285,10 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ plugins: ['alpha'] }),
       });
       expect(updated.status).toBe(200);
-      expect((await updated.json()).config.plugins).toEqual(['alpha']);
+      expect(((await updated.json()) as JsonBody).config.plugins).toEqual(['alpha']);
 
       const fetched = await app.request(`/agents/${entry.id}`, { headers: AUTH });
-      expect((await fetched.json()).config.plugins).toEqual(['alpha']);
+      expect(((await fetched.json()) as JsonBody).config.plugins).toEqual(['alpha']);
     });
 
     // Regression for the "clear scoped plugins back to all no-ops over HTTP"
@@ -849,7 +1314,7 @@ describe('createGatewayManagementApp', () => {
         }),
       });
       expect(created.status).toBe(201);
-      const createdBody = await created.json();
+      const createdBody = (await created.json()) as JsonBody;
       expect(createdBody.config.plugins).toEqual(['alpha']);
 
       // Clear via the null sentinel — body literally carries `"plugins":null`.
@@ -859,14 +1324,14 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ plugins: null }),
       });
       expect(cleared.status).toBe(200);
-      const clearedBody = await cleared.json();
+      const clearedBody = (await cleared.json()) as JsonBody;
       // Read back: the key must be GONE (undefined = "all loaded plugins"),
       // not null (which would break filterPluginsByAgent) and not ['alpha'].
       expect(clearedBody.config.plugins).toBeUndefined();
       expect('plugins' in clearedBody.config).toBe(false);
 
       const fetched = await app.request(`/agents/${createdBody.id}`, { headers: AUTH });
-      const fetchedBody = await fetched.json();
+      const fetchedBody = (await fetched.json()) as JsonBody;
       expect(fetchedBody.config.plugins).toBeUndefined();
       expect('plugins' in fetchedBody.config).toBe(false);
     });
@@ -874,7 +1339,7 @@ describe('createGatewayManagementApp', () => {
 
   describe('DELETE /agents/:id', () => {
     it('removes agent and cleans up channels, pool, and registry', async () => {
-      const { app, agentRegistry, gateway, channelRegistry, agents, resumableChatHub, eventBus } =
+      const { app, agentRegistry, gateway, channelRegistry, agents, execution, eventBus } =
         createApp();
       const emit = vi.spyOn(eventBus, 'emit');
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
@@ -888,14 +1353,14 @@ describe('createGatewayManagementApp', () => {
         headers: AUTH,
       });
       expect(res.status).toBe(200);
-      expect(resumableChatHub.cancelAgent).toHaveBeenCalledWith(entry.id);
+      expect(execution.cancelAgent).toHaveBeenCalledWith(entry.id);
       expect(gateway.deregisterAgent).toHaveBeenCalledWith(entry.id);
       expect(channelRegistry.remove).toHaveBeenCalledWith('ch1');
       expect(channelRegistry.removeRoutesForAgent).toHaveBeenCalledWith(entry.id);
       // Warm pool entries must be evicted so in-flight streams are aborted
       // and backend.stop() runs on any cached DashAgent / AgentBackend.
       expect(agents.evict).toHaveBeenCalledWith(entry.id);
-      expect(resumableChatHub.cancelAgent.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(execution.cancelAgent.mock.invocationCallOrder[0]).toBeLessThan(
         vi.mocked(agents.evict).mock.invocationCallOrder[0] as number,
       );
       expect(agentRegistry.remove).toHaveBeenCalledWith(entry.id);
@@ -929,6 +1394,7 @@ describe('createGatewayManagementApp', () => {
       const deregistered = deferred<string[]>();
       let deleteRequest: Promise<Response> | undefined;
       let enableRequest: Promise<Response> | undefined;
+      let execution: ReturnType<typeof createExecutionCoordinator> | undefined;
       let resumableChatHub: ReturnType<typeof createResumableChatHub> | undefined;
       try {
         const agents = makeAgents();
@@ -949,17 +1415,22 @@ describe('createGatewayManagementApp', () => {
           schedule: vi.fn(),
           flush: vi.fn().mockResolvedValue(undefined),
         };
-        resumableChatHub = createResumableChatHub({
+        execution = createExecutionCoordinator({
           conversations: conversationService,
           agents,
           autoTitle,
         });
+        resumableChatHub = createResumableChatHub({
+          conversations: conversationService,
+          execution,
+        });
+        const allowAgent = vi.spyOn(execution, 'allowAgent');
         const gateway = makeGateway();
         vi.mocked(gateway.deregisterAgent).mockImplementation(() => deregistered.promise);
         const { app, agentRegistry } = createApp({
           agents,
           conversationService,
-          resumableChatHub,
+          execution,
           gateway,
         });
         const agent = (agentRegistry.register as ReturnType<typeof vi.fn>)({
@@ -1000,10 +1471,14 @@ describe('createGatewayManagementApp', () => {
         expect(agents.chat).toHaveBeenCalledOnce();
         expect(autoTitle.schedule).toHaveBeenCalledOnce();
 
-        deleteRequest = app.request(`/agents/${agent.id}`, { method: 'DELETE', headers: AUTH });
+        // Captured so the `expect(() => …)` closures below keep the narrowing.
+        const hub = resumableChatHub;
+        deleteRequest = Promise.resolve(
+          app.request(`/agents/${agent.id}`, { method: 'DELETE', headers: AUTH }),
+        );
         await cleanupStarted.promise;
         expect(() =>
-          resumableChatHub.start(
+          hub.start(
             {
               type: 'message',
               id: 'turn-during-cancel',
@@ -1015,27 +1490,26 @@ describe('createGatewayManagementApp', () => {
             },
             sink,
           ),
-        ).toThrow('Agent a1 is not accepting new turns');
+        ).toThrow('Agent is being disabled. Try again shortly.');
         expect(acceptTurn).toHaveBeenCalledOnce();
         expect(agents.chat).toHaveBeenCalledOnce();
         expect(autoTitle.schedule).toHaveBeenCalledOnce();
 
         cleanupReleased.resolve(undefined);
         await vi.waitFor(() => expect(gateway.deregisterAgent).toHaveBeenCalledWith(agent.id));
-        const allowAgent = vi.spyOn(resumableChatHub, 'allowAgent');
         let enableSettled = false;
-        enableRequest = app
-          .request(`/mobile/v1/agents/${agent.id}/enable`, {
+        enableRequest = Promise.resolve(
+          app.request(`/mobile/v1/agents/${agent.id}/enable`, {
             method: 'POST',
             headers: MOBILE_AUTH,
-          })
-          .then((response) => {
-            enableSettled = true;
-            return response;
-          });
+          }),
+        ).then((response) => {
+          enableSettled = true;
+          return response;
+        });
         await new Promise<void>((resolve) => setImmediate(resolve));
         expect(() =>
-          resumableChatHub.start(
+          hub.start(
             {
               type: 'message',
               id: 'turn-during-cleanup',
@@ -1047,7 +1521,7 @@ describe('createGatewayManagementApp', () => {
             },
             sink,
           ),
-        ).toThrow('Agent a1 is not accepting new turns');
+        ).toThrow('Agent is being disabled. Try again shortly.');
         expect(acceptTurn).toHaveBeenCalledOnce();
         expect(agents.chat).toHaveBeenCalledOnce();
         expect(autoTitle.schedule).toHaveBeenCalledOnce();
@@ -1067,7 +1541,8 @@ describe('createGatewayManagementApp', () => {
         deregistered.resolve([]);
         if (deleteRequest) await deleteRequest;
         if (enableRequest) await enableRequest;
-        if (resumableChatHub) await resumableChatHub.stop();
+        if (execution) await execution.stop();
+        resumableChatHub?.dispose();
         conversationService.close();
         await rm(tmpDir, { recursive: true, force: true });
       }
@@ -1075,15 +1550,15 @@ describe('createGatewayManagementApp', () => {
 
     it('serializes overlapping disable, delete, and enable operations for one agent', async () => {
       const firstCancellation = deferred<void>();
-      const resumableChatHub = {
+      const execution = {
         cancelAgent: vi.fn(async () => {
-          if (resumableChatHub.cancelAgent.mock.calls.length === 1) {
+          if (execution.cancelAgent.mock.calls.length === 1) {
             await firstCancellation.promise;
           }
         }),
         allowAgent: vi.fn(),
       };
-      const { app, agentRegistry, gateway } = createApp({ resumableChatHub });
+      const { app, agentRegistry, gateway } = createApp({ execution });
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'Serialized Helper',
         model: 'test/model',
@@ -1094,7 +1569,7 @@ describe('createGatewayManagementApp', () => {
         method: 'POST',
         headers: AUTH,
       });
-      await vi.waitFor(() => expect(resumableChatHub.cancelAgent).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(execution.cancelAgent).toHaveBeenCalledOnce());
       const deleting = app.request(`/agents/${entry.id}`, { method: 'DELETE', headers: AUTH });
       const enabling = app.request(`/agents/${entry.id}/enable`, {
         method: 'POST',
@@ -1103,10 +1578,10 @@ describe('createGatewayManagementApp', () => {
 
       try {
         await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(resumableChatHub.cancelAgent).toHaveBeenCalledOnce();
+        expect(execution.cancelAgent).toHaveBeenCalledOnce();
         expect(gateway.deregisterAgent).not.toHaveBeenCalled();
         expect(agentRegistry.enable).not.toHaveBeenCalled();
-        expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
+        expect(execution.allowAgent).not.toHaveBeenCalled();
       } finally {
         firstCancellation.resolve(undefined);
       }
@@ -1119,8 +1594,8 @@ describe('createGatewayManagementApp', () => {
       expect(disableResponse.status).toBe(200);
       expect(deleteResponse.status).toBe(200);
       expect(enableResponse.status).toBe(404);
-      expect(resumableChatHub.cancelAgent).toHaveBeenCalledTimes(2);
-      expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
+      expect(execution.cancelAgent).toHaveBeenCalledTimes(2);
+      expect(execution.allowAgent).not.toHaveBeenCalled();
     });
   });
 
@@ -1153,18 +1628,173 @@ describe('createGatewayManagementApp', () => {
       );
     });
 
+    it.each(['canonical', 'legacy'])(
+      'fences %s admission while disable persistence is pending',
+      async (mode) => {
+        const tmpDir = await mkdtemp(join(tmpdir(), 'management-disable-admission-'));
+        const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+        const saveStarted = deferred<void>();
+        const saveReleased = deferred<void>();
+        const agents = makeAgents();
+        vi.mocked(agents.chat).mockImplementation(async function* (): AsyncGenerator<AgentEvent> {
+          yield { type: 'text_delta', text: 'This turn must not start' };
+        });
+        const execution = createExecutionCoordinator({
+          conversations: conversationService,
+          agents,
+          autoTitle: { schedule: vi.fn(), flush: vi.fn().mockResolvedValue(undefined) },
+        });
+        let disableRequest: Promise<Response> | undefined;
+        try {
+          const { app, agentRegistry } = createApp({ agents, conversationService, execution });
+          const entry = agentRegistry.register({
+            name: 'Pending Disable',
+            model: 'test/model',
+            systemPrompt: '',
+          });
+          const conversation = conversationService.create({
+            agentId: entry.id,
+            agentName: entry.name,
+            requestId: 'create-during-disable',
+          });
+          vi.mocked(agentRegistry.save).mockImplementation(async () => {
+            saveStarted.resolve(undefined);
+            await saveReleased.promise;
+          });
+          let disableSettled = false;
+          disableRequest = Promise.resolve(
+            app.request(`/agents/${entry.id}/disable`, { method: 'POST', headers: AUTH }),
+          ).then((response) => {
+            disableSettled = true;
+            return response;
+          });
+          await saveStarted.promise;
+          expect(agentRegistry.get(entry.id)?.status).toBe('disabled');
+          expect(disableSettled).toBe(false);
+
+          const request = {
+            agentId: entry.id,
+            conversationId: conversation.id,
+            text: 'Race registry persistence',
+          };
+          if (mode === 'canonical') {
+            expect(() => execution.start({ ...request, turnId: 'turn-during-disable' })).toThrow(
+              'Agent is being disabled. Try again shortly.',
+            );
+          } else {
+            await expect(execution.legacy.chat(request).next()).rejects.toThrow(
+              'Agent is being disabled. Try again shortly.',
+            );
+          }
+          expect(agents.chat).not.toHaveBeenCalled();
+          expect(conversationService.get(conversation.id)).toMatchObject({
+            status: 'idle',
+            activeTurnId: null,
+          });
+          expect(
+            conversationService.listMessages({ conversationId: conversation.id, limit: 10 }).items,
+          ).toEqual([]);
+
+          saveReleased.resolve(undefined);
+          expect((await disableRequest).status).toBe(200);
+        } finally {
+          saveReleased.resolve(undefined);
+          if (disableRequest) await disableRequest;
+          await execution.stop();
+          conversationService.close();
+          await rm(tmpDir, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it.each(['saved', 'failed'])(
+      'persists disable during provider cleanup and waits for settlement when persistence %s',
+      async (persistence) => {
+        const tmpDir = await mkdtemp(join(tmpdir(), 'management-disable-settlement-'));
+        const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+        const streamReleased = deferred<void>();
+        const cleanupStarted = deferred<void>();
+        const cleanupReleased = deferred<void>();
+        const agents = makeAgents();
+        vi.mocked(agents.chat).mockImplementation(async function* (): AsyncGenerator<AgentEvent> {
+          try {
+            await streamReleased.promise;
+            yield* [];
+          } finally {
+            cleanupStarted.resolve(undefined);
+            await cleanupReleased.promise;
+          }
+        });
+        vi.mocked(agents.cancel).mockImplementation(() => {
+          streamReleased.resolve(undefined);
+          return true;
+        });
+        const execution = createExecutionCoordinator({
+          conversations: conversationService,
+          agents,
+          autoTitle: { schedule: vi.fn(), flush: vi.fn().mockResolvedValue(undefined) },
+        });
+        let disableRequest: Promise<Response> | undefined;
+        try {
+          const { app, agentRegistry } = createApp({ agents, conversationService, execution });
+          const entry = agentRegistry.register({
+            name: 'Slow Provider Cleanup',
+            model: 'test/model',
+            systemPrompt: '',
+          });
+          const conversation = conversationService.create({
+            agentId: entry.id,
+            agentName: entry.name,
+            requestId: 'create-before-disable',
+          });
+          if (persistence === 'failed') {
+            vi.mocked(agentRegistry.save).mockRejectedValueOnce(new Error('injected save failure'));
+          }
+          execution.start({
+            agentId: entry.id,
+            conversationId: conversation.id,
+            turnId: 'turn-before-disable',
+            text: 'Run until disabled',
+          });
+          let disableSettled = false;
+          disableRequest = Promise.resolve(
+            app.request(`/agents/${entry.id}/disable`, { method: 'POST', headers: AUTH }),
+          ).then((response) => {
+            disableSettled = true;
+            return response;
+          });
+
+          await cleanupStarted.promise;
+          await vi.waitFor(() => expect(agentRegistry.save).toHaveBeenCalledOnce());
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(disableSettled).toBe(false);
+          expect(agents.evict).not.toHaveBeenCalled();
+
+          cleanupReleased.resolve(undefined);
+          expect((await disableRequest).status).toBe(persistence === 'saved' ? 200 : 500);
+        } finally {
+          streamReleased.resolve(undefined);
+          cleanupReleased.resolve(undefined);
+          if (disableRequest) await disableRequest;
+          await execution.stop();
+          conversationService.close();
+          await rm(tmpDir, { recursive: true, force: true });
+        }
+      },
+    );
+
     it('returns 404 for unknown ID', async () => {
-      const { app, agents, resumableChatHub } = createApp();
+      const { app, agents, execution } = createApp();
       const res = await app.request('/agents/nope/disable', { method: 'POST', headers: AUTH });
       expect(res.status).toBe(404);
-      expect(resumableChatHub.cancelAgent).not.toHaveBeenCalled();
+      expect(execution.cancelAgent).not.toHaveBeenCalled();
       expect(agents.evict).not.toHaveBeenCalled();
     });
   });
 
   describe('POST /agents/:id/enable', () => {
     it('enables agent', async () => {
-      const { app, agentRegistry, resumableChatHub, eventBus } = createApp();
+      const { app, agentRegistry, execution, eventBus } = createApp();
       const emit = vi.spyOn(eventBus, 'emit');
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
@@ -1179,16 +1809,16 @@ describe('createGatewayManagementApp', () => {
       });
       expect(res.status).toBe(200);
       expect(agentRegistry.enable).toHaveBeenCalledWith(entry.id);
-      expect(resumableChatHub.allowAgent).toHaveBeenCalledWith(entry.id);
+      expect(execution.allowAgent).toHaveBeenCalledWith(entry.id);
       expect(vi.mocked(agentRegistry.save).mock.invocationCallOrder[0]).toBeLessThan(
-        resumableChatHub.allowAgent.mock.invocationCallOrder[0] as number,
+        execution.allowAgent.mock.invocationCallOrder[0] as number,
       );
       expect(emit).toHaveBeenCalledWith({
         type: 'agent:config-changed',
         agent: 'x',
         fields: ['enabled'],
       });
-      expect(resumableChatHub.allowAgent.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(execution.allowAgent.mock.invocationCallOrder[0]).toBeLessThan(
         emit.mock.invocationCallOrder[0] as number,
       );
     });
@@ -1233,7 +1863,7 @@ describe('createGatewayManagementApp', () => {
         body: testCase.body,
       });
       expect(response.status).toBe(400);
-      expect(await response.json()).toMatchObject({
+      expect((await response.json()) as JsonBody).toMatchObject({
         code: 'validation_failed',
         retryable: false,
       });
@@ -1254,7 +1884,7 @@ describe('createGatewayManagementApp', () => {
           body,
         });
         expect(response.status).toBe(400);
-        expect(await response.json()).toMatchObject({
+        expect((await response.json()) as JsonBody).toMatchObject({
           code: 'validation_failed',
           retryable: false,
         });
@@ -1275,7 +1905,7 @@ describe('createGatewayManagementApp', () => {
         ...(testCase.body ? { body: testCase.body } : {}),
       });
       expect(response.status).toBe(404);
-      expect(await response.json()).toEqual({
+      expect((await response.json()) as JsonBody).toEqual({
         code: 'not_found',
         error: 'Agent not found',
         retryable: false,
@@ -1283,7 +1913,7 @@ describe('createGatewayManagementApp', () => {
     });
 
     it.each(['enable', 'disable'])('contains an injected %s failure', async (action) => {
-      const { app, agentRegistry, resumableChatHub, eventBus } = createApp();
+      const { app, agentRegistry, execution, eventBus } = createApp();
       const emit = vi.spyOn(eventBus, 'emit');
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
@@ -1301,18 +1931,18 @@ describe('createGatewayManagementApp', () => {
         headers: AUTH,
       });
       expect(response.status).toBe(500);
-      expect(await response.json()).toEqual({
+      expect((await response.json()) as JsonBody).toEqual({
         code: 'gateway_offline',
-        error: 'Internal gateway error',
+        error: 'Internal HQ error',
         retryable: true,
       });
-      if (action === 'enable') expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
+      if (action === 'enable') expect(execution.allowAgent).not.toHaveBeenCalled();
       expect(emit).not.toHaveBeenCalled();
     });
 
     it('keeps a failed delete fenced until explicit enable recovery or a safe retry', async () => {
       let fenced = false;
-      const resumableChatHub = {
+      const execution = {
         cancelAgent: vi.fn(async () => {
           fenced = true;
         }),
@@ -1322,7 +1952,7 @@ describe('createGatewayManagementApp', () => {
       };
       const eventBus = new EventBus();
       const emit = vi.spyOn(eventBus, 'emit');
-      const { app, agentRegistry, gateway } = createApp({ resumableChatHub, eventBus });
+      const { app, agentRegistry, gateway } = createApp({ execution, eventBus });
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
         model: 'test/model',
@@ -1340,17 +1970,17 @@ describe('createGatewayManagementApp', () => {
       });
       await vi.waitFor(() => expect(gateway.deregisterAgent).toHaveBeenCalledWith(entry.id));
       let recoverySettled = false;
-      const recovering = app
-        .request(`/agents/${entry.id}/enable`, { method: 'POST', headers: AUTH })
-        .then((response) => {
-          recoverySettled = true;
-          return response;
-        });
+      const recovering = Promise.resolve(
+        app.request(`/agents/${entry.id}/enable`, { method: 'POST', headers: AUTH }),
+      ).then((response) => {
+        recoverySettled = true;
+        return response;
+      });
       try {
         await new Promise<void>((resolve) => setImmediate(resolve));
         expect(recoverySettled).toBe(false);
         expect(fenced).toBe(true);
-        expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
+        expect(execution.allowAgent).not.toHaveBeenCalled();
         expect(emit).not.toHaveBeenCalled();
       } finally {
         failDelete.resolve(undefined);
@@ -1358,9 +1988,9 @@ describe('createGatewayManagementApp', () => {
 
       const response = await deleting;
       expect(response.status).toBe(500);
-      expect(await response.json()).toEqual({
+      expect((await response.json()) as JsonBody).toEqual({
         code: 'gateway_offline',
-        error: 'Internal gateway error',
+        error: 'Internal HQ error',
         retryable: true,
       });
       expect(emit).not.toHaveBeenCalledWith({
@@ -1371,7 +2001,7 @@ describe('createGatewayManagementApp', () => {
 
       const recovery = await recovering;
       expect(recovery.status).toBe(200);
-      expect(resumableChatHub.allowAgent).toHaveBeenCalledOnce();
+      expect(execution.allowAgent).toHaveBeenCalledOnce();
       expect(fenced).toBe(false);
 
       const retry = await app.request(`/agents/${entry.id}`, {
@@ -1379,13 +2009,31 @@ describe('createGatewayManagementApp', () => {
         headers: AUTH,
       });
       expect(retry.status).toBe(200);
-      expect(resumableChatHub.cancelAgent).toHaveBeenCalledTimes(2);
+      expect(execution.cancelAgent).toHaveBeenCalledTimes(2);
       expect(fenced).toBe(true);
     });
   });
 
   // Channel routes
   describe('POST /channels', () => {
+    it.each(['credential', 'adapter'])('does not disclose %s failure details', async (failure) => {
+      const { app, credentialStore, gateway } = createApp();
+      const secret = 'private-test-token';
+      if (failure === 'credential') {
+        vi.mocked(credentialStore.get).mockRejectedValue(new Error(secret));
+      } else {
+        await credentialStore.set('channel:bot:token', 'stored-token');
+        vi.mocked(gateway.registerChannel).mockRejectedValue(new Error(secret));
+      }
+      const res = await app.request('/channels', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ name: 'bot', adapter: 'telegram', routing: [] }),
+      });
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'Internal error' });
+    });
+
     it('registers telegram channel using credential store', async () => {
       const { app, credentialStore, gateway, channelRegistry, agentRegistry } = createApp();
       // Pre-store credential and register the referenced agent so the
@@ -1429,7 +2077,7 @@ describe('createGatewayManagementApp', () => {
         }),
       });
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.error).toContain('No credential found');
     });
 
@@ -1451,7 +2099,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ name: 'ch1', adapter: 'slack', routing: [] }),
       });
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.error).toContain('Unknown adapter');
     });
 
@@ -1497,7 +2145,7 @@ describe('createGatewayManagementApp', () => {
         }),
       });
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.error).toContain('allowedUsers must be an array');
     });
 
@@ -1516,7 +2164,7 @@ describe('createGatewayManagementApp', () => {
         }),
       });
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.error).toContain('ghost');
     });
 
@@ -1648,7 +2296,7 @@ describe('createGatewayManagementApp', () => {
       });
       const res = await app.request('/channels', { headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body).toHaveLength(1);
       expect(body[0].name).toBe('tg1');
     });
@@ -1665,7 +2313,7 @@ describe('createGatewayManagementApp', () => {
       });
       const res = await app.request('/channels/tg1', { headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.name).toBe('tg1');
     });
 
@@ -1721,7 +2369,7 @@ describe('createGatewayManagementApp', () => {
         }),
       });
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.error).toContain('ghost');
     });
 
@@ -1871,7 +2519,7 @@ describe('createGatewayManagementApp', () => {
       await credentialStore.set('k2', 'v2');
       const res = await app.request('/credentials', { headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body).toEqual(['k1', 'k2']);
     });
   });
@@ -1914,6 +2562,184 @@ describe('createGatewayManagementApp', () => {
   });
 });
 
+describe('speech routes wiring', () => {
+  let dataDir: string;
+  let speechConfigStore: SpeechConfigStore;
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), 'speech-wiring-'));
+    speechConfigStore = new SpeechConfigStore(dataDir);
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  describe('speech-v1 capability', () => {
+    it('is absent when no speech service is wired', async () => {
+      const { app } = createApp();
+      const res = await app.request('/health');
+      const body = (await res.json()) as JsonBody;
+      expect(body.capabilities).toEqual([
+        'conversation-sync-v1',
+        'chat-resume-v1',
+        'conversation-control-v2',
+      ]);
+    });
+
+    it('is absent when speech is wired but speechConfigStore is not', async () => {
+      const speech = makeSpeechService({ available: vi.fn().mockResolvedValue(true) });
+      const { app } = createApp({ speech });
+      const res = await app.request('/health');
+      const body = (await res.json()) as JsonBody;
+      expect(body.capabilities).toEqual([
+        'conversation-sync-v1',
+        'chat-resume-v1',
+        'conversation-control-v2',
+      ]);
+    });
+
+    it('is absent when both deps are wired but the service is unavailable', async () => {
+      const speech = makeSpeechService({ available: vi.fn().mockResolvedValue(false) });
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/health');
+      const body = (await res.json()) as JsonBody;
+      expect(body.capabilities).toEqual([
+        'conversation-sync-v1',
+        'chat-resume-v1',
+        'conversation-control-v2',
+      ]);
+    });
+
+    it('is present only when both deps are wired AND the service is available', async () => {
+      const speech = makeSpeechService({ available: vi.fn().mockResolvedValue(true) });
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/health');
+      const body = (await res.json()) as JsonBody;
+      expect(body.capabilities).toEqual([
+        'conversation-sync-v1',
+        'chat-resume-v1',
+        'conversation-control-v2',
+        'speech-v1',
+      ]);
+    });
+
+    it('does not 500 /health when available() rejects', async () => {
+      const speech = makeSpeechService({
+        available: vi.fn().mockRejectedValue(new Error('credential store read failed')),
+      });
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as JsonBody;
+      expect(body.capabilities).toEqual([
+        'conversation-sync-v1',
+        'chat-resume-v1',
+        'conversation-control-v2',
+      ]);
+    });
+  });
+
+  describe('mount gating', () => {
+    it('mounts nothing on either namespace when speech deps are absent', async () => {
+      const { app } = createApp();
+      expect((await app.request('/speech/config', { headers: AUTH })).status).toBe(404);
+      expect((await app.request('/mobile/v1/speech/config', { headers: MOBILE_AUTH })).status).toBe(
+        404,
+      );
+    });
+  });
+
+  describe('GET /speech/config', () => {
+    it('serves the fake SpeechService on the loopback app', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/speech/config', { headers: AUTH });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as JsonBody;
+      expect(body.config.stt.provider).toBe('openrouter');
+      expect(speech.providers).toHaveBeenCalled();
+    });
+
+    it('serves the fake SpeechService on /mobile/v1', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/mobile/v1/speech/config', { headers: MOBILE_AUTH });
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe('per-namespace auth', () => {
+    it('rejects the admin bearer on /mobile/v1/speech/config', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/mobile/v1/speech/config', { headers: AUTH });
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects the mobile bearer on /speech/config', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/speech/config', { headers: MOBILE_AUTH });
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects both bearers when neither is presented', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      expect((await app.request('/speech/config')).status).toBe(401);
+      expect((await app.request('/mobile/v1/speech/config')).status).toBe(401);
+    });
+  });
+
+  describe('credential-change invalidation', () => {
+    it('calls speech.invalidate() when a provider API key is set', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      const res = await app.request('/credentials', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ key: 'anthropic-api-key:default', value: 'sk-foo' }),
+      });
+      expect(res.status).toBe(201);
+      expect(speech.invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it('calls speech.invalidate() when a provider API key is deleted', async () => {
+      const speech = makeSpeechService();
+      const { app, credentialStore } = createApp({ speech, speechConfigStore });
+      await credentialStore.set('anthropic-api-key:default', 'sk-foo');
+      const res = await app.request('/credentials/anthropic-api-key%3Adefault', {
+        method: 'DELETE',
+        headers: AUTH,
+      });
+      expect(res.status).toBe(200);
+      expect(speech.invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not call speech.invalidate() for a non-provider-key credential', async () => {
+      const speech = makeSpeechService();
+      const { app } = createApp({ speech, speechConfigStore });
+      await app.request('/credentials', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ key: 'channel:tg1:token', value: 'tok' }),
+      });
+      expect(speech.invalidate).not.toHaveBeenCalled();
+    });
+
+    it('does not throw when a provider key changes and no speech service is wired', async () => {
+      const { app } = createApp();
+      const res = await app.request('/credentials', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ key: 'anthropic-api-key:default', value: 'sk-foo' }),
+      });
+      expect(res.status).toBe(201);
+    });
+  });
+});
+
 describe('skill routes', () => {
   const JSON_AUTH = { ...AUTH, 'Content-Type': 'application/json' };
   function registerAgent(agentRegistry: AgentRegistry): RegisteredAgent {
@@ -1939,7 +2765,7 @@ describe('skill routes', () => {
     ]);
     const res = await app.request(`/agents/${id}/skills`, { headers: AUTH });
     expect(res.status).toBe(200);
-    expect((await res.json())[0].name).toBe('s');
+    expect(((await res.json()) as JsonBody)[0].name).toBe('s');
   });
 
   it('GET /agents/:id/skills → 404 for an unknown agent', async () => {
@@ -2040,7 +2866,7 @@ describe('skill routes', () => {
       body: JSON.stringify({ paths: ['/extra/skills'] }),
     });
     expect(patched.status).toBe(200);
-    expect(await patched.json()).toEqual({ paths: ['/extra/skills'] });
+    expect((await patched.json()) as JsonBody).toEqual({ paths: ['/extra/skills'] });
   });
 });
 
@@ -2123,7 +2949,7 @@ describe('memory routes', () => {
     mock(agents.saveMemory).mockRejectedValueOnce(new MemoryOpError('limit', 'full'));
     const limited = await put();
     expect(limited.status).toBe(409);
-    expect((await limited.json()).error).toBe('full');
+    expect(((await limited.json()) as { error: string }).error).toBe('full');
     mock(agents.saveMemory).mockRejectedValueOnce(
       new Error(`Memory is disabled for agent '${id}'`),
     );
@@ -2417,7 +3243,7 @@ describe('POST /lifecycle/shutdown', () => {
     const { app } = createApp({ onShutdown });
     const res = await app.request('/lifecycle/shutdown', { method: 'POST', headers: AUTH });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    expect((await res.json()) as JsonBody).toEqual({ ok: true });
     // The handler must NOT run teardown before responding — the gateway's
     // shutdown sequence closes this very server and exits the process, which
     // would kill the in-flight response. It defers instead.
@@ -2456,7 +3282,7 @@ describe('POST /agents/:agentId/conversation-title', () => {
       body: JSON.stringify({ text: 'my login form crashes on submit' }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ title: 'Login bug triage', project: null });
+    expect((await res.json()) as JsonBody).toEqual({ title: 'Login bug triage', project: null });
   });
 
   it('infers a project when the projects DB is wired', async () => {
@@ -2482,7 +3308,7 @@ describe('POST /agents/:agentId/conversation-title', () => {
       body: JSON.stringify({ text: 'my login form crashes on submit' }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
+    expect((await res.json()) as JsonBody).toEqual({
       title: 'Fix login crash',
       project: { id: 'p1', key: 'AUTH' },
     });
@@ -2570,7 +3396,7 @@ describe('canonical and legacy conversation replay', () => {
       const emit = vi.spyOn(eventBus, 'emit');
       const deleteAgentEvents = vi.spyOn(conversationService.eventLog, 'deleteAgent');
       let liveConversationId = '';
-      const resumableChatHub = {
+      const execution = {
         cancelAgent: vi.fn(async () => {
           conversationService.finishTurn({
             conversationId: liveConversationId,
@@ -2582,7 +3408,7 @@ describe('canonical and legacy conversation replay', () => {
       const { app, agentRegistry, agents } = createApp({
         conversationService,
         eventBus,
-        resumableChatHub,
+        execution,
       });
       const agent = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'Archived Helper',
@@ -2613,8 +3439,8 @@ describe('canonical and legacy conversation replay', () => {
 
       const removed = await app.request(`/agents/${agent.id}`, { method: 'DELETE', headers: AUTH });
       expect(removed.status).toBe(200);
-      expect(resumableChatHub.cancelAgent).toHaveBeenCalledWith(agent.id);
-      expect(resumableChatHub.cancelAgent.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(execution.cancelAgent).toHaveBeenCalledWith(agent.id);
+      expect(execution.cancelAgent.mock.invocationCallOrder[0]).toBeLessThan(
         vi.mocked(agents.evict).mock.invocationCallOrder[0] as number,
       );
       expect(agentRegistry.get(agent.id)).toBeUndefined();
@@ -2661,8 +3487,8 @@ describe('canonical and legacy conversation replay', () => {
       );
       expect(replay.status).toBe(200);
       expect(
-        (await replay.json()).entries.map(
-          (entry: { payload: { type: string } }) => entry.payload.type,
+        ((await replay.json()) as { entries: Array<{ payload: { type: string } }> }).entries.map(
+          (entry) => entry.payload.type,
         ),
       ).toEqual(['accepted', 'event', 'done']);
       expect(
@@ -2701,7 +3527,7 @@ describe('canonical and legacy conversation replay', () => {
         { headers: AUTH },
       );
       expect(replay.status).toBe(200);
-      expect(await replay.json()).toEqual({
+      expect((await replay.json()) as JsonBody).toEqual({
         entries: [
           expect.objectContaining({
             seq: 2,
@@ -2747,7 +3573,7 @@ describe('canonical and legacy conversation replay', () => {
         { headers: AUTH },
       );
       expect(wrongOwner.status).toBe(404);
-      expect(await wrongOwner.json()).toEqual({
+      expect((await wrongOwner.json()) as JsonBody).toEqual({
         code: 'not_found',
         error: 'Conversation not found',
         retryable: false,
@@ -2763,7 +3589,7 @@ describe('canonical and legacy conversation replay', () => {
         { headers: AUTH },
       );
       expect(tombstone.status).toBe(200);
-      expect(await tombstone.json()).toEqual({ entries: [] });
+      expect((await tombstone.json()) as JsonBody).toEqual({ entries: [] });
     } finally {
       conversationService.close();
       await rm(tmpDir, { recursive: true, force: true });

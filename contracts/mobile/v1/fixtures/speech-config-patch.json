@@ -1,0 +1,13 @@
+{
+  "stt": {
+    "model": "openai/whisper-large-v3",
+    "language": "en"
+  },
+  "tts": {
+    "voice": "nova",
+    "speed": 1.25
+  },
+  "realtime": {
+    "provider": null
+  }
+}

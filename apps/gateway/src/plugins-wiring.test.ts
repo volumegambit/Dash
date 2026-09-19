@@ -61,28 +61,45 @@ describe('gateway plugin → skill wiring', () => {
     expect(flat.map((s) => s.name)).toContain('bar:foo');
   });
 
-  it("a plugin bar's agents/reviewer.md is discoverable as flat skill bar:reviewer", async () => {
+  // B2 / spec §6.2: a plugin's agents/*.md is a SUB-AGENT DEFINITION, not a
+  // `load_skill`-able flat skill. It leaves the wiring in its own channel
+  // (`agentDefFiles`) and is deliberately absent from `commandFiles`.
+  it("a plugin bar's agents/reviewer.md lands in agentDefFiles, NOT commandFiles", async () => {
     const pluginsDir = join(dataDir, 'plugins');
     const dir = join(pluginsDir, 'bar');
     await mkdir(join(dir, MANIFEST_DIR), { recursive: true });
     await writeFile(join(dir, MANIFEST_DIR, MANIFEST_FILENAME), JSON.stringify({ name: 'bar' }));
+    await mkdir(join(dir, 'commands'), { recursive: true });
+    await writeFile(join(dir, 'commands', 'triage.md'), '# Triage\nTriage it.');
     await mkdir(join(dir, 'agents'), { recursive: true });
     await writeFile(
       join(dir, 'agents', 'reviewer.md'),
       '---\nname: reviewer\ndescription: reviews code\n---\nReview the code.',
     );
 
-    const loaded = await loadPlugins({ pluginsDir, entries: { bar: { enabled: true } } });
+    const entries: Record<string, PluginEntryConfig> = { bar: { enabled: true } };
+    const loaded = await loadPlugins({ pluginsDir, entries });
+    const state = await rebuildWiringState(loaded, entries, [], {
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      dataDir,
+      pluginsDir,
+    });
 
-    // Mirror the gateway: plugin agent files become flat agent skills alongside
-    // commands, namespaced as <plugin>:<agent> so `/bar:reviewer` is an exact match.
-    const flat = await loadFlatSkills(
-      [...loaded.commandFiles, ...loaded.agentFiles].map(({ pluginName, file }) => ({
-        file,
-        namespace: pluginName,
-      })),
-    );
-    expect(flat.map((s) => s.name)).toContain('bar:reviewer');
+    // Commands stay loadable flat skills, namespaced <plugin>:<command>.
+    expect(state.commandFiles).toEqual([
+      { file: join(dir, 'commands', 'triage.md'), namespace: 'bar' },
+    ]);
+    // Agent definitions get their own channel (consumed by the definition
+    // registry in B3 — nothing reads it yet).
+    expect(state.agentDefFiles).toEqual([
+      { file: join(dir, 'agents', 'reviewer.md'), namespace: 'bar' },
+    ]);
+
+    // The behaviour change made explicit: `bar:reviewer` is no longer a
+    // `load_skill`-able skill, while `bar:triage` still is.
+    const flat = await loadFlatSkills(state.commandFiles);
+    expect(flat.map((s) => s.name)).toContain('bar:triage');
+    expect(flat.map((s) => s.name)).not.toContain('bar:reviewer');
   });
 
   it('an enabled-but-untrusted plugin contributes no mcpConfigs or binDirs', async () => {
@@ -218,12 +235,14 @@ describe('rebuildWiringState', () => {
     expect(state.skillDirs).toEqual(loaded.skillDirs);
     expect(state.skillDirs.length).toBe(1);
 
-    // Command + agent files are merged and namespaced by plugin name.
-    expect(state.commandFiles).toHaveLength(2);
-    for (const cf of state.commandFiles) {
-      expect(cf.namespace).toBe('alpha');
-      expect(typeof cf.file).toBe('string');
-    }
+    // Command files are namespaced by plugin name — commands ONLY (B2).
+    expect(state.commandFiles).toEqual([
+      { file: join(pluginsDir, 'alpha', 'commands', 'go.md'), namespace: 'alpha' },
+    ]);
+    // Agent definitions are a separate, namespaced channel.
+    expect(state.agentDefFiles).toEqual([
+      { file: join(pluginsDir, 'alpha', 'agents', 'helper.md'), namespace: 'alpha' },
+    ]);
 
     // A hook engine is always present (even when empty).
     expect(state.hookEngine).toBeDefined();

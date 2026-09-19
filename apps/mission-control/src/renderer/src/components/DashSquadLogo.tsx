@@ -8,7 +8,7 @@ export function DashSquadLogo(): JSX.Element {
     <div className="flex items-center gap-2">
       <Zap size={18} className="text-accent" />
       <span className="font-[family-name:var(--font-display)] text-[13px] font-bold tracking-wide text-foreground">
-        Mission Control
+        Desktop
       </span>
     </div>
   );

@@ -173,7 +173,7 @@ export function createControlPlaneRuntime(opts: {
       if (!opts.config.clerkFrontendApi || !opts.config.clerkClientId) {
         throw new Error(
           'Remote access sign-in is not configured: set DASH_CLERK_FRONTEND_API and ' +
-            'DASH_CLERK_CLIENT_ID, then restart Mission Control.',
+            'DASH_CLERK_CLIENT_ID, then restart Desktop.',
         );
       }
       return inner.signIn();

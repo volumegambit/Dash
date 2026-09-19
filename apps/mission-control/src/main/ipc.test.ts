@@ -5,8 +5,6 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// We need to import makePackagedSpawner — it doesn't exist yet, so this will fail
-// Import it from ipc.ts after you implement it
 import { InMemoryKeychainStore } from '@dash/mc';
 import type { GatewaySupervisorOptions, ProcessSpawner } from '@dash/mc';
 import { captureChatIpcResult, unwrapChatIpcResult } from '../shared/ipc.js';
@@ -15,6 +13,7 @@ import {
   ConversationLifecycleEpoch,
   GatewayEventStreamManager,
   activatePendingConversationRuntime,
+  applySubagentWatch,
   assertLocalPairingSource,
   configurePendingConversationRuntime,
   conversationContextFromOfflineProfile,
@@ -63,7 +62,7 @@ describe('device pairing source selection', () => {
   it('rejects device pairing while Mission Control targets a remote gateway', () => {
     expect(() => assertLocalPairingSource({ mode: 'local' })).not.toThrow();
     expect(() => assertLocalPairingSource({ mode: 'remote' })).toThrow(
-      'Switch to the local gateway before pairing a device',
+      'Switch to the local HQ before pairing a device',
     );
   });
 
@@ -228,6 +227,66 @@ describe('canonical chat IPC boundary', () => {
         },
       });
     }
+  });
+});
+
+describe('sub-agent watch channel', () => {
+  function spies() {
+    return {
+      subscribeConversation: vi.fn(),
+      unsubscribeConversation: vi.fn(),
+      rewatchConversation: vi.fn(),
+    };
+  }
+
+  // The holder rides through both halves. A hold belongs to the renderer that
+  // took it — `event.sender.id` in `registerIpcHandlers` — so a release from
+  // anything else must not be able to take it off that renderer's count, and a
+  // renderer navigating away must be able to give back exactly its own.
+  it('takes and releases a hold over one channel, for the holder that asked', () => {
+    const service = spies();
+
+    applySubagentWatch(service, { watch: true, agentId: 'agent-1', conversationId: 'child-1' }, 11);
+    applySubagentWatch(service, { watch: false, conversationId: 'child-1' }, 11);
+
+    expect(service.subscribeConversation).toHaveBeenCalledExactlyOnceWith('agent-1', 'child-1', 11);
+    expect(service.unsubscribeConversation).toHaveBeenCalledExactlyOnceWith('child-1', 11);
+  });
+
+  it('drops a hold with no agent id rather than taking one the release would unbalance', () => {
+    const service = spies();
+
+    applySubagentWatch(service, { watch: true, conversationId: 'child-1' });
+
+    expect(service.subscribeConversation).not.toHaveBeenCalled();
+    expect(service.unsubscribeConversation).not.toHaveBeenCalled();
+  });
+
+  // C2/F2. A hold that is already counted asking for a socket back, on the
+  // same channel so it cannot overtake the pair. It must NOT take a hold: the
+  // renderer's count did not move either, and a second `subscribeConversation`
+  // here would leave main one hold ahead for the rest of the session.
+  it('asks for a fresh socket without taking a hold', () => {
+    const service = spies();
+
+    applySubagentWatch(service, {
+      watch: true,
+      rewatch: true,
+      agentId: 'agent-1',
+      conversationId: 'child-1',
+    });
+
+    expect(service.rewatchConversation).toHaveBeenCalledExactlyOnceWith('agent-1', 'child-1');
+    expect(service.subscribeConversation).not.toHaveBeenCalled();
+    expect(service.unsubscribeConversation).not.toHaveBeenCalled();
+  });
+
+  it('drops a rewatch with no agent id, for the same reason a hold is dropped', () => {
+    const service = spies();
+
+    applySubagentWatch(service, { watch: true, rewatch: true, conversationId: 'child-1' });
+
+    expect(service.rewatchConversation).not.toHaveBeenCalled();
   });
 });
 
@@ -667,6 +726,24 @@ describe('gateway event stream lifecycle', () => {
     ).toBeNull();
     expect(transport.closeAll).toHaveBeenCalledOnce();
   });
+
+  // M6: `closeAll` sets `closed = true`, and every entry point on the
+  // transport goes through `assertOpen()`. Leaving `ChatService` pointing at
+  // it meant a `subagents:watch` arriving after `before-quit` threw
+  // "Chat transport closed" inside an `ipcMain.on` listener, which is
+  // unhandled. Detaching it in the same breath is what closes that.
+  it('detaches the disposed transport from the chat service', () => {
+    const transport = { closeAll: vi.fn() };
+    const setResumableTransport = vi.fn();
+
+    disposePendingConversationRuntime(
+      { gatewayId: 'gateway-1', repository: { offline: false }, transport } as never,
+      { setResumableTransport } as never,
+    );
+
+    expect(transport.closeAll).toHaveBeenCalledOnce();
+    expect(setResumableTransport).toHaveBeenCalledExactlyOnceWith(undefined);
+  });
 });
 
 describe('legacy renderer chat wire adapters', () => {
@@ -1019,73 +1096,75 @@ describe('healEnrolledGatewayChatToken', () => {
 });
 
 describe('makePackagedSpawner', () => {
-  it('replaces node with execPath and adds ELECTRON_RUN_AS_NODE=1 when packaged', () => {
-    const spawned: { command: string; env: Record<string, string | undefined> }[] = [];
-    const testSpawner = {
-      spawn: (
-        command: string,
-        args: string[],
-        options: { env?: Record<string, string | undefined> },
-      ) => {
-        spawned.push({ command, env: options.env ?? {} });
-        return { exitCode: null, kill: vi.fn(), on: vi.fn(), stdout: null, stderr: null };
-      },
-    };
+  it('launches bundled Node with the original arguments and options when packaged', () => {
+    const child = { exitCode: null, kill: vi.fn(), on: vi.fn(), stdout: null, stderr: null };
+    const spawn = vi.fn<ProcessSpawner['spawn']>(() => child);
+    const runtimePath = '/Applications/Dash.app/Contents/Resources/runtime/bin/node';
+    const packaged = makePackagedSpawner(runtimePath, { spawn }, true);
+    const args = ['gateway.js', '--config', '/tmp/dash.json'];
+    const options = { env: { FOO: 'bar' }, cwd: '/tmp' };
 
-    const fakeExecPath = '/Applications/Dash.app/Contents/MacOS/Dash';
-    const packaged = makePackagedSpawner(fakeExecPath, testSpawner, true);
-    packaged.spawn('node', ['script.js'], { env: { FOO: 'bar' } });
-
-    expect(spawned[0].command).toBe(fakeExecPath);
-    expect(spawned[0].env.ELECTRON_RUN_AS_NODE).toBe('1');
-    expect(spawned[0].env.FOO).toBe('bar');
+    expect(packaged.spawn('node', args, options)).toBe(child);
+    expect(spawn).toHaveBeenCalledWith(runtimePath, args, options);
+    expect(spawn.mock.calls[0][2]).toBe(options);
   });
 
-  it('passes through to base spawner when not packaged', () => {
-    const spawned: { command: string }[] = [];
-    const testSpawner = {
-      spawn: (command: string, _args: string[], _options: object) => {
-        spawned.push({ command });
-        return { exitCode: null, kill: vi.fn(), on: vi.fn(), stdout: null, stderr: null };
-      },
-    };
+  it.each([
+    { isPackaged: false, command: 'node' },
+    { isPackaged: true, command: 'git' },
+  ])('passes through $command when isPackaged=$isPackaged', ({ isPackaged, command }) => {
+    const child = { exitCode: null, kill: vi.fn(), on: vi.fn(), stdout: null, stderr: null };
+    const spawn = vi.fn<ProcessSpawner['spawn']>(() => child);
+    const spawner = makePackagedSpawner('/resources/runtime/bin/node', { spawn }, isPackaged);
+    const args = ['--version'];
+    const options = { env: { FOO: 'bar' } };
 
-    const notPackaged = makePackagedSpawner('/path/to/electron', testSpawner, false);
-    notPackaged.spawn('node', ['script.js'], { env: {} });
-
-    expect(spawned[0].command).toBe('node');
+    expect(spawner.spawn(command, args, options)).toBe(child);
+    expect(spawn).toHaveBeenCalledWith(command, args, options);
   });
 });
 
 describe('getGatewaySupervisor', () => {
-  // Regression guard: makePackagedSpawner existed and was unit-tested, but an
-  // IPC refactor dropped it from the supervisor construction. The packaged app
-  // then spawned the literal `node`, which is absent from a GUI-launched app's
-  // PATH (nvm installs live in ~/.nvm) — `spawn node ENOENT`, crashing the main
-  // process. Assert the supervisor is built with the packaged spawner, not the
-  // raw default.
-  it('wraps the gateway spawner so a packaged app re-execs Electron instead of `node`', () => {
-    const spawned: { command: string; env: Record<string, string | undefined> }[] = [];
-    const base: ProcessSpawner = {
-      spawn: (command, _args, options) => {
-        spawned.push({ command, env: options.env ?? {} });
-        return { exitCode: null, kill: vi.fn(), on: vi.fn(), stdout: null, stderr: null };
-      },
-    };
-
-    const gw = getGatewaySupervisor(
-      { gatewayDataDir: '/tmp/gw', projectRoot: '/tmp/root' } as GatewaySupervisorOptions,
-      new InMemoryKeychainStore() as never,
-      undefined,
-      base,
-    );
-
-    (gw as unknown as { spawner: ProcessSpawner }).spawner.spawn('node', ['gateway.js'], {
-      env: {},
+  // The gateway needs Node 22 even when Electron embeds an older Node version,
+  // and GUI app launches cannot depend on a system Node installation in PATH.
+  it('launches the gateway with Node from packaged resources', () => {
+    const resourcesPath = '/Applications/Dash.app/Contents/Resources';
+    const previousResourcesPath = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
+    Object.defineProperty(process, 'resourcesPath', {
+      configurable: true,
+      value: resourcesPath,
     });
+    try {
+      const spawned: { command: string; env: Record<string, string | undefined> }[] = [];
+      const base: ProcessSpawner = {
+        spawn: (command, _args, options) => {
+          spawned.push({ command, env: options.env ?? {} });
+          return { exitCode: null, kill: vi.fn(), on: vi.fn(), stdout: null, stderr: null };
+        },
+      };
 
-    expect(spawned[0].command).toBe(process.execPath);
-    expect(spawned[0].env.ELECTRON_RUN_AS_NODE).toBe('1');
+      const gw = getGatewaySupervisor(
+        { gatewayDataDir: '/tmp/gw', projectRoot: '/tmp/root' } as GatewaySupervisorOptions,
+        new InMemoryKeychainStore() as never,
+        undefined,
+        base,
+      );
+
+      (gw as unknown as { spawner: ProcessSpawner }).spawner.spawn('node', ['gateway.js'], {
+        env: { FOO: 'bar' },
+      });
+
+      expect(spawned[0].command).toBe(
+        join(resourcesPath, 'runtime', process.platform === 'win32' ? 'node.exe' : 'bin/node'),
+      );
+      expect(spawned[0].env).toEqual({ FOO: 'bar' });
+    } finally {
+      if (previousResourcesPath) {
+        Object.defineProperty(process, 'resourcesPath', previousResourcesPath);
+      } else {
+        Reflect.deleteProperty(process, 'resourcesPath');
+      }
+    }
   });
 });
 
@@ -1239,13 +1318,13 @@ describe('resolveSetupStatus', () => {
     const result = await resolveSetupStatus({
       isConfigured: async () => true,
       ensureHealthyClient: async () => {
-        throw new Error('Gateway failed to start within 10s');
+        throw new Error('HQ failed to start within 10s');
       },
       markSetupCompleted: vi.fn(),
     });
     expect(result).toEqual({
       state: 'gateway-failed',
-      error: 'Gateway failed to start within 10s',
+      error: 'HQ failed to start within 10s',
     });
   });
 });

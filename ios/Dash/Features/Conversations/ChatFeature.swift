@@ -41,6 +41,40 @@ protocol ChatFeaturePersisting: Actor {
     gatewayID: String,
     conversationID: String
   ) async throws
+  func windowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft?
+  func claimWindowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft?
+  func saveWindowDraft(
+    _ draft: WindowConversationDraft,
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws
+  func clearWindowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String,
+    submittedRevision: UInt64
+  ) async throws
+  func stageWindowCommand(
+    _ command: PendingWindowCommand,
+    gatewayID: String,
+    conversationID: String
+  ) async throws -> Bool
+  func resolveWindowCommand(
+    id: String,
+    accepted: Bool,
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft?
   func stagePendingSend(
     _ pending: PendingChatSend,
     gatewayID: String,
@@ -66,6 +100,65 @@ protocol ChatFeaturePersisting: Actor {
     conversationID: String,
     to seq: Int
   ) async throws
+}
+
+/// Existing test and preview stores can remain conversation-scoped. The live
+/// store overrides these methods with durable per-window storage.
+extension ChatFeaturePersisting {
+  func claimWindowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft? {
+    try await windowDraft(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
+  }
+
+  func windowDraft(
+    gatewayID _: String,
+    conversationID _: String,
+    windowID _: String
+  ) async throws -> WindowConversationDraft? {
+    nil
+  }
+
+  func saveWindowDraft(
+    _ draft: WindowConversationDraft,
+    gatewayID _: String,
+    conversationID _: String,
+    windowID _: String
+  ) async throws {
+    _ = draft
+  }
+
+  func clearWindowDraft(
+    gatewayID _: String,
+    conversationID _: String,
+    windowID _: String,
+    submittedRevision _: UInt64
+  ) async throws {}
+
+  func stageWindowCommand(
+    _ command: PendingWindowCommand,
+    gatewayID _: String,
+    conversationID _: String
+  ) async throws -> Bool {
+    _ = command
+    return true
+  }
+
+  func resolveWindowCommand(
+    id _: String,
+    accepted _: Bool,
+    gatewayID _: String,
+    conversationID _: String,
+    windowID _: String
+  ) async throws -> WindowConversationDraft? {
+    nil
+  }
 }
 
 actor LiveChatPersistence: ChatFeaturePersisting {
@@ -103,6 +196,86 @@ actor LiveChatPersistence: ChatFeaturePersisting {
     conversationID: String
   ) async throws {
     try await store.saveDraft(draft, gatewayID: gatewayID, conversationID: conversationID)
+  }
+
+  func windowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft? {
+    try await store.windowDraft(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
+  }
+
+  func claimWindowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft? {
+    try await store.claimWindowDraft(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
+  }
+
+  func saveWindowDraft(
+    _ draft: WindowConversationDraft,
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws {
+    try await store.saveWindowDraft(
+      draft,
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
+  }
+
+  func clearWindowDraft(
+    gatewayID: String,
+    conversationID: String,
+    windowID: String,
+    submittedRevision: UInt64
+  ) async throws {
+    try await store.clearWindowDraft(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID,
+      submittedRevision: submittedRevision
+    )
+  }
+
+  func stageWindowCommand(
+    _ command: PendingWindowCommand,
+    gatewayID: String,
+    conversationID: String
+  ) async throws -> Bool {
+    try await store.stageWindowCommand(
+      command,
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    )
+  }
+
+  func resolveWindowCommand(
+    id: String,
+    accepted: Bool,
+    gatewayID: String,
+    conversationID: String,
+    windowID: String
+  ) async throws -> WindowConversationDraft? {
+    try await store.resolveWindowCommand(
+      id: id,
+      accepted: accepted,
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      windowID: windowID
+    )
   }
 
   func stagePendingSend(
@@ -173,7 +346,45 @@ protocol ChatFeatureSynchronizing: Actor {
     conversationID: String,
     sinceSeq: Int
   ) async throws -> [ReplayEntryDTO]
+  /// A child conversation's own messages and its `oneShot` fact, for an
+  /// expanded sub-agent row (design 8.3).
+  ///
+  /// Deliberately NOT `refresh(conversationID:)`, even though that method
+  /// accepts any id: `refresh` PERSISTS what it reads into the conversation
+  /// cache and reconciles a `notFound` into a deletion, both of which are
+  /// wrong for a child. A child is not in the user's conversation list
+  /// (`conversation-routes.ts` refuses a `kind` filter), so caching one would
+  /// put a row in the cache that nothing lists and nothing evicts, and a
+  /// pruned child would look like the OPEN conversation being deleted.
+  func subagentTranscript(childID: String) async throws -> SubagentTranscriptSnapshot
+  /// Type into a child (design 7.7). See `SubagentResumeRequest` for why this
+  /// is REST and not a `message` frame.
+  func resumeSubagent(id: String, message: String, requestID: String) async throws
+  /// This conversation's sub-agent children (design 7.7, §8.4) — the tasks
+  /// sheet's SOLE model.
+  ///
+  /// Deliberately not merged with the transcript fold. The fold sees only
+  /// children whose events sit in a message this client has loaded, it exempts
+  /// a background child from end-of-stream terminalization (so that row reads
+  /// `running` forever once its spawning turn ends), and after a gateway
+  /// restart the recovered child ROWS are all there is. Worse, the fold's
+  /// `done` comes from a PERSISTED event that never changes, so a resumed
+  /// child would read `done` for the whole of its second run — the persistent
+  /// bug web's D3 found and rejected the merge over.
+  func subagents(conversationID: String) async throws -> [SubagentListEntryDTO]
+  /// Cancel a child, returning the route's own terminal status — which is
+  /// authoritative rather than guessable (`SubagentStopResponseDTO`).
+  func stopSubagent(id: String) async throws -> String
   func shutdown() async
+}
+
+/// One read of a child conversation for an expanded row.
+struct SubagentTranscriptSnapshot: Equatable, Sendable {
+  let messages: [ConversationMessageDTO]
+  /// `SubagentInfoDTO.oneShot`. `nil` when the summary carries no `subagent`
+  /// block at all — an older gateway, or a conversation that is not a child —
+  /// in which case the body composer stays enabled and the server decides.
+  let oneShot: Bool?
 }
 
 protocol ChatFeatureTransporting: Actor {
@@ -195,8 +406,118 @@ protocol ChatFeatureTransporting: Actor {
   ) async throws
   func answer(turnID: String, questionID: String, answer: String) async throws
   func cancel(turnID: String) async throws
+  /// Watch the conversation the user has open, so server-initiated turns
+  /// reach this client (sub-agents design 7.6).
+  func subscribe(agentID: String, conversationID: String) async throws
+  func unsubscribe(agentID: String, conversationID: String) async throws
+  func watch(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    sinceSeq: Int
+  ) async throws
+  func followUp(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws
+  func interruptAndSend(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    expectedActiveTurnID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws
+  func stopConversation(id: String, agentID: String, conversationID: String) async throws
+  func resumePending(id: String, agentID: String, conversationID: String) async throws
+  func editPending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int,
+    text: String,
+    images: [MessageImage]
+  ) async throws
+  func removePending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int
+  ) async throws
+  /// Starts the hands-free voice session on `conversationID`. `id` is the
+  /// caller-generated voice session id every `voice_*` frame carries.
+  func voiceStart(id: String, agentID: String, conversationID: String) async throws
+  func voiceAudio(id: String, seq: Int, pcm: Data) async throws
+  func voiceMute(id: String, muted: Bool) async throws
+  func voiceStop(id: String) async throws
+  /// Reports that every `voice_speech` up to and including `seq` has finished
+  /// PLAYING, so the gateway may leave `speaking` (F1).
+  func voicePlayed(id: String, seq: Int) async throws
   func suspendForDetachment() async
   func shutdown() async
+}
+
+extension ChatFeatureTransporting {
+  /// Compatibility implementation for test transports and older adapters.
+  /// The live transport overrides this with the v2 frame.
+  func watch(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    sinceSeq: Int
+  ) async throws {
+    _ = id
+    _ = sinceSeq
+    try await subscribe(agentID: agentID, conversationID: conversationID)
+  }
+
+  func followUp(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws { throw GatewayError.capabilityRequired }
+
+  func interruptAndSend(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    expectedActiveTurnID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws { throw GatewayError.capabilityRequired }
+
+  func stopConversation(id: String, agentID: String, conversationID: String) async throws {
+    throw GatewayError.capabilityRequired
+  }
+
+  func resumePending(id: String, agentID: String, conversationID: String) async throws {
+    throw GatewayError.capabilityRequired
+  }
+
+  func editPending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int,
+    text: String,
+    images: [MessageImage]
+  ) async throws { throw GatewayError.capabilityRequired }
+
+  func removePending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int
+  ) async throws { throw GatewayError.capabilityRequired }
 }
 
 protocol ChatAccessibilityAnnouncing: Actor {
@@ -205,6 +526,19 @@ protocol ChatAccessibilityAnnouncing: Actor {
 }
 
 typealias ChatGatewayErrorHandler = @MainActor @Sendable (GatewayError) async -> Void
+
+/// Builds one hands-free voice session (speech Phase B, Task B9). The
+/// `ChatFeature` supplies the session id, the conversation it speaks into and
+/// its OWN transport — the socket the voice frames must share with the chat,
+/// since the gateway keys them by connection — and the factory supplies the
+/// microphone, the speaker and the haptics, none of which this feature can
+/// see. Nil means this build has nothing to build them with.
+typealias ChatVoiceModeFactory = @MainActor @Sendable (
+  _ id: String,
+  _ agentID: String,
+  _ conversationID: String,
+  _ transport: any ChatFeatureTransporting
+) -> VoiceModeFeature?
 
 enum ChatDraftStatus: Equatable, Sendable {
   case saved
@@ -254,6 +588,12 @@ private enum RecoveryClassificationResult: Equatable, Sendable {
 private enum PendingSendDraftResolution: Equatable, Sendable {
   case restored(ConversationDraft)
   case draftConflict(ConversationDraft)
+}
+
+struct ChatLocalSubmission: Equatable, Sendable {
+  let commandID: String
+  let rowID: String
+  let sourceWindowID: String?
 }
 
 enum ChatStatusPresentation: Equatable, Sendable {
@@ -326,6 +666,126 @@ actor LiveChatFeatureTransport: ChatFeatureTransporting {
     try await connection.cancel(turnID: turnID)
   }
 
+  func subscribe(agentID: String, conversationID: String) async throws {
+    try await connection.subscribe(agentID: agentID, conversationID: conversationID)
+  }
+
+  func unsubscribe(agentID: String, conversationID: String) async throws {
+    try await connection.unsubscribe(agentID: agentID, conversationID: conversationID)
+  }
+
+  func watch(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    sinceSeq: Int
+  ) async throws {
+    try await connection.watch(
+      id: id,
+      agentID: agentID,
+      conversationID: conversationID,
+      sinceSeq: sinceSeq
+    )
+  }
+
+  func followUp(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws {
+    try await connection.followUp(
+      id: id,
+      agentID: agentID,
+      conversationID: conversationID,
+      text: text,
+      images: images
+    )
+  }
+
+  func interruptAndSend(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    expectedActiveTurnID: String,
+    text: String,
+    images: [MessageImage]
+  ) async throws {
+    try await connection.interruptAndSend(
+      id: id,
+      agentID: agentID,
+      conversationID: conversationID,
+      expectedActiveTurnID: expectedActiveTurnID,
+      text: text,
+      images: images
+    )
+  }
+
+  func stopConversation(id: String, agentID: String, conversationID: String) async throws {
+    try await connection.stopConversation(id: id, agentID: agentID, conversationID: conversationID)
+  }
+
+  func resumePending(id: String, agentID: String, conversationID: String) async throws {
+    try await connection.resumePending(id: id, agentID: agentID, conversationID: conversationID)
+  }
+
+  func editPending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int,
+    text: String,
+    images: [MessageImage]
+  ) async throws {
+    try await connection.editPending(
+      id: id,
+      agentID: agentID,
+      conversationID: conversationID,
+      pendingID: pendingID,
+      expectedVersion: expectedVersion,
+      text: text,
+      images: images
+    )
+  }
+
+  func removePending(
+    id: String,
+    agentID: String,
+    conversationID: String,
+    pendingID: String,
+    expectedVersion: Int
+  ) async throws {
+    try await connection.removePending(
+      id: id,
+      agentID: agentID,
+      conversationID: conversationID,
+      pendingID: pendingID,
+      expectedVersion: expectedVersion
+    )
+  }
+
+  func voiceStart(id: String, agentID: String, conversationID: String) async throws {
+    try await connection.voiceStart(id: id, agentID: agentID, conversationID: conversationID)
+  }
+
+  func voiceAudio(id: String, seq: Int, pcm: Data) async throws {
+    try await connection.voiceAudio(id: id, seq: seq, pcm: pcm)
+  }
+
+  func voiceMute(id: String, muted: Bool) async throws {
+    try await connection.voiceMute(id: id, muted: muted)
+  }
+
+  func voiceStop(id: String) async throws {
+    try await connection.voiceStop(id: id)
+  }
+
+  func voicePlayed(id: String, seq: Int) async throws {
+    try await connection.voicePlayed(id: id, seq: seq)
+  }
+
   func suspendForDetachment() async {
     await connection.suspend()
   }
@@ -384,7 +844,8 @@ actor LiveChatSynchronizer: ChatFeatureSynchronizing {
       gatewayID: gatewayID
     )
     try validate(lifecycle)
-    guard persisted.summary == summary, persisted.summary.status != .deleted else {
+    // A deleted conversation has no transcript to fetch — return summary-only.
+    guard persisted.summary.status != .deleted else {
       return ChatCanonicalSnapshot(
         summary: persisted.summary,
         messages: [],
@@ -394,6 +855,26 @@ actor LiveChatSynchronizer: ChatFeatureSynchronizing {
       )
     }
 
+    // The message page is addressed by conversation ID, not by revision, so
+    // fetching it is ALWAYS safe and correct once we know the conversation is
+    // live. We must NOT gate the fetch on the summary matching the store.
+    //
+    // History of this guard, all removed here:
+    //   - It first required `persisted.summary == summary` byte-for-byte, so
+    //     ANY benign field drift (an older-build cache, the server-DERIVED
+    //     `lastMessagePreview`, a same-revision refresh) suppressed the page
+    //     FOREVER and left "No messages yet".
+    //   - Narrowing it to `persisted.summary.revision <= summary.revision`
+    //     still suppressed the page whenever the local cache had streamed
+    //     PAST the summary endpoint's revision (the endpoint lags the live
+    //     event stream) — reproduced by `diagCacheAheadOfSummarySuppressesPage`
+    //     and observed on device as summary+subagents fetched but never
+    //     `GET .../messages`.
+    //
+    // The genuine concern the guard was reaching for is narrower: never let a
+    // STALE server summary overwrite a newer local one. That is a decision
+    // about which SUMMARY to return, handled below by keeping the newer of
+    // (persisted, server) — it is NOT a reason to skip the transcript.
     let page: ConversationMessagePageDTO
     do {
       page = try await api.messages(
@@ -477,6 +958,44 @@ actor LiveChatSynchronizer: ChatFeatureSynchronizing {
     await withCheckedContinuation { continuation in
       shutdownWaiters.append(continuation)
     }
+  }
+
+  func subagentTranscript(childID: String) async throws -> SubagentTranscriptSnapshot {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    let api = try await resolvedAPI()
+    try validate(lifecycle)
+    let page = try await api.messages(conversationID: childID, limit: 100, before: nil)
+    try validate(lifecycle)
+    // Best-effort: a child whose summary cannot be read still renders its
+    // transcript, with `oneShot` unknown. Refusing the whole expansion because
+    // one FACT is missing would be a worse trade — §8.3's body is the point.
+    let oneShot = try? await api.conversation(id: childID).subagent?.oneShot
+    return SubagentTranscriptSnapshot(messages: page.items, oneShot: oneShot)
+  }
+
+  func resumeSubagent(id: String, message: String, requestID: String) async throws {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    let api = try await resolvedAPI()
+    try validate(lifecycle)
+    _ = try await api.resumeSubagent(id: id, message: message, requestID: requestID)
+  }
+
+  func subagents(conversationID: String) async throws -> [SubagentListEntryDTO] {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    let api = try await resolvedAPI()
+    try validate(lifecycle)
+    return try await api.subagents(conversationID: conversationID).subagents
+  }
+
+  func stopSubagent(id: String) async throws -> String {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    let api = try await resolvedAPI()
+    try validate(lifecycle)
+    return try await api.stopSubagent(id: id).status
   }
 
   private func resolvedAPI() async throws -> GatewayAPI {
@@ -572,6 +1091,9 @@ final class ChatFeature {
   private(set) var draftStatus: ChatDraftStatus = .saved
   private(set) var retryAt: Date?
   private(set) var pendingSendRecovery: RecoverablePendingSend?
+  private(set) var conversationControlAvailable = false
+  private(set) var localSubmission: ChatLocalSubmission?
+  private(set) var windowDraftResolution: ChatWindowDraftResolution?
 
   /// Scroll anchor (iPad goal Phase A, Task 4): the id of the last visible
   /// transcript message, tracked by `ChatView`'s `scrollPosition(id:)`
@@ -597,13 +1119,31 @@ final class ChatFeature {
   private(set) var scrollWasPinnedToBottom = true
 
   var canSend: Bool {
+    canSend(draft: state.draft)
+  }
+
+  func canSend(draft: String) -> Bool {
     guard
-      sendAuthorityIsAvailable,
+      (state.activeTurnID == nil ? sendAuthorityIsAvailable : followUpAuthorityIsAvailable),
       pendingSendReconciliation == nil,
       pendingSendRecovery == nil,
+      pendingComposerCommands.isEmpty,
       isSending == false,
-      state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+      draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         || state.attachments.isEmpty == false
+    else { return false }
+    return true
+  }
+
+  func canSend(draft: String, attachments: [PreparedAttachment]) -> Bool {
+    guard
+      (state.activeTurnID == nil ? sendAuthorityIsAvailable : followUpAuthorityIsAvailable),
+      pendingSendReconciliation == nil,
+      pendingSendRecovery == nil,
+      pendingComposerCommands.isEmpty,
+      isSending == false,
+      draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        || attachments.isEmpty == false
     else { return false }
     return true
   }
@@ -611,12 +1151,51 @@ final class ChatFeature {
   var draftEditingAllowed: Bool {
     isShutdown == false && isSending == false && pendingSendReconciliation == nil
       && pendingSendRecovery == nil
-      && state.activeTurnID == nil
-      && state.composerBlock == nil && isConversationReadOnly == false
+      && pendingComposerCommands.isEmpty
+      && (state.activeTurnID == nil || conversationControlAvailable)
+      && composerBlockAllowsSharedWork && isConversationReadOnly == false
+  }
+
+  var canInterruptAndSend: Bool {
+    canSend && conversationControlAvailable && state.activeTurnID != nil
+  }
+
+  func canInterruptAndSend(draft: String) -> Bool {
+    canSend(draft: draft) && conversationControlAvailable && state.activeTurnID != nil
+  }
+
+  func canInterruptAndSend(draft: String, attachments: [PreparedAttachment]) -> Bool {
+    canSend(draft: draft, attachments: attachments) && conversationControlAvailable
+      && state.activeTurnID != nil
+  }
+
+  var canStopConversation: Bool {
+    conversationControlAvailable && turnMutationAuthorityIsAvailable
+  }
+
+  var canResumePending: Bool {
+    conversationControlAvailable && connection == .online && isAuthoritative
+      && state.activeTurnID == nil && state.queue.pendingCount > 0
+      && state.queue.scheduling == .paused
   }
 
   var canAnswerQuestions: Bool {
     turnMutationAuthorityIsAvailable
+  }
+
+  var pendingQuestionCount: Int {
+    state.messages.reduce(into: 0) { count, message in
+      if let question = message.assistant?.pendingQuestion, question.answer == nil {
+        count += 1
+      }
+    }
+  }
+
+  var firstPendingQuestionRowID: String? {
+    state.messages.first {
+      guard let question = $0.assistant?.pendingQuestion else { return false }
+      return question.answer == nil
+    }?.rowID
   }
 
   var canCancel: Bool {
@@ -685,15 +1264,17 @@ final class ChatFeature {
     if isShutdown { return "Chat session is closed" }
     if pendingSendRecovery != nil { return "A saved message needs recovery" }
     if isConversationReadOnly { return "This conversation is read-only" }
-    if case .remoteActiveTurn? = state.composerBlock {
+    if case .remoteActiveTurn? = state.composerBlock, conversationControlAvailable == false {
       return "This conversation is active on another device"
     }
-    if state.composerBlock == .repairRequired { return "Re-pair this gateway to continue" }
+    if state.composerBlock == .repairRequired { return "Re-pair this HQ to continue" }
     if state.composerBlock == .updateRequired { return "Update Dash to continue" }
-    if connection != .online { return "Connect to the gateway to send" }
+    if connection != .online { return "Connect to the HQ to send" }
     if isSending { return "Sending message" }
     if pendingSendReconciliation != nil { return "Confirming whether your message was sent" }
-    if state.activeTurnID != nil { return "A response is in progress" }
+    if state.activeTurnID != nil, conversationControlAvailable == false {
+      return "A response is in progress"
+    }
     return nil
   }
 
@@ -734,6 +1315,46 @@ final class ChatFeature {
   @ObservationIgnored private let validator: ImageAttachmentValidator
   @ObservationIgnored private let recoveryChanges: any ConversationRecoveryChangeSignaling
   @ObservationIgnored private let makeID: @Sendable () -> String
+  @ObservationIgnored private let makeDictation: @MainActor @Sendable () -> DictationFeature?
+  @ObservationIgnored private let makeReadAloud: @MainActor @Sendable () -> ReadAloudFeature?
+  @ObservationIgnored private let makeVoiceMode: ChatVoiceModeFactory
+  /// Read, never requested, from here: `syncVoiceMode` only needs to know
+  /// whether the microphone has ALREADY been refused, and prompting from a
+  /// capability sync would put a system alert on screen nobody asked for.
+  @ObservationIgnored private let permission: any SpeechPermissionRequesting
+  /// The composer's dictation feature, or nil when this gateway has no
+  /// `speech-v1` — see `syncDictation(available:)`. Observable so the mic
+  /// button appears the moment the capability lands, which on a cold launch
+  /// is after the conversation is already on screen.
+  private(set) var dictation: DictationFeature?
+  /// Bumped on every dictated insert, purely so `ComposerView` can fire the
+  /// `.success` haptic the design asks for. A counter rather than a flag: two
+  /// consecutive dictations must each earn their tick.
+  private(set) var dictationInsertTick = 0
+  private(set) var dictationInsertion: ChatDictationInsertion?
+  private(set) var dictationOwnerWindowID: String?
+  /// The message row's read-aloud feature, or nil when this gateway has no
+  /// `speech-v1` — see `syncReadAloud(available:)`. Observable so the menu
+  /// item appears the moment the capability lands, which on a cold launch is
+  /// after the transcript is already on screen.
+  private(set) var readAloud: ReadAloudFeature?
+  /// The open voice cover's session, or nil when voice mode is not running.
+  /// Observable because `ChatView` presents the cover off it — clearing it IS
+  /// the dismissal — and `MessageViews` reads it to withhold read aloud,
+  /// whose `.playback` category would evict the live capture.
+  private(set) var voiceMode: VoiceModeFeature?
+  /// Whether the waveform button belongs in the composer: this gateway
+  /// advertises `speech-v1`, this build can build a session, and the
+  /// microphone has not already been refused. Kept in sync by `ComposerView`
+  /// for the same reason `syncDictation` is — the capability belongs to the
+  /// CONNECTION, which this feature cannot see.
+  private(set) var voiceModeAvailable = false
+  /// The last read-aloud sentence written into `state.errorBanner`, so
+  /// clearing it cannot wipe an unrelated banner that replaced it.
+  @ObservationIgnored private var readAloudBanner: String?
+  /// The last answer `ComposerView` gave for `AppModel.speechAvailable`, so a
+  /// deferred teardown knows what it is re-deciding.
+  @ObservationIgnored private var speechIsAvailable = false
   @ObservationIgnored private var eventTask: Task<Void, Never>?
   @ObservationIgnored private var eventTaskGeneration: UInt64 = 0
   @ObservationIgnored private var cacheLoadTask: Task<Void, Never>?
@@ -769,11 +1390,21 @@ final class ChatFeature {
   @ObservationIgnored private var submittedAnswers: [String: String] = [:]
   @ObservationIgnored private var localTurnIDs: Set<String> = []
   @ObservationIgnored private var pendingSendReconciliation: PendingChatSend?
+  @ObservationIgnored private var pendingComposerCommands: [String: PendingWindowCommand] = [:]
+  @ObservationIgnored private var dictationSequence: UInt64 = 0
   @ObservationIgnored private var sendCompletionWaiters: [CheckedContinuation<Void, Never>] = []
   @ObservationIgnored private var draftWriteTask: Task<DraftWriteResult, Never>?
   @ObservationIgnored private var draftWriteRevision: UInt64 = 0
   @ObservationIgnored private var attachmentIntentRevision: UInt64 = 0
   @ObservationIgnored private var attachmentRequested = false
+  /// Whether this conversation is currently WATCHED over the live socket
+  /// (sub-agents design 7.6). Reset whenever the transport stops being
+  /// connected, so the next appear/reconnect re-establishes it.
+  @ObservationIgnored private var isSubscribed = false
+  /// Child conversations this socket is watching for §8.3's live nested
+  /// transcript. One entry per EXPANDED row; cleared with the socket, like
+  /// `isSubscribed`, because a reconnect drops the gateway's subscriptions.
+  @ObservationIgnored private var subscribedSubagentIDs: Set<String> = []
   @ObservationIgnored private var canonicalRefreshRevision: UInt64 = 0
   @ObservationIgnored private var recoveryClassificationRevision: UInt64?
   @ObservationIgnored private var recoveryClassificationTurnID: String?
@@ -801,7 +1432,17 @@ final class ChatFeature {
     validator: ImageAttachmentValidator = ImageAttachmentValidator(),
     recoveryChanges: any ConversationRecoveryChangeSignaling =
       ConversationRecoveryChangeSignal.shared,
-    makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
+    makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() },
+    makeDictation: @escaping @MainActor @Sendable () -> DictationFeature? = { nil },
+    makeReadAloud: @escaping @MainActor @Sendable () -> ReadAloudFeature? = { nil },
+    /// NO DEFAULT, deliberately. This parameter used to default to a factory
+    /// that returned nil, and the app's own wiring simply never passed one —
+    /// so voice mode compiled, showed its button (that gate is the gateway's
+    /// `speech-v1` capability, not this factory) and did nothing when tapped.
+    /// Every construction site now has to say what it wants, and a wiring that
+    /// forgets is a build error rather than a feature shipped switched off.
+    makeVoiceMode: @escaping ChatVoiceModeFactory,
+    permission: any SpeechPermissionRequesting = SystemSpeechPermission()
   ) {
     self.gatewayID = gatewayID
     self.persistence = persistence
@@ -812,6 +1453,10 @@ final class ChatFeature {
     self.validator = validator
     self.recoveryChanges = recoveryChanges
     self.makeID = makeID
+    self.makeDictation = makeDictation
+    self.makeReadAloud = makeReadAloud
+    self.makeVoiceMode = makeVoiceMode
+    self.permission = permission
     state = ChatState(
       conversation: conversation,
       messages: [],
@@ -850,6 +1495,23 @@ final class ChatFeature {
     case .connecting, .reconnecting, .offline, .gatewayOffline:
       break
     }
+  }
+
+  /// Adopts the optional shared-work protocol after the live gateway's
+  /// capability probe lands. Existing gateways continue to use the legacy
+  /// subscription path.
+  func syncConversationControl(available: Bool) async {
+    guard isShutdown == false, conversationControlAvailable != available else { return }
+    conversationControlAvailable = available
+    guard available, hasVisibleHosts, connection == .online else { return }
+    if isSubscribed {
+      isSubscribed = false
+      try? await transport.unsubscribe(
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id
+      )
+    }
+    await subscribeToOpenConversation()
   }
 
   func consumeCanonicalSummary(_ canonical: ConversationSummaryDTO) {
@@ -910,6 +1572,12 @@ final class ChatFeature {
     await refreshCanonical(preserveLiveProjection: true)
     guard isCurrentAttachmentIntent(attachmentIntent, attached: true) else { return }
     await attachToCanonicalTurnIfNeeded()
+    await subscribeToOpenConversation()
+    await resubscribeExpandedSubagents()
+    // §8.4's first read. The gateway replays nothing on a `subscribe`, so the
+    // only way to learn about a child that started — or finished — while this
+    // client was not watching is to ask.
+    await refreshSubagents()
   }
 
   func disappear() async {
@@ -1014,6 +1682,361 @@ final class ChatFeature {
     await persistDraft()
   }
 
+  func windowDraft(windowID: String) async -> WindowConversationDraft? {
+    guard rejectIfShutdown() == false else { return nil }
+    return try? await persistence.windowDraft(
+      gatewayID: gatewayID,
+      conversationID: state.conversation.id,
+      windowID: windowID
+    )
+  }
+
+  func claimWindowDraft(windowID: String) async -> WindowConversationDraft? {
+    guard rejectIfShutdown() == false else { return nil }
+    do {
+      let claimed = try await persistence.claimWindowDraft(
+        gatewayID: gatewayID,
+        conversationID: state.conversation.id,
+        windowID: windowID
+      )
+      if let claimed,
+        state.draft == claimed.text,
+        state.attachments.map(\.id) == claimed.attachments.map(\.id)
+      {
+        state.draft = ""
+        state.attachments = []
+      }
+      return claimed
+    } catch {
+      state.errorBanner = "Draft couldn't be restored."
+      return nil
+    }
+  }
+
+  func saveWindowDraft(
+    text: String,
+    attachments: [PreparedAttachment],
+    revision: UInt64,
+    windowID: String
+  ) async {
+    guard rejectIfShutdown() == false, composerMutationAllowed else { return }
+    do {
+      try await persistence.saveWindowDraft(
+        WindowConversationDraft(
+          text: text,
+          attachments: attachments,
+          revision: revision,
+          updatedAt: await clock.now()
+        ),
+        gatewayID: gatewayID,
+        conversationID: state.conversation.id,
+        windowID: windowID
+      )
+    } catch is CancellationError {
+      return
+    } catch {
+      state.errorBanner = "Draft couldn't be saved."
+    }
+  }
+
+
+  func saveWindowDraft(text: String, revision: UInt64, windowID: String) async {
+    await saveWindowDraft(
+      text: text,
+      attachments: [],
+      revision: revision,
+      windowID: windowID
+    )
+  }
+
+  func clearWindowDraft(windowID: String, submittedRevision: UInt64) async {
+    guard rejectIfShutdown() == false else { return }
+    do {
+      try await persistence.clearWindowDraft(
+        gatewayID: gatewayID,
+        conversationID: state.conversation.id,
+        windowID: windowID,
+        submittedRevision: submittedRevision
+      )
+    } catch is CancellationError {
+      return
+    } catch {
+      state.errorBanner = "Draft couldn't be saved."
+    }
+  }
+
+  /// Appends a dictated transcript to the draft (design §4: dictation never
+  /// sends, it only types for you) and persists it, so a crash between the
+  /// transcript landing and the user tapping send does not lose the words.
+  ///
+  /// Appends rather than replaces, and separates with a space unless the
+  /// draft already ends in whitespace: dictating twice, or dictating after
+  /// typing, has to read as one sentence rather than a run-on.
+  func insertDictation(_ text: String) async {
+    guard rejectIfShutdown() == false, composerMutationAllowed else { return }
+    let addition = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard addition.isEmpty == false else { return }
+    let existing = state.draft
+    if existing.isEmpty {
+      state.draft = addition
+    } else if existing.last?.isWhitespace == true {
+      state.draft = existing + addition
+    } else {
+      state.draft = existing + " " + addition
+    }
+    dictationInsertTick &+= 1
+    await persistDraft()
+  }
+
+  /// Publishes dictated text only to the scene that began recording. The
+  /// scene appends and persists it with its own editor revision.
+  func insertDictation(_ text: String, windowID: String) async {
+    guard rejectIfShutdown() == false, composerMutationAllowed else { return }
+    let addition = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard addition.isEmpty == false, dictationOwnerWindowID == windowID else { return }
+    dictationSequence &+= 1
+    dictationInsertion = ChatDictationInsertion(
+      sourceWindowID: windowID,
+      text: addition,
+      sequence: dictationSequence
+    )
+    dictationInsertTick &+= 1
+  }
+
+  func startDictation(windowID: String) async {
+    guard let dictation, dictationOwnerWindowID == nil || dictationOwnerWindowID == windowID else {
+      return
+    }
+    dictationOwnerWindowID = windowID
+    await dictation.start()
+    if dictation.isBusy == false {
+      dictationOwnerWindowID = nil
+    }
+  }
+
+  func ownsDictation(windowID: String?) -> Bool {
+    dictationOwnerWindowID == windowID
+  }
+
+  /// Creates or drops the dictation feature as the gateway's `speech-v1`
+  /// capability comes and goes (`AppModel.speechAvailable`, the one gate every
+  /// speech surface reads).
+  ///
+  /// Driven by `ComposerView` rather than by this feature, because the
+  /// capability belongs to the CONNECTION, not to a conversation: `AppModel`
+  /// learns it from `/health` and the composer is the only thing that needs
+  /// to know. A recording already in flight is never torn out from under the
+  /// user — a gateway that just lost its speech credential still gets to
+  /// finish uploading the clip it recorded.
+  func syncDictation(available: Bool) {
+    guard isShutdown == false else { return }
+    speechIsAvailable = available
+    guard available else {
+      // A recording already in flight is never torn out from under the user;
+      // `onActivityEnded` runs this again the moment it is over, so a mic
+      // cannot outlive the capability by more than one recording.
+      guard dictation?.isBusy != true else { return }
+      retireDictation()
+      return
+    }
+    guard dictation == nil, let feature = makeDictation() else { return }
+    feature.onInsert = { [weak self] text in
+      guard let self else { return }
+      if let windowID = self.dictationOwnerWindowID {
+        await self.insertDictation(text, windowID: windowID)
+      } else {
+        await self.insertDictation(text)
+      }
+    }
+    feature.onActivityEnded = { [weak self] in
+      guard let self else { return }
+      if feature.failureMessage == nil {
+        self.dictationOwnerWindowID = nil
+      }
+      self.syncDictation(available: self.speechIsAvailable)
+    }
+    dictation = feature
+  }
+
+  /// Drops the dictation feature and releases what its factory built for it
+  /// (in the app, a `GatewayAPI` and its `URLSession`).
+  private func retireDictation() {
+    guard let retiring = dictation else { return }
+    dictation = nil
+    dictationOwnerWindowID = nil
+    Task { await retiring.shutdown() }
+  }
+
+  func acknowledgeDictationFailure(windowID: String?) {
+    guard ownsDictation(windowID: windowID) else { return }
+    dictation?.acknowledgeFailure()
+    dictationOwnerWindowID = nil
+  }
+
+  /// Whether voice mode may be offered at all. Driven by `ComposerView`
+  /// alongside `syncDictation`, off the same one gate
+  /// (`AppModel.speechAvailable`).
+  ///
+  /// A microphone iOS has already refused is the second half: iOS never asks
+  /// twice, so offering a button whose only possible outcome is an error
+  /// sentence is worse than not offering it. A session already RUNNING is
+  /// never torn down from here — the same courtesy `syncDictation` extends to
+  /// a recording in flight.
+  func syncVoiceMode(available: Bool) {
+    guard isShutdown == false else { return }
+    voiceModeAvailable = available && permission.microphoneIsDenied == false
+  }
+
+  /// Opens a session and returns it for the cover to present, or nil when
+  /// voice mode is not available on this gateway/build. The caller starts it:
+  /// `start()` is async and asks for the microphone.
+  ///
+  /// The conversation's own subscription is deliberately left alone (Task
+  /// B6): the gateway drops the VOICE turn's conversation subscription to
+  /// avoid double fan-out, so the chat screen underneath the cover is what
+  /// keeps the transcript live.
+  func startVoiceMode() -> VoiceModeFeature? {
+    guard isShutdown == false, voiceModeAvailable else { return nil }
+    if let voiceMode { return voiceMode }
+    // Read aloud and voice mode are mutually exclusive (its `.playback`
+    // category evicts the live capture), but stopping it happens in the
+    // feature's `prepare` hook below rather than here, so the deactivate is
+    // ordered BEFORE the capture arms the route rather than racing it.
+    let sessionID = makeID()
+    guard
+      let feature = makeVoiceMode(
+        sessionID,
+        state.conversation.agentId,
+        state.conversation.id,
+        transport
+      )
+    else { return nil }
+    feature.prepare = { [weak self] in
+      guard let self else { return }
+      // Awaited, not detached: `ReadAloudFeature.stop()` deactivates the one
+      // process-wide audio session, and a detached stop could land after the
+      // capture has armed `.playAndRecord`.
+      await self.readAloud?.stop()
+      // The same call `send()` makes, and a no-op when the socket is already
+      // up — `ChatConnection.connect()` REPLACES the socket, so it must never
+      // be called unconditionally.
+      try? await self.ensureConnected()
+    }
+    feature.onStartLocalTurn = { [weak self] turnID, text in
+      await self?.startLocalTurn(turnID: turnID, text: text)
+    }
+    // Captures the session ID, NEVER `feature`. This closure is stored ON the
+    // feature, so capturing the feature here made it retain itself: every
+    // closed session — with its `AVAudioEngine` and `AVAudioPlayerNode` still
+    // attached — stayed alive for the whole life of the chat screen, one per
+    // session opened. `[weak self]` alone was not enough, because the cycle
+    // never went through `ChatFeature` at all.
+    feature.onDismiss = { [weak self] in
+      guard let self, let current = self.voiceMode, current.id == sessionID else { return }
+      self.releaseVoiceMode(current)
+    }
+    voiceMode = feature
+    return feature
+  }
+
+  /// Drops the session and every callback it holds. The callbacks capture
+  /// `self` weakly, so they are not themselves a cycle — clearing them is
+  /// hygiene for the closures' own captures (`sessionID`, and whatever a
+  /// future hook adds) and makes "this session is over" a single fact rather
+  /// than three.
+  private func releaseVoiceMode(_ feature: VoiceModeFeature) {
+    guard voiceMode === feature else { return }
+    voiceMode = nil
+    feature.releaseCallbacks()
+  }
+
+  /// Ends the open session and takes the cover down. The close button, the
+  /// cover's binding and the app going to the background all land here.
+  func stopVoiceMode() async {
+    guard let voiceMode else { return }
+    await voiceMode.stop()
+    // `stop()` dismisses through `onDismiss`, which already ran this; the
+    // second call is a guarded no-op, and covers a session whose callbacks
+    // were cleared before it.
+    releaseVoiceMode(voiceMode)
+  }
+
+  /// The optimistic row for a SPOKEN turn (Task B9). Exactly the two things
+  /// `send()` does for a typed one — insert the turn id into `localTurnIDs`
+  /// and reduce `.sendStarted` — so the hub's following `accepted` adopts this
+  /// row instead of creating a second one, and the composer never shows
+  /// "Active on another device" for a turn this device started.
+  ///
+  /// Nothing else of `send()` applies: there is no draft to clear, no
+  /// attachment to validate, no pending-send durability to stage (the words
+  /// only ever existed as audio), and the turn is ALREADY running on the
+  /// gateway by the time the transcript naming it arrives.
+  func startLocalTurn(turnID: String, text: String) async {
+    guard isShutdown == false, turnID.isEmpty == false else { return }
+    // The queued-utterance pair can deliver the same id twice if the gateway
+    // ever repeats itself; a second row would be a duplicate bubble.
+    guard localTurnIDs.contains(turnID) == false else { return }
+    localTurnIDs.insert(turnID)
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .sendStarted(
+        turnID: turnID,
+        localUserID: makeID(),
+        text: text,
+        images: []
+      )
+    )
+  }
+
+  /// Creates or drops the read-aloud feature as the gateway's `speech-v1`
+  /// capability comes and goes — the same one gate the composer's mic reads
+  /// (`AppModel.speechAvailable`), driven from `ChatView` for the same reason
+  /// `syncDictation` is driven from `ComposerView`: the capability belongs to
+  /// the CONNECTION, and this feature cannot see the app model.
+  ///
+  /// Unlike dictation there is no in-flight grace period. A recording holds
+  /// words the user cannot get back; a read aloud holds only audio they can
+  /// ask for again, so a gateway that loses speech stops talking immediately.
+  func syncReadAloud(available: Bool) {
+    guard isShutdown == false else { return }
+    guard available else {
+      retireReadAloud()
+      return
+    }
+    guard readAloud == nil, let feature = makeReadAloud() else { return }
+    feature.onErrorChanged = { [weak self] message in
+      self?.applyReadAloudError(message)
+    }
+    readAloud = feature
+  }
+
+  /// Read aloud has no error surface of its own: a failure belongs in the
+  /// conversation's existing banner, where every other chat failure lands.
+  private func applyReadAloudError(_ message: String?) {
+    if let message {
+      readAloudBanner = message
+      state.errorBanner = message
+      return
+    }
+    // Only OUR sentence is cleared — a banner something else wrote in the
+    // meantime is not read aloud's to remove.
+    if let previous = readAloudBanner, state.errorBanner == previous {
+      state.errorBanner = nil
+    }
+    readAloudBanner = nil
+  }
+
+  /// Drops the read-aloud feature, stopping any playback and releasing what
+  /// its factory built for it (in the app, a `GatewayAPI` and its
+  /// `URLSession`).
+  private func retireReadAloud() {
+    guard let retiring = readAloud else { return }
+    readAloud = nil
+    retiring.onErrorChanged = nil
+    applyReadAloudError(nil)
+    Task { await retiring.shutdown() }
+  }
+
   func addSelections(_ selections: [ImageSelection]) async {
     guard rejectIfShutdown() == false, composerMutationAllowed else { return }
     do {
@@ -1025,6 +2048,17 @@ final class ChatFeature {
     }
   }
 
+  func prepareSelections(
+    _ selections: [ImageSelection],
+    appendingTo attachments: [PreparedAttachment]
+  ) throws -> [PreparedAttachment] {
+    try validator.prepare(selections, appendingTo: attachments)
+  }
+
+  func showComposerError(_ message: String) {
+    state.errorBanner = message
+  }
+
   func removeAttachment(id: UUID) async {
     guard rejectIfShutdown() == false, composerMutationAllowed else { return }
     state.attachments.removeAll { $0.id == id }
@@ -1032,11 +2066,26 @@ final class ChatFeature {
   }
 
   func send() async {
+    await send(
+      payload: ChatComposerPayload(
+        sourceWindowID: nil,
+        revision: nil,
+        text: state.draft,
+        attachments: state.attachments
+      )
+    )
+  }
+
+  func send(payload: ChatComposerPayload) async {
     guard rejectIfShutdown() == false else { return }
-    guard canSend else { return }
-    let text = state.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-    let originalDraft = state.draft
-    let originalAttachments = state.attachments
+    guard canSend(draft: payload.text, attachments: payload.attachments) else { return }
+    if state.activeTurnID != nil {
+      await sendPendingComposer(interrupt: false, payload: payload)
+      return
+    }
+    let text = payload.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let originalDraft = payload.text
+    let originalAttachments = payload.attachments
     let images: [MessageImage]
     do {
       let validated = try validator.prepare([], appendingTo: originalAttachments)
@@ -1055,12 +2104,16 @@ final class ChatFeature {
       localUserID: localUserID,
       draft: originalDraft,
       attachments: originalAttachments,
-      createdAt: await clock.now()
+      createdAt: await clock.now(),
+      sourceWindowID: payload.sourceWindowID,
+      submittedRevision: payload.revision
     )
     guard await stagePendingSend(pending) else { return }
     pendingSendReconciliation = pending
-    state.draft = ""
-    state.attachments = []
+    if payload.sourceWindowID == nil {
+      state.draft = ""
+      state.attachments = []
+    }
     guard stagedSendAuthorityIsAvailable(turnID: turnID) else {
       await restorePendingSendAsDraft(pending)
       return
@@ -1081,6 +2134,11 @@ final class ChatFeature {
           text: text,
           images: images
         )
+      )
+      localSubmission = ChatLocalSubmission(
+        commandID: turnID,
+        rowID: localUserID,
+        sourceWindowID: payload.sourceWindowID
       )
       transportSendInFlightTurnID = turnID
       try await transport.sendTurn(
@@ -1141,6 +2199,293 @@ final class ChatFeature {
     }
   }
 
+  /// Submits text from one window without making that window render another
+  /// window's draft. Assignment and payload capture happen on the main actor
+  /// before `send()` reaches its first suspension.
+  func send(draft: String) async {
+    await send(
+      payload: ChatComposerPayload(
+        sourceWindowID: nil,
+        revision: nil,
+        text: draft,
+        attachments: state.attachments
+      )
+    )
+  }
+
+  /// Places the current draft behind the active response. The gateway owns
+  /// admission and ordering, so every device sees the same Follow Up.
+  func sendFollowUp() async {
+    guard state.activeTurnID != nil else {
+      await send()
+      return
+    }
+    await sendPendingComposer(
+      interrupt: false,
+      payload: ChatComposerPayload(
+        sourceWindowID: nil,
+        revision: nil,
+        text: state.draft,
+        attachments: state.attachments
+      )
+    )
+  }
+
+  func sendFollowUp(draft: String) async {
+    guard state.activeTurnID != nil else {
+      await send(draft: draft)
+      return
+    }
+    await sendPendingComposer(
+      interrupt: false,
+      payload: ChatComposerPayload(
+        sourceWindowID: nil,
+        revision: nil,
+        text: draft,
+        attachments: state.attachments
+      )
+    )
+  }
+
+  func sendFollowUp(payload: ChatComposerPayload) async {
+    guard state.activeTurnID != nil else {
+      await send(payload: payload)
+      return
+    }
+    await sendPendingComposer(interrupt: false, payload: payload)
+  }
+
+  /// Gives this draft priority, atomically asking the gateway to settle the
+  /// exact active run before it starts the new input.
+  func interruptAndSend() async {
+    await sendPendingComposer(
+      interrupt: true,
+      payload: ChatComposerPayload(
+        sourceWindowID: nil,
+        revision: nil,
+        text: state.draft,
+        attachments: state.attachments
+      )
+    )
+  }
+
+  func interruptAndSend(draft: String) async {
+    await sendPendingComposer(
+      interrupt: true,
+      payload: ChatComposerPayload(
+        sourceWindowID: nil,
+        revision: nil,
+        text: draft,
+        attachments: state.attachments
+      )
+    )
+  }
+
+  func interruptAndSend(payload: ChatComposerPayload) async {
+    await sendPendingComposer(interrupt: true, payload: payload)
+  }
+
+  private func sendPendingComposer(interrupt: Bool, payload: ChatComposerPayload) async {
+    guard rejectIfShutdown() == false else { return }
+    guard
+      interrupt
+        ? canInterruptAndSend(draft: payload.text, attachments: payload.attachments)
+        : canSend(draft: payload.text, attachments: payload.attachments)
+    else { return }
+    guard let activeTurnID = state.activeTurnID else { return }
+    let originalDraft = payload.text
+    let text = originalDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    let originalAttachments = payload.attachments
+    let images: [MessageImage]
+    do {
+      let validated = try validator.prepare([], appendingTo: originalAttachments)
+      images = try validated.map { try $0.messageImage() }
+    } catch {
+      state.errorBanner = error.localizedDescription
+      return
+    }
+
+    let command = PendingWindowCommand(
+      id: makeID(),
+      command: interrupt ? .interruptAndSend : .followUp,
+      expectedActiveTurnID: interrupt ? activeTurnID : nil,
+      text: originalDraft,
+      attachments: originalAttachments,
+      sourceWindowID: payload.sourceWindowID ?? "__conversation__",
+      submittedRevision: payload.revision ?? 0,
+      createdAt: await clock.now()
+    )
+    if payload.sourceWindowID != nil {
+      do {
+        guard
+          try await persistence.stageWindowCommand(
+            command,
+            gatewayID: gatewayID,
+            conversationID: state.conversation.id
+          )
+        else {
+          state.errorBanner = "Another message from this window is still being confirmed."
+          return
+        }
+      } catch {
+        state.errorBanner = "That message couldn't be saved before sending."
+        return
+      }
+    }
+    pendingComposerCommands[command.id] = command
+    await transmitWindowCommand(command, images: images, trimmedText: text)
+  }
+
+  func resumePendingWindowCommand(_ command: PendingWindowCommand) async {
+    guard rejectIfShutdown() == false else { return }
+    guard isSending == false else { return }
+    let images: [MessageImage]
+    do {
+      let validated = try validator.prepare([], appendingTo: command.attachments)
+      images = try validated.map { try $0.messageImage() }
+    } catch {
+      state.errorBanner = error.localizedDescription
+      return
+    }
+    pendingComposerCommands[command.id] = command
+    await transmitWindowCommand(
+      command,
+      images: images,
+      trimmedText: command.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+  }
+
+  private func transmitWindowCommand(
+    _ command: PendingWindowCommand,
+    images: [MessageImage],
+    trimmedText: String
+  ) async {
+    isSending = true
+    defer { isSending = false }
+    do {
+      try await ensureConnected()
+      switch command.command {
+      case .interruptAndSend:
+        guard let expectedActiveTurnID = command.expectedActiveTurnID else { return }
+        try await transport.interruptAndSend(
+          id: command.id,
+          agentID: state.conversation.agentId,
+          conversationID: state.conversation.id,
+          expectedActiveTurnID: expectedActiveTurnID,
+          text: trimmedText,
+          images: images
+        )
+      case .followUp:
+        try await transport.followUp(
+          id: command.id,
+          agentID: state.conversation.agentId,
+          conversationID: state.conversation.id,
+          text: trimmedText,
+          images: images
+        )
+      default:
+        return
+      }
+    } catch is CancellationError {
+      return
+    } catch {
+      await applyFailure(error)
+    }
+  }
+
+  private func retryPendingWindowCommands() async {
+    for command in Array(pendingComposerCommands.values) {
+      guard isSending == false else { return }
+      let images: [MessageImage]
+      do {
+        let validated = try validator.prepare([], appendingTo: command.attachments)
+        images = try validated.map { try $0.messageImage() }
+      } catch {
+        state.errorBanner = error.localizedDescription
+        continue
+      }
+      await transmitWindowCommand(
+        command,
+        images: images,
+        trimmedText: command.text.trimmingCharacters(in: .whitespacesAndNewlines)
+      )
+    }
+  }
+
+  func stopConversation() async {
+    guard canStopConversation else { return }
+    let commandID = makeID()
+    isCancelling = true
+    defer { isCancelling = false }
+    do {
+      try await ensureConnected()
+      try await transport.stopConversation(
+        id: commandID,
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id
+      )
+    } catch is CancellationError {
+      return
+    } catch {
+      await applyFailure(error)
+    }
+  }
+
+  func resumePending() async {
+    guard canResumePending else { return }
+    do {
+      try await ensureConnected()
+      try await transport.resumePending(
+        id: makeID(),
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id
+      )
+    } catch is CancellationError {
+      return
+    } catch {
+      await applyFailure(error)
+    }
+  }
+
+  func editPending(_ item: PendingConversationInputDTO, text: String) async {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard conversationControlAvailable, trimmed.isEmpty == false else { return }
+    do {
+      try await ensureConnected()
+      try await transport.editPending(
+        id: makeID(),
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id,
+        pendingID: item.id,
+        expectedVersion: item.version,
+        text: trimmed,
+        images: item.images ?? []
+      )
+    } catch is CancellationError {
+      return
+    } catch {
+      await applyFailure(error)
+    }
+  }
+
+  func removePending(_ item: PendingConversationInputDTO) async {
+    guard conversationControlAvailable else { return }
+    do {
+      try await ensureConnected()
+      try await transport.removePending(
+        id: makeID(),
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id,
+        pendingID: item.id,
+        expectedVersion: item.version
+      )
+    } catch is CancellationError {
+      return
+    } catch {
+      await applyFailure(error)
+    }
+  }
+
   /// Message actions (chat-ux Phase 2, Task 4 / audit #5): retry-failed and
   /// edit-and-resend both funnel through here. Semantics (binding across iOS
   /// and web): truncate the LOCAL transcript after and including the target
@@ -1192,6 +2537,14 @@ final class ChatFeature {
       let index = state.messages.firstIndex(where: { $0.id == id && $0.role == .user }),
       let user = state.messages[index].user
     else { return false }
+    // A `.user` row the user did not write (sub-agents design 8.5). Two of
+    // them now: a NOTIFICATION row's text is the
+    // `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the orchestrator was fed,
+    // and a PARENT row's is the orchestrator's own instruction inside a
+    // child's transcript. Resending either would submit somebody else's words
+    // as the user's. `MessageListView` withholds the affordance too; this
+    // guard holds regardless of caller.
+    guard isSystemAuthoredRow(state.messages[index]) == false else { return false }
     guard composerMutationAllowed, sendAuthorityIsAvailable else { return false }
 
     let attachments: [PreparedAttachment] = user.images.compactMap { image in
@@ -1246,6 +2599,688 @@ final class ChatFeature {
     state.attachments = attachmentsSnapshot
     await persistDraft()
     return true
+  }
+
+  // MARK: - Sub-agent rows (design 8.1-8.3)
+
+  /// Toggle one row's expanded body.
+  ///
+  /// The reducer write happens FIRST and unconditionally, so the disclosure
+  /// animates immediately and never depends on the network; the fetch and the
+  /// subscription follow. Both are best-effort by design: an unopenable child
+  /// must not take the parent transcript down with it (web reached the same
+  /// rule in D2), so a failure lands on that row's own error line.
+  /// `loadsTranscript` is false for a row at `maxSubagentDepth`, whose body
+  /// opens no transcript: fetching and subscribing there would hold a live
+  /// subscription nothing renders.
+  ///
+  /// **Synchronous on purpose, returning its follow-up rather than awaiting
+  /// it.** The caller runs this inside `withAnimation`, and a `Task` there
+  /// would put the state write outside the transaction — SwiftUI would commit
+  /// an empty animation and the row would pop open. The expansion write is
+  /// effect-free, so it goes straight through `ChatReducer.reduce` the way
+  /// `answer(questionID:answer:)` already does for `.answerSubmitted`; only
+  /// the network follow-up is deferred. The returned `Task` is what tests
+  /// await; callers in the view ignore it.
+  @discardableResult
+  func setSubagentExpanded(
+    _ childID: String,
+    _ isExpanded: Bool,
+    loadsTranscript: Bool = true
+  ) -> Task<Void, Never> {
+    guard rejectIfShutdown() == false else { return Task {} }
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .subagentExpanded(
+        id: childID,
+        isExpanded: isExpanded,
+        opensTranscript: loadsTranscript
+      )
+    )
+    guard loadsTranscript else { return Task {} }
+    return Task { [self] in
+      if isExpanded {
+        await loadSubagentTranscript(childID: childID)
+        await subscribeToSubagent(childID)
+      } else {
+        await unsubscribeFromSubagent(childID)
+      }
+    }
+  }
+
+  /// The child's own transcript (REST) plus its `oneShot` fact.
+  ///
+  /// Re-read on EVERY expansion rather than once: the row is collapsed most of
+  /// the time, and while it is collapsed no subscription is held, so anything
+  /// the child said in between reached nobody. A cached-once transcript would
+  /// silently be stale exactly when the user goes looking.
+  func loadSubagentTranscript(childID: String) async {
+    guard isShutdown == false else { return }
+    do {
+      let snapshot = try await synchronizer.subagentTranscript(childID: childID)
+      guard isShutdown == false, state.subagentUI[childID] != nil else { return }
+      await applyReducerAction(
+        .subagentTranscriptLoaded(id: childID, messages: snapshot.messages)
+      )
+      if let oneShot = snapshot.oneShot {
+        await applyReducerAction(.subagentInfoLoaded(id: childID, oneShot: oneShot))
+      }
+    } catch is CancellationError {
+      return
+    } catch {
+      guard isShutdown == false else { return }
+      // Reported on the row, NOT through `applyFailure`: a child that 404s
+      // (pruned, or on a gateway that does not know it) must not drive the
+      // whole conversation into a repair state. `unauthorized` is the one
+      // exception worth escalating, because every later request will fail too.
+      if case GatewayError.unauthorized = error {
+        await applyFailure(error)
+        return
+      }
+      await applyReducerAction(
+        .subagentTranscriptFailed(
+          id: childID,
+          message: subagentFailureText(error, fallback: "Couldn't load this squad member's transcript.")
+        )
+      )
+    }
+  }
+
+  /// Unsent composer text for sub-agent rows, keyed `reply:<childId>` and
+  /// `body:<childId>` — web's keying verbatim
+  /// (`apps/web/src/ui/blocks/SubagentBlock.tsx:674`, `:689`). One child can
+  /// render BOTH a `waiting_input` reply and a body composer at once, so a
+  /// bare child id would make them share one buffer.
+  ///
+  /// **Why it is a property here and not in `ChatState.subagentUI`.** `ChatView`
+  /// reads `feature.state`, so a draft routed through the reducer invalidates
+  /// every reader of `state` — the whole transcript — on each keystroke. That
+  /// is the fan-out web measured (six Markdown re-renders per keystroke) and
+  /// it is a real reason to keep the draft out of `ChatState`. It is not a
+  /// reason to drop the draft: Swift Observation tracks access **per stored
+  /// property**, so reading this one from inside `SubagentComposer.body`
+  /// invalidates that composer and nothing else. The first round ruled out
+  /// `ChatState` correctly and then stopped looking, and the cost was a
+  /// divergence from web that the goal's parity requirement does not allow.
+  ///
+  /// **`Composer` is in the name deliberately.** `ChatAssistantState` already
+  /// has an unrelated `subagentDrafts` (`ChatReducer.swift:198`) — the
+  /// accumulating `[SubagentDraft]` sub-agent *cards*, which `ChatView` reads
+  /// for the transcript signature. Two different things sharing one name in
+  /// two files a reader of this feature has open at once is how a future
+  /// reader chasing "the draft store" lands in the wrong one; the compiler
+  /// would not stop them, because it separates the two by type, not by intent.
+  var subagentComposerDrafts: [String: String] = [:]
+
+  func subagentComposerDraft(_ key: String) -> String { subagentComposerDrafts[key] ?? "" }
+
+  /// Empty text REMOVES the key rather than storing `""`, so a session that
+  /// visits many rows does not accumulate one entry per composer it rendered.
+  func setSubagentComposerDraft(_ key: String, _ text: String) {
+    if text.isEmpty {
+      subagentComposerDrafts.removeValue(forKey: key)
+    } else {
+      subagentComposerDrafts[key] = text
+    }
+  }
+
+  // MARK: - Tasks sheet (§8.4)
+
+  /// This conversation's sub-agent children, from `GET
+  /// /conversations/{id}/subagents` and from NOTHING ELSE (§8.4, ruling R1).
+  ///
+  /// **Why this LIST is not merged with the transcript fold.** Web tried the
+  /// merge (fold ∪ REST, terminal-wins) in its D3 and rejected it over a bug
+  /// that never goes away: a resume restarts a `done` child, but the fold's
+  /// `done` comes from a PERSISTED event that never changes, so the merged list
+  /// would read `done` for the whole of the child's second run. The fold has
+  /// three more limits on top of that — it sees only children anchored in a
+  /// message this client has loaded, it exempts a background child from
+  /// end-of-stream terminalization (which is correct for the ROW and wrong for
+  /// a list that claims to say what is live), and after a gateway restart the
+  /// recovered child rows are all there is.
+  ///
+  /// **A transcript ROW is not this list and does not follow that rule.** It
+  /// reads `restSubagentStatus` when the server has an entry for it and its own
+  /// fold otherwise — when-present, not terminal-wins. That rule shows the
+  /// fresher value ONLY while this list is fresh, so a resume that leaves it
+  /// unread reproduces D3's bug from the other side: same trigger, same
+  /// symptom, same duration, with the stale value coming from REST instead of
+  /// the fold. `sendToSubagent` therefore re-reads on every ACCEPTED SEND, the
+  /// way `stopSubagent` always has — not only on a resume. `POST
+  /// /subagents/:id/resume` is also how a LIVE child is steered or answered,
+  /// which `coordinator.sendToChild` serves as `mode: 'queued'`
+  /// (`packages/swarm/src/coordinator.ts:676-682`), and all three composers —
+  /// the row's inline reply, the row's body, the sheet's — go through the one
+  /// path. See `restSubagentStatus` for the two costs this does carry and the
+  /// one it cannot fix.
+  ///
+  /// **Why a property on the feature and not a `ChatState` field.** Swift
+  /// Observation tracks access per STORED property, and `ChatState` is one
+  /// stored property that `ChatView`'s whole transcript reads. A list that
+  /// re-reads on every parent `done` would therefore invalidate the transcript
+  /// once per assistant turn — web measured exactly this fan-out as its D3 I3a
+  /// and paid a fix round for it. Here the readers are the badge, the strip,
+  /// the sheet and — since `restSubagentStatus` — each depth-0 sub-agent ROW,
+  /// every one of them reading INSIDE its own body, so a list write invalidates
+  /// those views and nothing else. `feature.state` is untouched by it, which is
+  /// what keeps the transcript out of the fan-out and is pinned by
+  /// `aListWriteDoesNotInvalidateTheTranscript`. Same reasoning, and the same
+  /// precedent, as `subagentComposerDrafts`.
+  private(set) var subagents: [SubagentListEntryDTO] = []
+
+  /// Children with a `POST /subagents/{id}/stop` in flight. Held here rather
+  /// than in the sheet's `@State` so the disabled Stop button survives the
+  /// sheet being dismissed and re-presented mid-request.
+  private(set) var stoppingSubagentIDs: Set<String> = []
+
+  /// The last stop refusal per child, verbatim from the gateway. Cleared on the
+  /// next attempt and by a re-read that shows the child terminal.
+  private(set) var subagentStopErrors: [String: String] = [:]
+
+  /// The one error line a tasks-sheet row can show, whichever of the row's two
+  /// actions produced it.
+  ///
+  /// **Why this exists at all.** A refused RESUME does not land here — it lands
+  /// on `ChatState.subagentUI[id].lastError`, whose only other render site is
+  /// the transcript card. The sheet's headline case is a background child that
+  /// finished after its spawning turn, which the transcript has NO card for, so
+  /// before this accessor the gateway's three actionable 409s
+  /// (`coordinator.ts:674/717/726` — one-shot type, unrebuildable grant, steer
+  /// cap) were rendered by no view anywhere: the spinner stopped, the sentence
+  /// stayed in the field, and nothing said why.
+  ///
+  /// **Precedence is fixed — the stop's slot first — and the two writers are
+  /// what make that "whichever action was taken last".** `stopSubagent` clears
+  /// BOTH slots on its attempt and `sendToSubagent` clears both on its, so a
+  /// row acted on ONE ACTION AT A TIME shows the refusal of the action the user
+  /// just took and never an older one.
+  ///
+  /// **That guarantee is sequential only, and the sheet permits both actions at
+  /// once.** Stop is disabled on `stoppingSubagentIDs`
+  /// (`TasksSheet.swift:286`, the `.disabled` on the row's Stop button) and the
+  /// resume composer's Send on its own `isSending` (`TasksSheet.swift:320`, the
+  /// `isSending:` argument to `SubagentComposer`) — two independent gates on
+  /// one row. The symbols are named beside the numbers because `4dc6f3a6` cited
+  /// these two lines while moving them and this round moved them again, so a
+  /// bare number here has been wrong twice in three commits. With both
+  /// requests out, both attempts have cleared both slots, and then the fixed
+  /// precedence decides: if the STOP's answer lands first the row shows its
+  /// line and the resume's, which landed later, is silent. Which action was
+  /// STARTED first is irrelevant; only which answer arrives first is — so the
+  /// cure is gates on BOTH buttons (Send disabled while a stop is in flight AND
+  /// Stop disabled while a send is), because one gate closes only one of the
+  /// two initiation orders. Not fixed here: a reader is the wrong place for a
+  /// gate, and this comment is restated rather than left standing so that
+  /// nothing rests on the stronger claim it used to make.
+  ///
+  /// **`lastError` has a second writer, so this line is not only about
+  /// actions.** `.subagentTranscriptFailed` puts a failed EXPANSION in the same
+  /// slot (`ChatReducer.swift:648-652`), so "Couldn't load this agent's
+  /// transcript" renders on the sheet's row as well as on the card, and a stop
+  /// taken from the sheet clears a transcript error the user may never have
+  /// seen. Accepted: one line per child was already the model, and a failed
+  /// expansion re-reports itself on the next attempt.
+  func subagentRowError(_ childID: String) -> String? {
+    subagentStopErrors[childID] ?? state.subagentUI[childID]?.lastError
+  }
+
+  /// Monotonic cursor for list reads, so only the NEWEST one ever writes.
+  ///
+  /// Every trigger fires in bursts — two children starting inside one turn is
+  /// two reads, and the notification `accepted` and the turn's `done` are two
+  /// more — and nothing makes REST answer them in order, so a read issued
+  /// before a child finished can resolve after one issued after it.
+  /// Last-write-wins would park the sheet on the older snapshot with nothing
+  /// left to correct it.
+  @ObservationIgnored private var subagentReadSeq: UInt64 = 0
+  @ObservationIgnored private var appliedSubagentReadSeq: UInt64 = 0
+
+  /// The most recent triggered list read. Production ignores it; it exists so a
+  /// test can await the read a FRAME started, the same way
+  /// `setSubagentExpanded` returns its own follow-up.
+  @ObservationIgnored private(set) var subagentRefreshTask: Task<Void, Never>?
+
+  /// How many children have not finished — §8.4's badge number, and what makes
+  /// the pinned strip visible.
+  ///
+  /// Counts every entry the gateway returned, including one whose `depth`
+  /// puts it past `maxSubagentDepth`: the cap governs whether a ROW opens a
+  /// transcript, not whether a child is real.
+  var liveSubagentCount: Int {
+    subagents.count { SubagentCardStatus(wire: $0.status).isTerminal == false }
+  }
+
+  /// Re-read the child list. Every trigger funnels through here.
+  func refreshSubagents() async {
+    guard isShutdown == false else { return }
+    subagentReadSeq &+= 1
+    let readSeq = subagentReadSeq
+    let entries: [SubagentListEntryDTO]
+    do {
+      entries = try await synchronizer.subagents(conversationID: state.conversation.id)
+    } catch is CancellationError {
+      return
+    } catch {
+      // Only a dead credential is worth escalating; every other failure leaves
+      // the sheet on the snapshot it had, and a start, a finish, a turn end, a
+      // reconnect, a foreground, a stop or a resume fires this again.
+      if case GatewayError.unauthorized = error { await applyFailure(error) }
+      return
+    }
+    apply(entries, readSeq: readSeq)
+  }
+
+  private func apply(_ entries: [SubagentListEntryDTO], readSeq: UInt64) {
+    // The iOS counterpart of web's conversation-switch guard. Web needs that
+    // one because one store serves every conversation; here `AppModel` keys a
+    // `ChatFeature` by (gateway, conversation) and `consumeCanonicalSummary`
+    // refuses a summary for any other id, so a read can only ever land on the
+    // conversation that issued it. What CAN happen is the feature being
+    // retired while a read is in flight.
+    guard isShutdown == false else { return }
+    guard readSeq > appliedSubagentReadSeq else { return }
+    appliedSubagentReadSeq = readSeq
+    // The "did anything change?" skip below is here for the TOOLCHAIN, not for
+    // web's reason. Web needed one (its D3 I3a) because its store subscribers
+    // compare by reference and an identical read re-rendered every mounted row.
+    // This branch first measured Swift Observation de-duplicating an equal
+    // write — three probe shapes, none fired, a different value did — and
+    // recorded "no guard; it would be dead code". That probe ran on Xcode 26.
+    // CI builds with Xcode 16.3, whose Observation notifies on an equal write,
+    // and `anIdenticalListReadInvalidatesNothing` failed there on code
+    // byte-identical to the local green (merge report §6.1). So: dead under
+    // Xcode 26, load-bearing under 16.3. The property it protects — an
+    // identical read invalidates nobody — is what that test pins, and CI is
+    // the toolchain on which it can fail. Plan amendment 34.
+    guard entries != subagents else { return }
+    subagents = entries
+  }
+
+  /// The server's status for one child, for a transcript ROW to lay over the
+  /// fold's (R2, fix round 1).
+  ///
+  /// **What this fixes.** The fold exempts a background child from
+  /// end-of-stream terminalization and that child's finish never reaches the
+  /// parent's event stream, so a collapsed row read `Running` for it forever —
+  /// D5's filed finding, and what R2 asked for.
+  ///
+  /// **Two costs, both real, both handled rather than hidden.**
+  ///
+  /// 1. **Depth.** `listSubagents(parentConversationId)` returns only the open
+  ///    conversation's DIRECT children, so a row rendered inside a child's
+  ///    transcript has no entry here and keeps folding. Same for a child older
+  ///    than the route's newest-100 page. The fold is the FALLBACK, not the
+  ///    loser of a merge — `nil` means "the server said nothing about this
+  ///    row", never "the server says it is not running".
+  /// 2. **A REST terminal over a live fold question.** Handled at the render
+  ///    site: `SubagentInteraction.resolvedQuestion` gates §8.1's inline reply
+  ///    on the RESOLVED status, so a server `done` clears a question the fold
+  ///    is still holding. Without that this would have broken D1's rule that a
+  ///    question never survives onto a terminal row, by a third path.
+  ///
+  /// **And one this cannot fix, so it is stated instead.** REST is at most one
+  /// round trip stale behind a live `subagent_finished`, which terminalizes the
+  /// fold immediately and only then triggers a read — so a foreground child
+  /// finishing mid-turn can read `running` from here for the length of that
+  /// read. Patching this list from a live event to close it would be the
+  /// fold ∪ REST merge D3 rejected, for a window bounded by a request already
+  /// in flight.
+  ///
+  /// **And one that is closed only for THIS client's own send.**
+  /// `sendToSubagent` re-reads the list after every ACCEPTED SEND — a resume,
+  /// a steer or an answer alike — so a resume taken here can no longer leave a
+  /// terminal status laid over a running child. A resume taken somewhere else
+  /// — web, Mission Control, another device — reaches this client through
+  /// nothing at all while its parent has no live turn
+  /// (`packages/swarm/src/coordinator.ts:1549-1554`), so this list keeps the
+  /// terminal status until the next `appear`, foreground, reconnect or parent
+  /// turn corrects it (`appear()`, a reconnect, a foreground, any parent
+  /// `done`) — worst case, for a user who stays in a foregrounded conversation
+  /// with no parent turn running, the whole of that second run. For a
+  /// FOREGROUND child that is exactly what the fold said before this accessor
+  /// existed, because its terminal event is persisted and never changes; for a
+  /// BACKGROUND child the fold said `running` and was accidentally right, so
+  /// that one case is genuinely worse here than it was. It is the price of the
+  /// case this exists for — a background child whose finish the fold can never
+  /// learn — and it cannot be bought back without a trigger the gateway does
+  /// not offer.
+  func restSubagentStatus(_ childID: String) -> SubagentCardStatus? {
+    guard let entry = subagents.first(where: { $0.id == childID }) else { return nil }
+    return SubagentCardStatus(wire: entry.status)
+  }
+
+  /// Cancel a child and, depth-first, its descendants (§8.4's Stop).
+  @discardableResult
+  func stopSubagent(_ childID: String) async -> Bool {
+    guard rejectIfShutdown() == false else { return false }
+    guard stoppingSubagentIDs.insert(childID).inserted else { return false }
+    subagentStopErrors[childID] = nil
+    // BOTH slots, because the row shows ONE line: leaving a previous resume
+    // refusal up while a stop is in flight reads as though the stop had failed
+    // for a reason that has nothing to do with it, and a stop that then
+    // succeeds would leave it there for good.
+    await applyReducerAction(.subagentRowErrorCleared(id: childID))
+    defer { stoppingSubagentIDs.remove(childID) }
+    do {
+      let status = try await synchronizer.stopSubagent(id: childID)
+      guard isShutdown == false else { return false }
+      // Applied BEFORE the re-read so the row stops offering a Stop on this
+      // frame rather than one round trip later, and applied from the
+      // RESPONSE because the route's status is authoritative: it terminalizes
+      // the row itself when the cascade reached a child this gateway process
+      // no longer holds a handle for, which is not a status the client could
+      // have guessed.
+      applyStopped(status, to: childID)
+      await refreshSubagents()
+      return true
+    } catch is CancellationError {
+      return false
+    } catch {
+      guard isShutdown == false else { return false }
+      if case GatewayError.unauthorized = error { await applyFailure(error) }
+      // The re-read comes FIRST, and then decides whether there is anything to
+      // report. A stop that merely raced the child's own finish is refused
+      // with the gateway's "already <status>" text, and web tells that case
+      // apart by the 409 — which iOS cannot do, because
+      // `HTTPTransport.swift:214` maps every `validation_failed` to
+      // `GatewayError.validation(String)` and drops the status. Asking the
+      // server what is true now is better evidence than the status code
+      // anyway: if the child is terminal the stop's purpose is served,
+      // whoever achieved it, and an error line would be noise. A partial
+      // cascade that killed descendants before the refusal is picked up by
+      // the same read.
+      await refreshSubagents()
+      guard isShutdown == false else { return false }
+      if let entry = subagents.first(where: { $0.id == childID }),
+        SubagentCardStatus(wire: entry.status).isTerminal
+      {
+        return true
+      }
+      subagentStopErrors[childID] = subagentFailureText(
+        error,
+        fallback: "Couldn't stop this agent. Try again."
+      )
+      return false
+    }
+  }
+
+  private func applyStopped(_ status: String, to childID: String) {
+    guard let index = subagents.firstIndex(where: { $0.id == childID }) else { return }
+    // The list is being written by something that is NOT a read, so the read
+    // cursor has to move with it. A read issued before the stop and still in
+    // flight otherwise satisfies `readSeq > appliedSubagentReadSeq` when it
+    // lands, restores the pre-stop row and re-offers Stop for a child that is
+    // already gone. Costs at most one dropped read, and the stop's own
+    // re-read — issued immediately after this and therefore newer than the
+    // cursor — replaces the whole list anyway.
+    appliedSubagentReadSeq = subagentReadSeq
+    let entry = subagents[index]
+    subagents[index] = SubagentListEntryDTO(
+      id: entry.id,
+      name: entry.name,
+      type: entry.type,
+      description: entry.description,
+      status: status,
+      background: entry.background,
+      depth: entry.depth,
+      startedAt: entry.startedAt,
+      endedAt: entry.endedAt,
+      usage: entry.usage,
+      toolCallCount: entry.toolCallCount,
+      report: entry.report,
+      oneShot: entry.oneShot
+    )
+  }
+
+  /// Open this child's row in the transcript, for a tap on a tasks-sheet row.
+  ///
+  /// **§8.4 asks no scrolling of this client.** "Clicking scrolls to and
+  /// expands the row" is §8.4's **Web** bullet
+  /// (`docs/plans/2026-09-04-subagents-design.md:340`); the **iOS** bullet
+  /// (`:341`) asks for the sheet, the toolbar badge and the pinned strip and
+  /// says nothing about what a row tap does. Expanding is what this surface can
+  /// honestly offer — a `List` inside a sheet has no handle on the transcript's
+  /// `ScrollView` behind it — and `ChatView` does not dismiss the sheet on a
+  /// reveal (`ChatView.swift:217-221`), so the row is opened behind it.
+  ///
+  /// **Guarded on the row existing.** The sheet's model is REST and the
+  /// transcript's is the fold, and the two do not always overlap — a background
+  /// child that finished after its spawning turn, or one whose start event sits
+  /// in a message this client has not loaded, is in the list with no row to
+  /// open. Expanding it anyway would fetch its transcript and hold a live
+  /// subscription that nothing renders, which is the leak class D2, D3 and D5's
+  /// own second defect all paid for.
+  ///
+  /// A row reached from here is a DIRECT child of the open conversation, so it
+  /// renders at view depth 0 and `subagentRowIsNested` decides whether its
+  /// expansion opens a transcript at all — the same call the row's own
+  /// disclosure makes.
+  func revealSubagent(_ childID: String) {
+    guard hasSubagentCard(childID) else { return }
+    setSubagentExpanded(childID, true, loadsTranscript: subagentRowIsNested(depth: 0))
+  }
+
+  /// Whether the open transcript renders a row for this child.
+  func hasSubagentCard(_ childID: String) -> Bool {
+    state.messages.contains { message in
+      message.assistant?.subagentCards.contains { $0.id == childID } ?? false
+    }
+  }
+
+  /// Fire a list read a frame or a lifecycle event asked for, without making
+  /// the caller wait: `consume` runs the socket's event loop, and awaiting a
+  /// REST round trip there would hold up every frame behind it.
+  private func triggerSubagentRefresh() {
+    subagentRefreshTask = Task { [self] in await refreshSubagents() }
+  }
+
+  /// Type into a child (design 8.3) through `POST /subagents/{id}/resume`.
+  ///
+  /// **Not a `message` WS frame.** That frame reaches `hub.start` →
+  /// `acceptTurn` and can never reach `ChildHandle.answerQuestion`, the only
+  /// thing that resolves a child parked on `ask_orchestrator`; against a busy
+  /// child it is refused as `conversation_busy`, against an idle one it opens
+  /// a second turn while the question stays blocked; and it bypasses the
+  /// coordinator's one-shot, steer-cap and grant checks entirely.
+  ///
+  /// **Optimism is derived here, from `subscribedSubagentIDs`, and is not a
+  /// parameter.** The rule is "optimistic exactly when a subscription is
+  /// held", and this is the only place that knows whether one is. Every proxy
+  /// for it has been wrong in both directions: `isExpanded && nested` is true
+  /// for a row whose `subscribeToSubagent` swallowed a failure and true again
+  /// after the app is backgrounded (which clears the set and the gateway's
+  /// side with it), and in both states the `accepted` never arrives, the
+  /// optimistic row is never adopted, and `.subagentTranscriptLoaded` keeps it
+  /// forever beside the real server row — the user's sentence rendered twice
+  /// for the life of the conversation. A hardcoded `false` is wrong the other
+  /// way: a queued STEER *does* echo, finds nothing in `pendingRequestIDs`,
+  /// and `applyChildFrame`'s else-branch appends a blank "from orchestrator"
+  /// line. Web converged on the same rule after three rounds.
+  @discardableResult
+  func sendToSubagent(_ childID: String, text: String) async -> Bool {
+    guard rejectIfShutdown() == false else { return false }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.isEmpty == false else { return false }
+    let optimistic = subscribedSubagentIDs.contains(childID)
+    // The tasks row shows ONE error line for the child, so the action being
+    // taken now owns it — `.subagentReplyStarted` clears `lastError` below and
+    // this clears the stop's slot, which is the other half of the same rule.
+    subagentStopErrors[childID] = nil
+    let requestID = makeID()
+    await applyReducerAction(
+      .subagentReplyStarted(
+        id: childID,
+        requestID: requestID,
+        text: trimmed,
+        optimistic: optimistic
+      )
+    )
+    do {
+      try await synchronizer.resumeSubagent(id: childID, message: trimmed, requestID: requestID)
+      guard isShutdown == false else { return false }
+      // BEFORE `.subagentReplySucceeded`, which is what clears `isSending`.
+      // `SubagentComposer.canSend` is `isEnabled && isSending == false && text
+      // non-empty` and the field empties only when `onSend` returns `true`, so
+      // reporting the send done first would re-arm the Send button with the
+      // user's sentence still in it for the length of this GET — on a resume
+      // the gateway has already accepted. `stopSubagent` spans its own re-read
+      // the same way: its `defer { stoppingSubagentIDs.remove(...) }` fires
+      // after the read, not before it.
+      //
+      // A resume RESTARTS a child, so the list that every surface reads is now
+      // wrong about it, and this is the only thing that can say so. Outside a
+      // live parent turn `Coordinator.emitToParent` has no turn to emit into
+      // (`packages/swarm/src/coordinator.ts:1549-1554`), so not one of the
+      // child's frames — started, progress or finished — reaches this socket,
+      // and the next trigger in `refreshesSubagentList` is the SECOND run's
+      // notification turn. Without this read the row, the sheet, the strip and
+      // the badge all keep the pre-resume status for the whole of that run,
+      // which since the row began reading REST is a terminal one beating a
+      // fold that was right. `stopSubagent` has had the mirror-image read from
+      // the start; this is the same asymmetry, closed.
+      //
+      // The whole ENTRY rather than the route's `status`: `startedAt`,
+      // `endedAt`, `report`, `toolCallCount` and `usage` are RUN-scoped, so a
+      // resume changes all five of them beside the status, and the list is the
+      // only thing that carries them.
+      //
+      // **That reason was FALSE when `b9a2e979` wrote it, and is struck here
+      // rather than quietly repaired.** The gateway rewrote NOTHING but the
+      // status on a resume: `ChildHandle.start()` persisted
+      // `{ status: 'running' }` alone, `createSubagent` early-returns an
+      // existing row untouched, and `updateSubagent` merges over the stored
+      // meta — so the entry this read returns was `running` beside the
+      // PREVIOUS run's numbers. A non-terminal `SubagentTaskRow` takes
+      // `SubagentMetaView`'s live `TimelineView(.periodic(from: startedAt,
+      // by: 1))` branch, so the row read the old tool count next to an elapsed
+      // ticking upward from the old start, for the whole second run. That is
+      // the exact state `b9a2e979`'s message claimed the REJECTED alternative
+      // would cause, and it was what shipped. `0da16410` made the reason true,
+      // gateway-side, for every client that reads this list — web's
+      // `TasksPanel` had the identical defect. The resume persist now writes
+      // run 2's `startedAt` and clears the other four. The reason holds from
+      // that commit forward and not before it.
+      //
+      // The status is also the one field the client could have guessed —
+      // `ChildHandle.start()` persists `running` before the route answers
+      // (`packages/swarm/src/child-handle.ts:316-327`) — so plumbing
+      // `SubagentResumeResponseDTO.status` back through `ChatSynchronizing`
+      // would widen a protocol for the least of it.
+      await refreshSubagents()
+      guard isShutdown == false else { return false }
+      await applyReducerAction(.subagentReplySucceeded(id: childID, requestID: requestID))
+      return true
+    } catch is CancellationError {
+      return false
+    } catch {
+      guard isShutdown == false else { return false }
+      if case GatewayError.unauthorized = error {
+        await applyFailure(error)
+      }
+      await applyReducerAction(
+        .subagentReplyFailed(
+          id: childID,
+          requestID: requestID,
+          // The coordinator's three refusals (one-shot type, steer cap,
+          // unrebuildable grant) arrive as 409 `validation_failed` with
+          // actionable text. Showing it verbatim is design 8.3's "shows the
+          // reason"; collapsing it to a generic line throws the only useful
+          // part away.
+          message: subagentFailureText(error, fallback: "Couldn't reach this squad member.")
+        )
+      )
+      return false
+    }
+  }
+
+  private func subagentFailureText(_ error: Error, fallback: String) -> String {
+    switch error as? GatewayError {
+    case let .validation(message): message
+    case let .server(body, _): body.error
+    case .notFound: "This agent is no longer available."
+    case .unauthorized: "Sign in again to reach this agent."
+    default: fallback
+    }
+  }
+
+  private func subscribeToSubagent(_ childID: String) async {
+    guard isShutdown == false, connection == .online else { return }
+    do {
+      try await ensureConnected()
+      guard isShutdown == false else { return }
+      // The user can collapse the row while the REST read or the connect is in
+      // flight. `unsubscribeFromSubagent` would have found nothing in the set
+      // and returned, so without this the late subscribe would leak a live
+      // subscription on a COLLAPSED row that nothing releases until the socket
+      // resets — the refcount class D2 and D3 both paid for.
+      guard state.subagentUI[childID]?.isExpanded == true else { return }
+      try await transport.subscribe(
+        agentID: state.conversation.agentId,
+        conversationID: childID
+      )
+      subscribedSubagentIDs.insert(childID)
+    } catch is CancellationError {
+      return
+    } catch {
+      // A missing subscription costs live streaming into the open body, not
+      // correctness: the REST read already populated it, and collapsing plus
+      // re-expanding re-reads. Not worth driving the conversation into a
+      // failure state for.
+      return
+    }
+  }
+
+  /// Re-establish the child subscriptions a socket reset dropped, beside the
+  /// parent's own `subscribeToOpenConversation`.
+  ///
+  /// `subscribedSubagentIDs.removeAll()` fires in `ensureConnected`, on a
+  /// terminal receive-loop failure and in `consume(.state)` for
+  /// `.idle`/`.detached`. Clearing the set is correct — the gateway really has
+  /// dropped those subscriptions — but until this existed, nothing put them
+  /// back. A transient reconnect was already covered (`ChatConnection`'s
+  /// `replayTurnSubscriptions` re-sends every conversation subscribe on
+  /// `.reconnecting` → `.connected`); **backgrounding the app was not**, and
+  /// that is the most routine lifecycle event on a phone. The mechanism, stated
+  /// exactly: `suspendForDetachment` calls `ChatConnection.suspend()`, which
+  /// cancels the socket, `clearAllTurns()`s the transport's own map and only
+  /// then transitions to **`.idle`** — so the drop is genuine, but this set is
+  /// cleared *asynchronously*, when the event task drains that `.idle` in
+  /// `consume(.state)`'s `.idle`/`.detached` branch below. (`.detached` is
+  /// what the FEATURE reduces into `state.transport`; the transport never
+  /// emits it here.) Meanwhile the open body went on looking live while every
+  /// send from it was optimistic against a subscription no longer held.
+  ///
+  /// The REST re-read is as load-bearing as the subscribe: everything the
+  /// child said while this client was detached reached nobody, and the page is
+  /// the only thing that fills the hole.
+  ///
+  /// Rows already in the set are skipped, so an `appear()` that did not reset
+  /// the socket re-reads nothing. Rows at `maxSubagentDepth` are skipped by
+  /// `opensTranscript`, which is the recorded fact rather than a guess:
+  /// `setSubagentExpanded(loadsTranscript: false)` deliberately neither
+  /// fetches nor subscribes, and a reconnect must not undo that.
+  private func resubscribeExpandedSubagents() async {
+    guard isShutdown == false, hasVisibleHosts, connection == .online else { return }
+    let dropped =
+      state.subagentUI
+      .filter { $0.value.isExpanded && $0.value.opensTranscript }
+      .map(\.key)
+      .filter { subscribedSubagentIDs.contains($0) == false }
+      .sorted()
+    for childID in dropped {
+      guard isShutdown == false else { return }
+      await loadSubagentTranscript(childID: childID)
+      await subscribeToSubagent(childID)
+    }
+  }
+
+  private func unsubscribeFromSubagent(_ childID: String) async {
+    guard subscribedSubagentIDs.remove(childID) != nil, isConnected else { return }
+    try? await transport.unsubscribe(
+      agentID: state.conversation.agentId,
+      conversationID: childID
+    )
   }
 
   func answer(questionID: String, answer: String) async {
@@ -1328,9 +3363,19 @@ final class ChatFeature {
       return
     }
     await attachToCanonicalTurnIfNeeded()
+    await subscribeToOpenConversation()
+    await resubscribeExpandedSubagents()
+    // Same gap one level up: children that started or finished while the
+    // socket was down left no trace on this client at all.
+    await refreshSubagents()
   }
 
   func sceneDidEnterBackground() async {
+    // Voice mode first, and whether or not this feature is shutting down: it
+    // is hands-free by definition, so nothing on screen would tell the user
+    // the microphone is still live behind another app. `SceneLifecycleModifier`
+    // → `AppModel.sceneChanged` → here is the whole hook.
+    await stopVoiceMode()
     guard isShutdown == false else { return }
     let attachmentIntent = beginAttachmentIntent(attached: false)
     await persistDraft()
@@ -1345,6 +3390,11 @@ final class ChatFeature {
     await refreshCanonical(preserveLiveProjection: true)
     guard isCurrentAttachmentIntent(attachmentIntent, attached: true) else { return }
     await attachToCanonicalTurnIfNeeded()
+    await subscribeToOpenConversation()
+    await resubscribeExpandedSubagents()
+    // Same gap one level up: children that started or finished while the
+    // socket was down left no trace on this client at all.
+    await refreshSubagents()
   }
 
   func prepareForShutdown() {
@@ -1370,6 +3420,21 @@ final class ChatFeature {
     recoveryChangeGeneration &+= 1
     isStartingRecoveryChangeObservation = false
     recoveryChangeTask?.cancel()
+    // A recording outlives its composer otherwise: the recorder keeps running
+    // and the process-wide audio session stays active with nothing owning it.
+    speechIsAvailable = false
+    retireDictation()
+    // Playback outlives its transcript otherwise: the audio keeps talking
+    // about a conversation that is no longer on screen, with the process-wide
+    // session active and nothing owning it.
+    retireReadAloud()
+    // And the microphone outlives both: a voice session left running would
+    // keep `.playAndRecord` armed for a conversation that is gone.
+    voiceModeAvailable = false
+    if let retiring = voiceMode {
+      releaseVoiceMode(retiring)
+      Task { await retiring.stop() }
+    }
   }
 
   func shutdown() async {
@@ -1927,16 +3992,64 @@ final class ChatFeature {
     }
   }
 
+  /// Watches the conversation the user has open, connecting first if nothing
+  /// else has (sub-agents design 7.6, ruling 1). Without this an idle open
+  /// conversation never hears the server-initiated turn that carries a
+  /// background sub-agent's result — the whole point of the subscription.
+  private func subscribeToOpenConversation() async {
+    guard isShutdown == false, hasVisibleHosts, connection == .online else { return }
+    do {
+      try await ensureConnected()
+      guard isSubscribed == false, isShutdown == false else { return }
+      if conversationControlAvailable {
+        try await transport.watch(
+          id: makeID(),
+          agentID: state.conversation.agentId,
+          conversationID: state.conversation.id,
+          sinceSeq: state.lastAppliedSeq
+        )
+      } else {
+        try await transport.subscribe(
+          agentID: state.conversation.agentId,
+          conversationID: state.conversation.id
+        )
+      }
+      isSubscribed = true
+    } catch is CancellationError {
+      return
+    } catch {
+      await applyFailure(error)
+    }
+  }
+
   private func ensureConnected() async throws {
     startEventTaskIfNeeded()
     guard isConnected == false else { return }
     try await transport.connect()
+    // A fresh connect replaces the socket, and `ChatConnection.connect()`
+    // clears its subscriptions with it — so nothing is watched until
+    // `subscribeToOpenConversation` says so again.
+    isSubscribed = false
+    // Same reason, for the expanded sub-agent rows (design 8.3): the gateway
+    // is no longer watching those children, so the set must not claim it is.
+    // A row already open re-subscribes on its next expansion; until then it
+    // keeps the transcript the REST read gave it.
+    subscribedSubagentIDs.removeAll()
     isConnected = true
     _ = ChatReducer.reduce(state: &state, action: .transportChanged(.connected))
   }
 
   private func suspendForDetachment() async {
     guard isConnected || state.transport != .detached else { return }
+    // Drop the conversation subscription on the way out, so a long session
+    // that visits many conversations never accumulates them (ruling 1).
+    if isSubscribed {
+      isSubscribed = false
+      try? await transport.unsubscribe(
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id
+      )
+    }
     await transport.suspendForDetachment()
     isConnected = false
     wasReconnecting = false
@@ -1963,6 +4076,8 @@ final class ChatFeature {
         finishEventTask(generation: generation)
         guard isShutdown == false else { return }
         isConnected = false
+        isSubscribed = false
+        subscribedSubagentIDs.removeAll()
         wasReconnecting = false
         if let pendingSendReconciliation {
           await reconcileAmbiguousSend(pendingSendReconciliation)
@@ -1984,12 +4099,68 @@ final class ChatFeature {
       let reconnectCompleted = wasReconnecting && transportState == .connected
       wasReconnecting = if case .reconnecting = transportState { true } else { false }
       isConnected = transportState == .connected
+      // Mirror the transport truthfully rather than guessing from
+      // "not connected": `ChatConnection` REPLAYS its conversation
+      // subscriptions across a transient reconnect (`.reconnecting` →
+      // `.connected`), and only drops them where it calls `clearAllTurns` —
+      // `suspend()` (`.idle`) and `detach()` (`.detached`). A stale `false`
+      // here would make the next `subscribeToOpenConversation` send a
+      // duplicate frame for a conversation the gateway is already watching.
+      switch transportState {
+      case .idle, .detached:
+        isSubscribed = false
+        subscribedSubagentIDs.removeAll()
+      case .connecting, .connected, .reconnecting: break
+      }
+      // A voice session cannot survive its socket: the gateway keeps the slot
+      // in the per-connection closure, so even a `.reconnecting` the chat
+      // recovers from transparently leaves the session gone. `.connecting` is
+      // deliberately NOT in this list — `startVoiceMode` itself may have just
+      // asked `ensureConnected()` for a socket, and ending on the state that
+      // request produces would close the cover the user just opened.
+      switch transportState {
+      case .reconnecting, .idle, .detached:
+        voiceMode?.transportLost()
+      case .connecting, .connected: break
+      }
       _ = ChatReducer.reduce(state: &state, action: .transportChanged(transportState))
       if reconnectCompleted {
         await replayAndResumeActiveTurn()
       }
+      if transportState == .connected, isSending == false {
+        await retryPendingWindowCommands()
+      }
 
     case .frame(let frame):
+      // The hands-free `voice_*` server frames (Task B7) are keyed by voice
+      // SESSION id, not a chat turn id. Every helper below
+      // (`turnIDForFeature`, `conversationIDForFeature`, …) is chat-turn
+      // machinery, so they go to the open cover — which filters by session id
+      // itself — rather than through this feature under a borrowed meaning.
+      if frame.isVoiceForFeature {
+        voiceMode?.receive(frame)
+        return
+      }
+      // F12: an oversize or malformed `voice_*` frame fails the gateway's
+      // parser BEFORE it is recognized as voice, so it is answered with the
+      // ordinary `error` frame — carrying the voice SESSION id in `id`
+      // (`apps/gateway/src/chat-ws.ts`). Routed as a chat turn it would be
+      // acted on under a borrowed meaning and never reach the cover, so it is
+      // translated into the voice vocabulary here instead.
+      if case let .error(id, _, _, message, code, _, _) = frame, let voice = voiceMode,
+        id == voice.id
+      {
+        voice.receive(.voiceError(id: id, code: code ?? "invalid", error: message))
+        return
+      }
+      // BEFORE the recovery deferral below, deliberately: the deferral is
+      // about classifying a LOCAL send and returns early, and a list read has
+      // nothing to do with that decision. Placed here it cannot be swallowed
+      // by a path that was designed for something else, and the worst case is
+      // one extra GET.
+      if frame.refreshesSubagentList, isParentFrame(frame) {
+        triggerSubagentRefresh()
+      }
       if shouldDeferForRecoveryClassification(frame) {
         deferredRecoveryFrames.append(frame)
         if frame.isAcceptedForFeature {
@@ -2009,6 +4180,20 @@ final class ChatFeature {
   }
 
   private func consumeFrame(_ frame: MobileWSServerFrame) async {
+    switch frame {
+    case let .commandReceipt(id, _, _, status, _, _, _, reason):
+      await reconcilePendingComposerCommand(
+        id: id,
+        accepted: status == .accepted || status == .alreadyApplied,
+        reason: reason
+      )
+    case let .queueChanged(_, _, commandID):
+      if let commandID {
+        await reconcilePendingComposerCommand(id: commandID, accepted: true, reason: nil)
+      }
+    default:
+      break
+    }
     let wasCoveredByCanonicalState = frame.sequenceForFeature.map {
       $0 <= state.lastAppliedSeq
     } ?? false
@@ -2062,6 +4247,60 @@ final class ChatFeature {
     await finishTerminalFrame(frame)
   }
 
+  private func reconcilePendingComposerCommand(
+    id: String,
+    accepted: Bool,
+    reason: CommandReceiptReason?
+  ) async {
+    guard let pending = pendingComposerCommands.removeValue(forKey: id) else { return }
+    if pending.sourceWindowID != "__conversation__" {
+      do {
+        _ = try await persistence.resolveWindowCommand(
+          id: id,
+          accepted: accepted,
+          gatewayID: gatewayID,
+          conversationID: state.conversation.id,
+          windowID: pending.sourceWindowID
+        )
+        windowDraftResolution = ChatWindowDraftResolution(
+          commandID: id,
+          sourceWindowID: pending.sourceWindowID,
+          submittedRevision: pending.submittedRevision,
+          accepted: accepted
+        )
+      } catch {
+        state.errorBanner = "The HQ replied, but the saved message state couldn't be updated."
+      }
+    }
+    guard accepted else {
+      state.errorBanner = pendingCommandError(reason)
+      return
+    }
+    let sameAttachments = state.attachments.map(\.id) == pending.attachments.map(\.id)
+    if pending.sourceWindowID == "__conversation__", state.draft == pending.text, sameAttachments {
+      state.draft = ""
+      state.attachments = []
+      await persistDraft()
+    }
+  }
+
+  private func pendingCommandError(_ reason: CommandReceiptReason?) -> String {
+    switch reason {
+    case .staleExecution:
+      "The response changed before that interruption arrived. Review and send again."
+    case .versionConflict:
+      "That Follow Up changed on another device. The latest version is shown."
+    case .alreadyClaimed:
+      "That Follow Up has already started."
+    case .notFound:
+      "That Follow Up is no longer in the queue."
+    case .queueEmpty:
+      "There are no Follow Ups to resume."
+    case .invalidState, .unknown, nil:
+      "That action could not be applied. Review the conversation and try again."
+    }
+  }
+
   private func finishTerminalFrame(_ frame: MobileWSServerFrame) async {
     if frame.isTerminalForFeature {
       if pendingSendReconciliation?.turnID != frame.turnIDForFeature {
@@ -2073,6 +4312,18 @@ final class ChatFeature {
         await suspendForDetachment()
       }
     }
+  }
+
+  /// A frame about THIS conversation rather than about a child of it.
+  ///
+  /// A child's frames reach this socket because the client subscribed to the
+  /// child (design 7.6), and none of them says anything about which children
+  /// the PARENT has. A missing `conversationId` is the parent's by convention
+  /// — an older gateway omits it — which is the same rule
+  /// `ChatReducer.frameBelongsToConversation` applies.
+  private func isParentFrame(_ frame: MobileWSServerFrame) -> Bool {
+    guard let conversationID = frame.conversationIDForFeature else { return true }
+    return conversationID == state.conversation.id
   }
 
   private func shouldDeferForRecoveryClassification(_ frame: MobileWSServerFrame) -> Bool {
@@ -2348,8 +4599,10 @@ final class ChatFeature {
     case .transport:
       connection = .offline
       isAuthoritative = false
+    // `.speech` changes no connection state — the reducer above already turned
+    // it into a banner, and a provider failure is not a reachability signal.
     case .notFound, .validation, .revisionConflict, .conversationBusy,
-      .mutationOutcomeUnknown, .server:
+      .mutationOutcomeUnknown, .server, .speech:
       break
     }
     await gatewayErrorHandler?(gatewayError)
@@ -2413,8 +4666,26 @@ final class ChatFeature {
       && pendingSendReconciliation == nil
       && pendingSendRecovery == nil
       && state.activeTurnID != nil
-      && state.composerBlock == nil
+      && composerBlockAllowsSharedWork
       && isConversationReadOnly == false
+  }
+
+  private var followUpAuthorityIsAvailable: Bool {
+    isShutdown == false
+      && conversationControlAvailable
+      && connection == .online
+      && isAuthoritative
+      && pendingSendReconciliation == nil
+      && pendingSendRecovery == nil
+      && state.activeTurnID != nil
+      && composerBlockAllowsSharedWork
+      && isConversationReadOnly == false
+  }
+
+  private var composerBlockAllowsSharedWork: Bool {
+    if state.composerBlock == nil { return true }
+    if conversationControlAvailable, case .remoteActiveTurn? = state.composerBlock { return true }
+    return false
   }
 
   private var composerMutationAllowed: Bool {
@@ -2422,7 +4693,7 @@ final class ChatFeature {
       && isSending == false
       && pendingSendReconciliation == nil
       && pendingSendRecovery == nil
-      && state.composerBlock == nil
+      && composerBlockAllowsSharedWork
       && isConversationReadOnly == false
   }
 
@@ -2510,6 +4781,22 @@ final class ChatFeature {
         )
       {
       case .cleared:
+        if let windowID = pending.sourceWindowID,
+          let submittedRevision = pending.submittedRevision
+        {
+          try await persistence.clearWindowDraft(
+            gatewayID: gatewayID,
+            conversationID: state.conversation.id,
+            windowID: windowID,
+            submittedRevision: submittedRevision
+          )
+          windowDraftResolution = ChatWindowDraftResolution(
+            commandID: pending.turnID,
+            sourceWindowID: windowID,
+            submittedRevision: submittedRevision,
+            accepted: true
+          )
+        }
         pendingSendReconciliation = nil
         if summaryOnlyFollowUpTurnID == pending.turnID {
           summaryOnlyFollowUpTurnID = nil
@@ -2617,6 +4904,16 @@ final class ChatFeature {
     case .draftConflict(let draft):
       await applyPendingSendDraftConflict(pending, draft: draft)
     }
+    if let windowID = pending.sourceWindowID,
+      let submittedRevision = pending.submittedRevision
+    {
+      windowDraftResolution = ChatWindowDraftResolution(
+        commandID: pending.turnID,
+        sourceWindowID: windowID,
+        submittedRevision: submittedRevision,
+        accepted: false
+      )
+    }
   }
 
   private func applyPendingSendDraftConflict(
@@ -2661,8 +4958,10 @@ final class ChatFeature {
     }
     localTurnIDs.remove(pending.turnID)
     _ = ChatReducer.reduce(state: &state, action: .sendRejected(turnID: pending.turnID))
-    state.draft = restored.text
-    state.attachments = restored.attachments
+    if pending.sourceWindowID == nil {
+      state.draft = restored.text
+      state.attachments = restored.attachments
+    }
     draftStatus = .saved
   }
 
@@ -2672,8 +4971,11 @@ final class ChatFeature {
     switch gatewayError {
     case .transport, .mutationOutcomeUnknown:
       return true
+    // A speech failure is a DEFINITE outcome — the gateway answered with a
+    // code — so there is nothing ambiguous to reconcile.
     case .unauthorized, .rateLimited, .gatewayOffline, .notFound, .validation,
-      .revisionConflict, .conversationBusy, .capabilityRequired, .updateRequired, .server:
+      .revisionConflict, .conversationBusy, .capabilityRequired, .updateRequired, .server,
+      .speech:
       return false
     }
   }
@@ -2957,6 +5259,68 @@ final class ChatFeature {
 }
 
 extension MobileWSServerFrame {
+  /// True for any `voice_*` server frame. `consume(_:)` returns before any of
+  /// the other computed properties below run — they are chat-turn machinery
+  /// and voice frames carry no turn id.
+  fileprivate var isVoiceForFeature: Bool {
+    switch self {
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      true
+    case .accepted, .event, .done, .error, .watched, .commandReceipt, .queueChanged:
+      false
+    }
+  }
+
+  fileprivate var conversationIDForFeature: String? {
+    switch self {
+    case let .accepted(_, conversationID, _, _, _, _, _, _, _, _): conversationID
+    case let .event(_, conversationID, _, _): conversationID
+    case let .done(_, conversationID, _, _): conversationID
+    case let .error(_, conversationID, _, _, _, _, _): conversationID
+    case let .watched(_, conversationID, _, _),
+      let .commandReceipt(_, conversationID, _, _, _, _, _, _),
+      let .queueChanged(conversationID, _, _): conversationID
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: nil
+    }
+  }
+
+  /// True for a frame that changes which of a conversation's children are
+  /// live, or that reports one having changed (§8.4).
+  ///
+  /// Four triggers, each covering a case the others do not:
+  ///
+  /// 1. `subagent_started` / `subagent_finished` — a FOREGROUND child's row
+  ///    moving while its spawning turn is still running. The retired
+  ///    `worker_*` mirrors are excluded because nothing emits one (D8); a
+  ///    persisted pre-D8 one arrives only on a replay, where the list is read
+  ///    anyway. `subagent_progress` is excluded for a different reason — it is
+  ///    transient and never persisted, so refreshing on it would be a round
+  ///    trip per tool call for a row whose only live field ticks locally
+  ///    anyway.
+  /// 2. `accepted` with `origin == .notification` — the ONLY thing that tells
+  ///    a parent about a BACKGROUND child's finish. Nothing about that finish
+  ///    reaches the parent's own event stream, and the gateway starts a
+  ///    notification turn to wake the orchestrator with the result. Without
+  ///    this the sheet would read `running` for the whole length of the turn
+  ///    that child's own finish triggered. An ordinary user turn's `accepted`
+  ///    says nothing about any child, and its `done` already reads.
+  /// 3. `done` — the backstop for every trigger above going missing, and the
+  ///    only way to see a child that was spawned DURING a turn on a client
+  ///    that missed the start. One read per parent turn.
+  fileprivate var refreshesSubagentList: Bool {
+    switch self {
+    case let .accepted(_, _, _, _, _, _, origin, _, _, _): origin == .notification
+    case .done: true
+    case let .event(_, _, _, event):
+      switch event {
+      case .subagentStarted, .subagentFinished: true
+      default: false
+      }
+    case .error, .watched, .commandReceipt, .queueChanged: false
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
+    }
+  }
+
   fileprivate var isAcceptedForFeature: Bool {
     if case .accepted = self { return true }
     return false
@@ -2975,36 +5339,49 @@ extension MobileWSServerFrame {
   fileprivate var isAdmissionOrTerminal: Bool {
     switch self {
     case .accepted, .done, .error: true
-    case .event: false
+    case .event, .watched, .commandReceipt, .queueChanged: false
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
 
   fileprivate var isTerminalForFeature: Bool {
     switch self {
     case .done, .error: true
-    case .accepted, .event: false
+    case .accepted, .event, .watched, .commandReceipt, .queueChanged: false
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
 
   fileprivate var turnIDForFeature: String {
     switch self {
-    case .accepted(let id, _, _, _, _, _),
+    case .accepted(let id, _, _, _, _, _, _, _, _, _),
       .event(let id, _, _, _),
       .done(let id, _, _, _),
-      .error(let id, _, _, _, _, _, _):
+      .error(let id, _, _, _, _, _, _),
+      .voiceState(let id, _, _),
+      .voiceTranscript(let id, _, _, _),
+      .voiceSpeech(let id, _, _, _, _, _),
+      .voiceError(let id, _, _),
+      .voiceStopped(let id, _):
       id
+    case let .watched(id, _, _, _): id
+    case let .commandReceipt(id, _, _, _, _, _, _, _): id
+    case let .queueChanged(conversationID, _, commandID): commandID ?? conversationID
     }
   }
 
   fileprivate var sequenceForFeature: Int? {
     switch self {
-    case .accepted(_, _, _, _, _, let seq):
+    case .accepted(_, _, _, _, _, let seq, _, _, _, _):
       seq
     case .event(_, _, let seq, _),
       .done(_, _, let seq, _):
       seq
     case .error(_, _, let seq, _, _, _, _):
       seq
+    case .watched, .commandReceipt, .queueChanged,
+      .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      nil
     }
   }
 }

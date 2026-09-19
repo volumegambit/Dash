@@ -103,7 +103,7 @@ async function generateIdentity(lanAddresses: string[]): Promise<LanTlsIdentity>
   const notAfterDate = new Date(now);
   notAfterDate.setUTCFullYear(notAfterDate.getUTCFullYear() + 10);
   const addresses = [...new Set(['127.0.0.1', '::1', ...lanAddresses])];
-  const generated = await generate([{ name: 'commonName', value: 'Dash Gateway' }], {
+  const generated = await generate([{ name: 'commonName', value: 'Dash HQ' }], {
     keyType: 'ec',
     curve: 'P-256',
     algorithm: 'sha256',

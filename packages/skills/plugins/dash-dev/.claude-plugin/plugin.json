@@ -1,6 +1,6 @@
 {
   "name": "dash-dev",
   "displayName": "Developer",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "Developer skills: code review, PR workflow, systematic debugging, writing tests"
 }

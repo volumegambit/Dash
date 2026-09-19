@@ -261,6 +261,15 @@ actor ConversationSyncEngine {
       try validate(lifecycle: lifecycle, conversations: conversations)
       do {
         let summary = try await api.conversation(id: id)
+        // Subagent (child) conversations are not part of the user's
+        // conversation list — the gateway excludes them from GET
+        // /conversations by defaulting kind='user'.  SSE invalidation
+        // events, however, fire for child turns too (they run through
+        // the same ResumableChatHub), and refreshConversation(id:) is
+        // the handler for those events.  Without this guard the child
+        // would be cached, added to conversationOrder, and surfaced in
+        // the conversation list.
+        guard summary.conversationKind != .subagent else { return }
         try validate(lifecycle: lifecycle, conversations: conversations)
         _ = try await persist(summary, lifecycle: lifecycle, conversations: conversations)
         try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
@@ -475,6 +484,20 @@ actor ConversationSyncEngine {
         lifecycle: lifecycle,
         conversations: conversations
       )
+      // Publish `.online` as soon as the conversation LIST is canonical —
+      // before the per-conversation transcript reloads below. Those reloads
+      // are a round-trip per active conversation, and holding `.online`
+      // hostage to all of them kept `mutationsAllowed` false (compose
+      // disabled, sends blocked) for the whole window even though the
+      // gateway was demonstrably reachable and authenticated. A transcript
+      // failure below still routes to `handle(error:)`, which downgrades
+      // the connection and shows its banner — failures are preserved, they
+      // just no longer retroactively veto list-level availability.
+      try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
+      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
+      publish(.online)
       for canonical in activeConversations {
         let messageReset = beginMessageReset(conversationID: canonical.id)
         messages = messageReset
@@ -498,11 +521,15 @@ actor ConversationSyncEngine {
           throw authoritativeFailure
         }
       }
-      try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
-      try validate(lifecycle: lifecycle, conversations: conversations)
-      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
-      try validate(lifecycle: lifecycle, conversations: conversations)
-      publish(.online)
+      // Second `.online` publish: surfaces any summary changes the
+      // transcript reloads persisted (e.g. a running conversation that
+      // completed while backgrounded). Skipped when there was nothing to
+      // reload — the first publish already carried the canonical list.
+      if activeConversations.isEmpty == false {
+        try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+        try validate(lifecycle: lifecycle, conversations: conversations)
+        publish(.online)
+      }
     } catch is CancellationError {
       return
     } catch {
@@ -722,7 +749,10 @@ actor ConversationSyncEngine {
   private func isIsolatedForegroundResourceFailure(_ error: Error) -> Bool {
     guard let error = error as? GatewayError else { return false }
     switch error {
-    case .notFound, .validation, .revisionConflict, .conversationBusy, .server:
+    // `.speech` sits with the isolated failures: the sync engine never calls
+    // `/speech/*`, and a provider failure says nothing about reachability, so
+    // it must never tear the connection down.
+    case .notFound, .validation, .revisionConflict, .conversationBusy, .server, .speech:
       return true
     case .unauthorized, .rateLimited, .gatewayOffline, .capabilityRequired, .updateRequired,
       .transport, .mutationOutcomeUnknown:
@@ -807,8 +837,13 @@ actor ConversationSyncEngine {
 
   private func reloadSnapshot(lifecycle: Int, conversations: Int? = nil) async throws {
     try validate(lifecycle: lifecycle, conversations: conversations)
-    let cached = try await store.conversations(gatewayID: gatewayID, limit: 1_000)
+    let rawCached = try await store.conversations(gatewayID: gatewayID, limit: 1_000)
     try validate(lifecycle: lifecycle, conversations: conversations)
+    // Filter out subagent conversations that may have been cached before
+    // the guard in refreshConversation(id:) was added (or that entered the
+    // cache through any other path).  Subagents are displayed inline in
+    // the parent conversation's swarm panel, not in the conversation list.
+    let cached = rawCached.filter { $0.summary.conversationKind != .subagent }
     let ordered: [CachedConversation]
     if conversationOrder.isEmpty {
       ordered = cached
@@ -911,7 +946,7 @@ actor ConversationSyncEngine {
 
   private func requireOnlineMutation() throws {
     guard isShutdown == false, connection == .online else {
-      throw GatewayError.transport("Mutations require an online gateway")
+      throw GatewayError.transport("Mutations require an online HQ")
     }
   }
 
@@ -1131,8 +1166,16 @@ extension CapableServerFrame {
   fileprivate var sequenced: (conversationID: String, seq: Int)? {
     switch self {
     case .accepted(_, let conversationID, _, _, _, let seq),
-      .event(_, let conversationID, let seq, _),
       .done(_, let conversationID, let seq, _):
+      return (conversationID, seq)
+    // A TRANSIENT event (spec §7.2) has no cursor because it is never
+    // persisted, so there is nothing here to reconcile OR to store — the
+    // caller's `guard let sequenced else { return }` is the right answer for
+    // it. It still reaches the LIVE reducer, which reads
+    // `MobileWSServerFrame` and has always tolerated a nil seq
+    // (`ChatReducer.sequence(of:)`).
+    case .event(_, let conversationID, let seq, _):
+      guard let seq else { return nil }
       return (conversationID, seq)
     case .error(_, let conversationID, let seq, _, _, _, _):
       guard let conversationID, let seq else { return nil }

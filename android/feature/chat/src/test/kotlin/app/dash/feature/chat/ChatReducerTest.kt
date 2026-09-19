@@ -101,7 +101,7 @@ class ChatReducerTest {
         val before = withPendingAssistant()
         val after = ChatReducer.reduce(before, AgentEvent.Unknown("brand_new"))
         assertEquals(
-            AssistantBlock.Status("Gateway event: brand_new"),
+            AssistantBlock.Status("HQ event: brand_new"),
             lastAssistant(after).blocks.single(),
         )
         assertNull(after.error)

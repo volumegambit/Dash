@@ -252,6 +252,9 @@ describe('mobile harness emitted contract output', () => {
         'apiVersion',
         'capabilities',
       ]);
+      expect((health as { capabilities: string[] }).capabilities).toContain(
+        'conversation-control-v2',
+      );
 
       const identityResponse = await mobileRequest(harness, '/identity');
       expect(identityResponse.status).toBe(200);
@@ -503,7 +506,7 @@ describe('mobile harness emitted contract output', () => {
       chat.send(send);
       await chat.waitFor((frame) => frame.type === 'done' && frame.id === turnId);
 
-      const frames = chat.frames.filter((frame) => frame.id === turnId);
+      const frames = chat.frames.filter((frame) => 'id' in frame && frame.id === turnId);
       expect(frames.map((frame) => frame.type)).toEqual([
         'accepted',
         'event',

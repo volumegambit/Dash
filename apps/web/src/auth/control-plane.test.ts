@@ -113,7 +113,7 @@ describe('ControlPlaneClient', () => {
 
     it('throws ControlPlaneApiError with status 409 when the gateway has no registered chat token', async () => {
       const fetchImpl = fakeFetch(
-        jsonResponse({ error: 'no web chat token registered for this gateway' }, 409),
+        jsonResponse({ error: 'no web chat token registered for this HQ' }, 409),
       );
       const client = new ControlPlaneClient(
         'https://control.dash.example',
@@ -123,7 +123,7 @@ describe('ControlPlaneClient', () => {
 
       await expect(client.createWebPairing('acme', 'My Browser')).rejects.toMatchObject({
         status: 409,
-        code: 'no web chat token registered for this gateway',
+        code: 'no web chat token registered for this HQ',
       });
     });
 
@@ -295,7 +295,7 @@ describe('ControlPlaneClient', () => {
 
   describe('error handling', () => {
     it('throws ControlPlaneApiError with status and the { error } body field on 404', async () => {
-      const fetchImpl = fakeFetch(jsonResponse({ error: 'gateway not found' }, 404));
+      const fetchImpl = fakeFetch(jsonResponse({ error: 'HQ not found' }, 404));
       const client = new ControlPlaneClient(
         'https://control.dash.example',
         tokenSource(),
@@ -304,7 +304,7 @@ describe('ControlPlaneClient', () => {
 
       await expect(client.listPairings('missing')).rejects.toMatchObject({
         status: 404,
-        code: 'gateway not found',
+        code: 'HQ not found',
       });
       await expect(client.listPairings('missing')).rejects.toBeInstanceOf(ControlPlaneApiError);
     });

@@ -29,8 +29,11 @@ STAGE="build/tailnet"
 ARCHIVE="build/Dash-dev.xcarchive"
 PORT="${DASH_IOS_PORT:-8787}"
 PIDFILE="build/tailnet-httpd.pid"
+SERVER_LABEL="dash-tailnet-httpd"
+ICON_SOURCE="Dash/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"
 TS="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 [ -x "$TS" ] || TS="$(command -v tailscale || true)"
+NODE="$(command -v node || true)"
 
 SERVE=1
 for arg in "$@"; do
@@ -38,6 +41,7 @@ for arg in "$@"; do
     --no-serve) SERVE=0 ;;
     --stop)     "$TS" serve --https=443 --set-path "$URL_PATH" off >/dev/null 2>&1 \
                   || "$TS" serve reset >/dev/null 2>&1 || true
+                launchctl remove "$SERVER_LABEL" >/dev/null 2>&1 || true
                 [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null || true
                 rm -f "$PIDFILE"; echo "serve stopped"; exit 0 ;;
     -h|--help)  sed -n '2,20{s/^# \{0,1\}//;p;}' "$0"; exit 0 ;;
@@ -49,6 +53,7 @@ log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31merror\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ -n "$TS" ] && [ -x "$TS" ] || die "tailscale CLI not found"
+[ -n "$NODE" ] && [ -x "$NODE" ] || die "node CLI not found"
 
 [ -f "$HOME/.dash-ios-deploy.env" ] && source "$HOME/.dash-ios-deploy.env"
 AUTH=()
@@ -107,7 +112,18 @@ mv "$IPA" "$STAGE/Dash.ipa"
 # served on the tailnet alongside the app.
 find "$STAGE" -maxdepth 1 -type f ! -name 'Dash.ipa' -delete
 
+log "writing OTA icon assets"
+sips -z 57 57 "$ICON_SOURCE" --out "$STAGE/display-image.png" >/dev/null
+sips -z 512 512 "$ICON_SOURCE" --out "$STAGE/full-size-image.png" >/dev/null
+
 VERSION="$(grep -E '^MARKETING_VERSION' Config/Base.xcconfig | sed 's/.*= *//')"
+# The manifest's `bundle-version` is how iOS decides whether an OTA payload is
+# an UPGRADE. If it only advertises the marketing version (which never changes
+# between builds), iOS sees the installed app already at that version and
+# silently no-ops the install — the device keeps running the old binary. So
+# advertise the unique, incrementing build number here (the same value baked
+# into the archive's CFBundleVersion), which makes every deploy a distinct,
+# newer version and forces the reinstall.
 
 log "writing OTA manifest"
 cat > "$STAGE/manifest.plist" <<PLIST
@@ -124,11 +140,21 @@ cat > "$STAGE/manifest.plist" <<PLIST
 					<key>kind</key><string>software-package</string>
 					<key>url</key><string>${BASE}/Dash.ipa</string>
 				</dict>
+				<dict>
+					<key>kind</key><string>display-image</string>
+					<key>needs-shine</key><false/>
+					<key>url</key><string>${BASE}/display-image.png</string>
+				</dict>
+				<dict>
+					<key>kind</key><string>full-size-image</string>
+					<key>needs-shine</key><false/>
+					<key>url</key><string>${BASE}/full-size-image.png</string>
+				</dict>
 			</array>
 			<key>metadata</key>
 			<dict>
 				<key>bundle-identifier</key><string>${BUNDLE_ID}</string>
-				<key>bundle-version</key><string>${VERSION}</string>
+				<key>bundle-version</key><string>${BUILD_NUM}</string>
 				<key>kind</key><string>software</string>
 				<key>title</key><string>Dash</string>
 			</dict>
@@ -156,11 +182,11 @@ if [ "$SERVE" -eq 1 ]; then
   log "publishing to the tailnet"
   # The macOS Tailscale app is sandboxed and refuses to serve a directory
   # ("Path serving is not supported on macOS"), so run a local static server
-  # and have Tailscale proxy that port instead.
+  # and have Tailscale proxy that port instead. Keep it in launchd on macOS so
+  # the install page survives the script's shell exiting.
+  launchctl remove "$SERVER_LABEL" >/dev/null 2>&1 || true
   [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null || true
-  nohup python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$STAGE" \
-    >/dev/null 2>&1 &
-  echo $! > "$PIDFILE"
+  launchctl submit -l "$SERVER_LABEL" -- "$NODE" "$PWD/scripts/tailnet-httpd.mjs" "$PWD/$STAGE" "$PORT"
   sleep 1
   curl -fsS -o /dev/null "http://127.0.0.1:$PORT/manifest.plist" \
     || die "local server did not come up on port $PORT"

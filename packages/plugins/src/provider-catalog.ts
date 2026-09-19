@@ -82,6 +82,34 @@ function optStringRecord(v: unknown): Record<string, string> | undefined {
   return { ...out };
 }
 
+/** The thinking levels a catalog may key `thinkingLevelMap` by. */
+const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+
+/**
+ * Reconstructs a `CatalogModel['thinkingLevelMap']`, keeping only recognized
+ * level keys whose value is a string or `null` (the two meanings the host
+ * understands: remap-to-wire-value, and level-unsupported). Unknown keys and
+ * malformed values are dropped rather than failing the whole catalog, matching
+ * how the other optional fields degrade. Returns `undefined` when nothing
+ * usable survives, so an all-garbage map is indistinguishable from an absent
+ * one ("every level available") instead of silently meaning "no levels".
+ */
+function optThinkingLevelMap(v: unknown): CatalogModel['thinkingLevelMap'] {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const src = v as Record<string, unknown>;
+  const out: Record<string, string | null> = Object.create(null);
+  let kept = 0;
+  for (const level of THINKING_LEVELS) {
+    if (!Object.hasOwn(src, level)) continue;
+    const val = src[level];
+    if (val === null || typeof val === 'string') {
+      out[level] = val;
+      kept++;
+    }
+  }
+  return kept > 0 ? { ...out } : undefined;
+}
+
 /**
  * Reconstructs an arbitrary string→unknown record (skipping `__proto__`), or
  * `undefined` if `v` is not a plain object. Used for `compat` pass-through.
@@ -130,6 +158,7 @@ function validateModel(v: unknown, where: string): CatalogModel {
   }
   const name = optString(m.name);
   const reasoning = optBool(m.reasoning);
+  const thinkingLevelMap = optThinkingLevelMap(m.thinkingLevelMap);
   const input = optInput(m.input);
   const cost = optCost(m.cost);
   const headers = optStringRecord(m.headers);
@@ -140,6 +169,7 @@ function validateModel(v: unknown, where: string): CatalogModel {
     maxTokens: m.maxTokens,
     ...(name !== undefined ? { name } : {}),
     ...(reasoning !== undefined ? { reasoning } : {}),
+    ...(thinkingLevelMap !== undefined ? { thinkingLevelMap } : {}),
     ...(input !== undefined ? { input } : {}),
     ...(cost !== undefined ? { cost } : {}),
     ...(headers !== undefined ? { headers } : {}),

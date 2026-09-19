@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MemoryStore, parseMemoryFile, serializeMemory } from './store.js';
-import { MemoryOpError } from './types.js';
+import { MemoryOpError, type MemorySource } from './types.js';
 
 describe('MemoryStore', () => {
   let dir: string;

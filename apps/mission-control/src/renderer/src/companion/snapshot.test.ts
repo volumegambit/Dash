@@ -14,8 +14,12 @@ const gateway: McConversationView = {
   projectId: null,
   lastSeq: 0,
   lastMessagePreview: null,
+  pendingCount: 0,
+  pendingScheduling: 'running',
+  queueRevision: 0,
   createdAt: '2026-07-12T00:00:00Z',
   updatedAt: '2026-07-12T00:00:00Z',
+  kind: 'user',
   origin: 'gateway',
   offline: false,
   readOnly: false,
@@ -54,6 +58,6 @@ describe('buildSnapshot', () => {
       },
       { agents: [] },
     );
-    expect(snap.agentName('missing')).toBe('Agent');
+    expect(snap.agentName('missing')).toBe('Squad member');
   });
 });

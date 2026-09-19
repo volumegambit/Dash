@@ -22,9 +22,9 @@ struct ConversationRowActionPolicy: Equatable {
     canRename = showsRename && mutationsAllowed
     canDelete = showsDelete && mutationsAllowed && hasActiveTurn == false
 
-    renameDisabledHint = mutationsAllowed ? "" : "Connect to the gateway to rename"
+    renameDisabledHint = mutationsAllowed ? "" : "Connect to the HQ to rename"
     if mutationsAllowed == false {
-      deleteDisabledHint = "Connect to the gateway to delete"
+      deleteDisabledHint = "Connect to the HQ to delete"
     } else if hasActiveTurn {
       deleteDisabledHint = "Wait for the active turn to finish before deleting"
     } else {
@@ -116,13 +116,21 @@ enum ComposeAgentSelection {
 
   /// The accessibility hint explaining why `isUnavailable` is `true` — empty
   /// when compose is available, so it can be attached unconditionally.
+  ///
+  /// `isConnecting` distinguishes the liminal `.connecting` state from a
+  /// genuinely broken connection: while connecting, the app is already doing
+  /// the thing "Connect to the gateway…" would ask the user to do, so the
+  /// hint says so instead of issuing an instruction that can't be acted on.
   static func unavailableHint(
     _ agents: [RegisteredAgentDTO],
     filteredAgentID: String?,
-    mutationsAllowed: Bool
+    mutationsAllowed: Bool,
+    isConnecting: Bool
   ) -> String {
     if mutationsAllowed == false {
-      return "Connect to the gateway to create a conversation"
+      return isConnecting
+        ? "Connecting to the HQ"
+        : "Connect to the HQ to create a conversation"
     }
     if availableAgents(agents, filteredAgentID: filteredAgentID).isEmpty {
       return "Enable or create an agent before starting a conversation"
@@ -217,7 +225,14 @@ struct ConversationListView: View {
         Button {
           Task { await startCompose() }
         } label: {
-          if isComposing {
+          // A spinner rather than a greyed pencil while the sync engine is
+          // still `.connecting`: that state deliberately shows no offline
+          // banner (`AppModel.consume` maps it to `banner = nil` to avoid
+          // flicker on every cold start), so without this the button reads
+          // as inexplicably dead — the list underneath renders cached rows
+          // and looks perfectly healthy. Every OTHER non-online state has
+          // a banner explaining itself.
+          if isComposing || feature.isConnecting {
             ProgressView()
               .frame(minWidth: 44, minHeight: 44)
           } else {
@@ -373,7 +388,8 @@ struct ConversationListView: View {
     ComposeAgentSelection.unavailableHint(
       feature.agents,
       filteredAgentID: feature.selectedAgentID,
-      mutationsAllowed: feature.mutationsAllowed
+      mutationsAllowed: feature.mutationsAllowed,
+      isConnecting: feature.isConnecting
     )
   }
 
@@ -470,13 +486,13 @@ struct ConversationListView: View {
       ContentUnavailableView(
         "No conversations",
         systemImage: "bubble.left.and.bubble.right",
-        description: Text("Start a conversation with one of your agents.")
+        description: Text("Start a conversation with one of your squad.")
       )
     } else {
       ContentUnavailableView(
         "No cached conversations",
         systemImage: "wifi.slash",
-        description: Text("Connect to the gateway to load conversations.")
+        description: Text("Connect to the HQ to load conversations.")
       )
     }
   }
@@ -705,15 +721,28 @@ struct ConversationListView: View {
     }
     .buttonStyle(.plain)
     .hoverEffect(.highlight)
-    .listRowBackground(
-      isSelected(conversation.id) ? DashTheme.accent.opacity(DashTheme.Opacity.fillMuted) : Color.clear
-    )
+    .listRowBackground(conversationRowBackground(for: conversation))
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(isSelected(conversation.id) ? .isSelected : [])
     .accessibilityIdentifier("conversation.row.\(conversation.id)")
     // Left the separator starting a third of the way across the row,
     // aligned under the status badge rather than under the text column.
     .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+  }
+
+  /// Selection outranks activity: a selected running row shows the steady
+  /// selection wash, not the pulse — two competing accent fills on one row
+  /// would make neither legible. The breathing wash only exists on rows
+  /// where nothing else claims the background.
+  @ViewBuilder
+  private func conversationRowBackground(for conversation: CachedConversation) -> some View {
+    if isSelected(conversation.id) {
+      DashTheme.accent.opacity(DashTheme.Opacity.fillMuted)
+    } else if conversation.summary.status == .running {
+      RunningRowWash()
+    } else {
+      Color.clear
+    }
   }
 
   private func recoveryRow(_ recovery: RecoverablePendingSend) -> some View {
@@ -1501,6 +1530,39 @@ struct RecoveryAttachmentTransfer: Transferable {
     DataRepresentation(exportedContentType: .data) { $0.export.data }
       .exportingCondition { $0.export.contentType == .data }
       .suggestedFileName { $0.export.suggestedFileName }
+  }
+}
+
+/// The whole-row "this conversation is live" signal (goal 2026-09-10): a
+/// slow breathing accent wash across the entire `listRowBackground`, in
+/// place of pointing at a static badge glyph. The pulse cycles between
+/// `fillFaint` and `fillSubtle` — both below the selection wash's
+/// `fillMuted`, so a running row never reads as selected.
+///
+/// Reduce-motion holds the wash at its `fillFaint` resting level instead of
+/// removing it — the same "keep the affordance, drop the motion" trade
+/// `StreamingCaretView` makes. The `StatusBadge` ("Running" + waveform)
+/// stays on the row regardless, so the state is never carried by colour
+/// alone (and VoiceOver reads it from there, not from this decoration).
+private struct RunningRowWash: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isBreathing = false
+
+  var body: some View {
+    DashTheme.accent
+      .opacity(
+        reduceMotion || isBreathing == false
+          ? DashTheme.Opacity.fillFaint
+          : DashTheme.Opacity.fillSubtle
+      )
+      .animation(
+        reduceMotion ? nil : .easeInOut(duration: 1.6).repeatForever(autoreverses: true),
+        value: isBreathing
+      )
+      .onAppear {
+        if !reduceMotion { isBreathing = true }
+      }
+      .accessibilityHidden(true)
   }
 }
 

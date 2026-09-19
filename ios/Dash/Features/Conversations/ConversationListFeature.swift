@@ -109,7 +109,7 @@ extension ConversationMutationError {
   var userMessage: String {
     switch self {
     case .offline:
-      "Connect to the gateway and try again."
+      "Connect to the HQ and try again."
     case .invalidTitle:
       "Enter a title that is not empty."
     case .outcomeUnknown:
@@ -732,6 +732,13 @@ final class ConversationListFeature {
 
   var mutationsAllowed: Bool { connection == .online }
 
+  /// The liminal state between activation/foreground and the first
+  /// authoritative sync: mutations are blocked (`mutationsAllowed` is false)
+  /// but no offline banner is shown (`AppModel.consume` deliberately maps
+  /// `.connecting` to no banner). Compose surfaces use this to show a
+  /// progress affordance instead of an unexplained disabled button.
+  var isConnecting: Bool { connection == .connecting }
+
   @ObservationIgnored private let gatewayID: String
   @ObservationIgnored private let service: any ConversationListServicing
   @ObservationIgnored private let recoveryService: any ConversationRecoveryServicing
@@ -838,6 +845,21 @@ final class ConversationListFeature {
     return conversationID
   }
 
+  /// Comparator for conversation list ordering: running conversations first,
+  /// then by `updatedAt` descending, then by `id` descending as a tiebreaker.
+  /// Used by `consume()` for both the merged sort and the retained-item
+  /// binary-scan insertion.
+  private static func compareConversations(
+    _ a: ConversationSummaryDTO,
+    _ b: ConversationSummaryDTO
+  ) -> Bool {
+    if (a.status == .running) != (b.status == .running) {
+      return a.status == .running
+    }
+    if a.updatedAt != b.updatedAt { return a.updatedAt > b.updatedAt }
+    return a.id > b.id
+  }
+
   func consume(_ snapshot: SyncSnapshot?) {
     guard let snapshot else { return }
     let wasOnline = mutationsAllowed
@@ -847,7 +869,9 @@ final class ConversationListFeature {
     if isRefreshing, mutationsAllowed {
       refreshQueued = true
     }
-    let scopedCanonical = snapshot.conversations.filter { $0.gatewayID == gatewayID }
+    let scopedCanonical = snapshot.conversations.filter {
+      $0.gatewayID == gatewayID && $0.summary.conversationKind != .subagent
+    }
     var currentByID = Dictionary(
       uniqueKeysWithValues: allConversations.map { ($0.id, $0.summary) }
     )
@@ -890,7 +914,10 @@ final class ConversationListFeature {
     // placement; this also matches the invariant the retained-item insertion
     // below already assumes (it binary-scans `merged` for the first row older
     // than each retained value).
-    merged.sort { $0.summary.updatedAt > $1.summary.updatedAt }
+    //
+    // Running conversations are pinned to the top so the user can always see
+    // which agents are actively working, regardless of `updatedAt` recency.
+    merged.sort { ConversationListFeature.compareConversations($0.summary, $1.summary) }
     let incomingIDs = Set(scopedCanonical.map(\.id))
     let retained = allConversations.filter {
       incomingIDs.contains($0.id) == false
@@ -898,7 +925,7 @@ final class ConversationListFeature {
     }
     for value in retained {
       let insertionIndex = merged.firstIndex {
-        $0.summary.updatedAt < value.summary.updatedAt
+        ConversationListFeature.compareConversations(value.summary, $0.summary)
       }
       merged.insert(value, at: insertionIndex ?? merged.endIndex)
     }
@@ -987,7 +1014,9 @@ final class ConversationListFeature {
         if mutationsAllowed { await refresh() }
         return
       }
-      allConversations = cachedConversations
+      allConversations = cachedConversations.sorted {
+        ConversationListFeature.compareConversations($0.summary, $1.summary)
+      }
       agents = cachedAgents
       isAuthoritative = false
       applyFilter()
@@ -1044,7 +1073,9 @@ final class ConversationListFeature {
             currentByID[incoming.id] = nil
           }
         }
-        allConversations = refreshed
+        allConversations = refreshed.sorted {
+          ConversationListFeature.compareConversations($0.summary, $1.summary)
+        }
         agents = refreshedAgents
         nextCursor = page.nextCursor
         isAuthoritative = true
@@ -1859,8 +1890,10 @@ final class ConversationListFeature {
       connection = .updateRequired
     case .transport, .server:
       connection = .offline
+    // `.speech` is unreachable from this feature and changes no connection
+    // state anywhere: a provider failure is not a reachability signal.
     case .notFound, .validation, .revisionConflict, .conversationBusy,
-      .mutationOutcomeUnknown:
+      .mutationOutcomeUnknown, .speech:
       break
     }
     if connection != .online { isAuthoritative = false }

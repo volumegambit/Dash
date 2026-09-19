@@ -66,7 +66,11 @@ import type {
   PairingInfo,
   SetupStatus,
 } from '../shared/ipc.js';
-import { captureChatIpcResult } from '../shared/ipc.js';
+import {
+  CHAT_SUBAGENT_RESUBSCRIBED,
+  CHAT_SUBAGENT_WATCH_LOST,
+  captureChatIpcResult,
+} from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { readCoarseLocation } from './client-location.js';
@@ -178,8 +182,14 @@ export function configurePendingConversationRuntime(options: {
 
 export function disposePendingConversationRuntime(
   runtime: PendingConversationRuntime | null,
+  service?: Pick<ChatService, 'setResumableTransport'>,
 ): null {
   runtime?.transport?.closeAll();
+  // `closeAll` sets `closed = true` and every entry point on the transport
+  // goes through `assertOpen()`. Left attached, a `subagents:watch` arriving
+  // after `before-quit` throws "Chat transport closed" inside an
+  // `ipcMain.on` listener, which is unhandled. Detach it in the same breath.
+  service?.setResumableTransport(undefined);
   return null;
 }
 
@@ -188,6 +198,48 @@ export function activatePendingConversationRuntime(
   runtime: PendingConversationRuntime | null,
 ): void {
   service.setResumableTransport(runtime?.transport ?? undefined);
+}
+
+export interface SubagentWatchRequest {
+  watch: boolean;
+  /**
+   * A hold that is already counted, asking for a socket back because the one
+   * it had died. Rides the same channel as the pair so it can never overtake
+   * either of them, and moves no count.
+   */
+  rewatch?: boolean;
+  agentId?: string;
+  conversationId: string;
+}
+
+/**
+ * The body of the `subagents:watch` channel (design §7.6). Extracted so it can
+ * be tested: `ipcMain.on` is registered inside `registerIpcHandlers`, which
+ * needs a live Electron app.
+ *
+ * A hold with no agent id is DROPPED rather than guessed at. The gateway's hub
+ * keys its watcher registry on `(agentId, conversationId)`
+ * (`apps/gateway/src/chat-ws.ts:425-432`), so a wrong agent id would subscribe
+ * to nothing and the release would then decrement a hold that was never taken.
+ */
+export function applySubagentWatch(
+  service: Pick<
+    ChatService,
+    'subscribeConversation' | 'unsubscribeConversation' | 'rewatchConversation'
+  >,
+  request: SubagentWatchRequest,
+  holder?: number,
+): void {
+  if (request.watch) {
+    if (!request.agentId) return;
+    if (request.rewatch) {
+      service.rewatchConversation(request.agentId, request.conversationId);
+      return;
+    }
+    service.subscribeConversation(request.agentId, request.conversationId, holder);
+    return;
+  }
+  service.unsubscribeConversation(request.conversationId, holder);
 }
 
 export function createCanonicalChatHandlers(
@@ -511,7 +563,7 @@ function getLanIp(): Promise<string> {
 
 export function assertLocalPairingSource(profile: Pick<GatewayConnectionSettings, 'mode'>): void {
   if (profile.mode !== 'local') {
-    throw new Error('Switch to the local gateway before pairing a device');
+    throw new Error('Switch to the local HQ before pairing a device');
   }
 }
 
@@ -562,9 +614,9 @@ let projectsWs: WebSocket | null = null;
  * Build (once) the gateway supervisor. The spawner MUST be the packaged
  * wrapper: a packaged Dash.app is launched by Finder/launchd, whose PATH
  * (`/usr/bin:/bin:/usr/sbin:/sbin`) contains no `node` — Homebrew and nvm
- * installs are both invisible to it. `makePackagedSpawner` re-execs
- * Electron's own bundled Node instead, so the gateway daemon always has an
- * interpreter. `baseSpawner` is a seam for tests only.
+ * installs are both invisible to it. The app bundles a separate Node runtime
+ * matching the gateway's requirements; Electron's embedded Node can be older.
+ * `baseSpawner` is a seam for tests only.
  */
 export function getGatewaySupervisor(
   options: GatewaySupervisorOptions,
@@ -575,7 +627,17 @@ export function getGatewaySupervisor(
   if (!gatewaySupervisor) {
     gatewaySupervisor = new GatewaySupervisor(
       options,
-      makePackagedSpawner(process.execPath, baseSpawner, app.isPackaged),
+      makePackagedSpawner(
+        app.isPackaged
+          ? join(
+              process.resourcesPath,
+              'runtime',
+              process.platform === 'win32' ? 'node.exe' : 'bin/node',
+            )
+          : 'node',
+        baseSpawner,
+        app.isPackaged,
+      ),
       undefined,
       undefined,
       keychain,
@@ -679,17 +741,14 @@ async function getClient(gw: GatewaySupervisor): Promise<GatewayManagementClient
 }
 
 export function makePackagedSpawner(
-  execPath: string,
+  runtimePath: string,
   base: ProcessSpawner,
   isPackaged: boolean,
 ): ProcessSpawner {
   return {
     spawn: (command, args, options) => {
       if (command === 'node' && isPackaged) {
-        return base.spawn(execPath, args, {
-          ...options,
-          env: { ...options.env, ELECTRON_RUN_AS_NODE: '1' },
-        });
+        return base.spawn(runtimePath, args, options);
       }
       return base.spawn(command, args, options);
     },
@@ -858,6 +917,30 @@ export async function projectsAssignAgentHandler(
   return conversation.id;
 }
 
+/**
+ * A renderer holding child-conversation watches has gone away — the window
+ * closed, or it is navigating and about to be replaced (design §7.6,
+ * ruling 5).
+ *
+ * With a `holder` (`webContents.id`), only that renderer's holds go: this is
+ * the RELOAD case, which fires no `closed` and which Electron's default menu
+ * offers on ⌘R in a packaged build. Without one, every hold goes, which is the
+ * window-close case — on macOS that is the only signal there is, since the app
+ * keeps running, `before-quit` may be hours away, and the fresh renderer a
+ * dock-icon click builds starts with an empty `knownChildIds` and takes its
+ * own holds on top of these.
+ *
+ * A no-op before the service exists, which is the case for a window closed
+ * during startup.
+ */
+export function releaseRendererConversationWatches(holder?: number): void {
+  if (holder === undefined) {
+    chatService?.releaseAllConversationWatches();
+    return;
+  }
+  chatService?.releaseConversationWatches(holder);
+}
+
 function getChatService(getWindow: () => BrowserWindow | undefined): ChatService {
   if (!chatService) {
     chatService = new ChatService(
@@ -890,6 +973,40 @@ function getChatService(getWindow: () => BrowserWindow | undefined): ChatService
     chatService.setLocationProvider(() => readCoarseLocation(app));
   }
   return chatService;
+}
+
+/**
+ * The main half of the child-watch lifecycle: the two `webContents.send`s that
+ * carry it to the renderer.
+ *
+ * Extracted from `registerIpcHandlers` so the seam test can drive the REAL
+ * sender. The channel NAME is the only thing the two processes have to agree
+ * on and the only thing neither `tsc` nor biome can check across them, so it
+ * is the one piece of this glue worth a seam rather than a copy of the wiring.
+ */
+export function createSubagentWatchBridge(getWindow: () => BrowserWindow | undefined): {
+  /**
+   * A watched child conversation's stream came back after a drop. Fired both
+   * by the transport's own reconnect and by `ChatService` when the whole
+   * transport is replaced; the renderer answers both the same way, with a
+   * REST re-read of that child.
+   */
+  sendSubagentResubscribed: (conversationId: string) => void;
+  /**
+   * The socket behind a watched child is not open. Fired by the transport for
+   * every way that happens, and by `ChatService` for the two it cannot see —
+   * a hold taken with no transport at all, and the transport going away.
+   */
+  sendSubagentWatchLost: (conversationId: string) => void;
+} {
+  const send = (channel: string, conversationId: string): void => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.send(channel, conversationId);
+  };
+  return {
+    sendSubagentResubscribed: (conversationId) => send(CHAT_SUBAGENT_RESUBSCRIBED, conversationId),
+    sendSubagentWatchLost: (conversationId) => send(CHAT_SUBAGENT_WATCH_LOST, conversationId),
+  };
 }
 
 export async function registerIpcHandlers(
@@ -962,11 +1079,11 @@ export async function registerIpcHandlers(
     const profile = await getGatewayConnectionProfile();
     if (profile.mode === 'local') return null;
     if (!profile.managementBaseUrl) {
-      throw new Error('Remote gateway profile is missing its management URL');
+      throw new Error('Remote HQ profile is missing its management URL');
     }
     const secrets = await keychain.getRemoteGatewaySecrets();
     if (!secrets) {
-      throw new Error('Remote gateway credentials are missing; reconnect the gateway');
+      throw new Error('Remote HQ credentials are missing; reconnect the HQ');
     }
     const managementBaseUrl = trimTrailingSlash(profile.managementBaseUrl);
     return {
@@ -1014,7 +1131,7 @@ export async function registerIpcHandlers(
 
   const getRequiredGatewayManagementClient = async (): Promise<GatewayManagementClient> => {
     const client = await getGatewayManagementClient();
-    if (!client) throw new Error('Gateway not running');
+    if (!client) throw new Error('HQ not running');
     return client;
   };
 
@@ -1060,11 +1177,11 @@ export async function registerIpcHandlers(
     }
     const gatewayState = await new GatewayStateStore(DATA_DIR).read();
     if (!gatewayState) {
-      throw new Error(`Gateway not running — ${feature} unavailable`);
+      throw new Error(`HQ not running — ${feature} unavailable`);
     }
     const token = await gw.getGatewayToken();
     if (!token) {
-      throw new Error(`Gateway not running — ${feature} unavailable`);
+      throw new Error(`HQ not running — ${feature} unavailable`);
     }
     return new ManagementClient(`http://127.0.0.1:${gatewayState.port}`, token);
   };
@@ -1089,6 +1206,8 @@ export async function registerIpcHandlers(
       ? pendingConversationRuntime.repository
       : null;
 
+  const { sendSubagentResubscribed, sendSubagentWatchLost } = createSubagentWatchBridge(getWindow);
+
   const chatUrl = (endpoint: ActiveGatewayEndpoint): string =>
     `${trimTrailingSlash(endpoint.chatBaseUrl)}/ws/chat?token=${encodeURIComponent(endpoint.chatToken)}`;
 
@@ -1107,7 +1226,7 @@ export async function registerIpcHandlers(
       context,
       existing: pendingConversationRuntime,
       createRepository: () => {
-        if (!gatewayId) throw new Error('Verified gateway identity is missing');
+        if (!gatewayId) throw new Error('Verified HQ identity is missing');
         return new GatewayConversationRepository(
           gatewayId,
           client,
@@ -1139,6 +1258,8 @@ export async function registerIpcHandlers(
             if (win && !win.isDestroyed())
               win.webContents.send('chat:error', conversationId, message);
           },
+          onSubscriptionRestored: sendSubagentResubscribed,
+          onSubscriptionLost: sendSubagentWatchLost,
         }),
     });
     if (chatService) activatePendingConversationRuntime(chatService, pendingConversationRuntime);
@@ -1165,9 +1286,9 @@ export async function registerIpcHandlers(
         context,
         existing: pendingConversationRuntime,
         createRepository: () => {
-          if (!context.gatewayId) throw new Error('Gateway identity unavailable');
+          if (!context.gatewayId) throw new Error('HQ identity unavailable');
           const offline = async (): Promise<never> => {
-            throw new TypeError('Gateway connection unavailable');
+            throw new TypeError('HQ connection unavailable');
           };
           const client = {
             listConversations: offline,
@@ -1186,7 +1307,7 @@ export async function registerIpcHandlers(
           );
         },
         createTransport: () => {
-          throw new Error('Gateway connection unavailable');
+          throw new Error('HQ connection unavailable');
         },
       });
       if (chatService) activatePendingConversationRuntime(chatService, pendingConversationRuntime);
@@ -1265,7 +1386,7 @@ export async function registerIpcHandlers(
     secrets: RemoteGatewaySecrets,
   ) => {
     if (!profile.managementBaseUrl) {
-      throw new Error('Remote gateway profile is missing its management URL');
+      throw new Error('Remote HQ profile is missing its management URL');
     }
     const client = new GatewayManagementClient(
       trimTrailingSlash(profile.managementBaseUrl),
@@ -1558,7 +1679,7 @@ export async function registerIpcHandlers(
     assertLocalPairingSource(await getGatewayConnectionProfile());
     const chatToken = await gw.getChatToken();
     if (!chatToken) {
-      throw new Error('Gateway not running — start it before pairing a device');
+      throw new Error('HQ not running — start it before pairing a device');
     }
     // Relay mode is available once the gateway is enrolled with the control
     // plane (an issued-gateway record with a gatewayId + relay host). Absent →
@@ -1643,7 +1764,7 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('gateway:enroll', async (_e, subdomain: string): Promise<void> => {
     if (!(await controlPlaneSession.getToken())) {
-      throw new Error('Sign in to Dash before enrolling a gateway');
+      throw new Error('Sign in to Dash before enrolling an HQ');
     }
     await enrollGateway({
       subdomain,
@@ -1669,7 +1790,7 @@ export async function registerIpcHandlers(
   ipcMain.handle('devices:revoke', async (_e, deviceId: string) => {
     const issued = await gw.getIssuedGateway();
     if (!issued) {
-      throw new Error('No gateway enrolled — nothing to revoke');
+      throw new Error('No HQ enrolled — nothing to revoke');
     }
     await controlPlaneClient.revokePairing(issued.gatewayId, deviceId);
   });
@@ -2041,33 +2162,55 @@ export async function registerIpcHandlers(
   );
 
   // -----------------------------------------------------------------------
-  // Swarm panel (gateway passthrough)
+  // Sub-agents (gateway passthrough, design §7.7)
   // -----------------------------------------------------------------------
 
-  const getSwarmClient = (): Promise<ManagementClient> => getDirectManagementClient('Swarm API');
+  const getSwarmClient = (): Promise<ManagementClient> =>
+    getDirectManagementClient('Sub-agent API');
+  //
+  // stop/resume return {ok, …}: the gateway's actionable refusals are 409s and
+  // the client turns those into `{ok:false, reason}` rather than throwing, so
+  // the renderer can put the gateway's own sentence in front of a human. A
+  // rejection would arrive there as an Error the IPC bridge has rewritten.
 
-  ipcMain.handle('swarm:listRuns', async (_e, agentId: string) =>
-    (await getSwarmClient()).listSwarmRuns(agentId),
+  ipcMain.handle('subagents:list', async (_e, conversationId: string) =>
+    (await getSwarmClient()).listSubagents(conversationId),
   );
 
-  ipcMain.handle('swarm:getRun', async (_e, agentId: string, runId: string) =>
-    (await getSwarmClient()).getSwarmRun(agentId, runId),
-  );
-
-  // cancel/send return {ok, reason?}: a 409 (run finalized / worker terminal) is
-  // surfaced by the client as {ok:false, reason} rather than thrown, so the
-  // renderer can show the reason. Other errors propagate as usual.
-  ipcMain.handle(
-    'swarm:cancelWorker',
-    async (_e, agentId: string, runId: string, workerId: string) =>
-      (await getSwarmClient()).cancelSwarmWorker(agentId, runId, workerId),
+  ipcMain.handle('subagents:stop', async (_e, subagentId: string) =>
+    (await getSwarmClient()).stopSubagent(subagentId),
   );
 
   ipcMain.handle(
-    'swarm:send',
-    async (_e, agentId: string, runId: string, workerId: string, message: string) =>
-      (await getSwarmClient()).sendSwarmWorker(agentId, runId, workerId, message),
+    'subagents:resume',
+    async (_e, subagentId: string, message: string, requestId?: string) =>
+      (await getSwarmClient()).resumeSubagent(subagentId, message, requestId),
   );
+
+  // The child transcript a sub-agent card expands into. Deliberately NOT
+  // `chat:getMessages`: that path resolves the conversation through the
+  // renderer-facing repository and subscribes the resumable transport to a
+  // running turn, neither of which a read-only peek at a child wants.
+  ipcMain.handle('conversations:messages', async (_e, conversationId: string, before?: string) =>
+    (await getSwarmClient()).conversationMessages(conversationId, before),
+  );
+
+  // `ipcMain.on`, not `handle`: the preload sends these fire-and-forget (see
+  // the note on `chat:cancel`). ONE channel for both halves, so a release can
+  // never overtake the hold it belongs to.
+  // Attached beside the handler that creates the holds. Only the LOST half
+  // lives here: a hold taken with no transport, and a transport going away,
+  // are the two ways a watch dies that the transport cannot see. The restore
+  // half is entirely the transport's — a swap re-watches with
+  // `{ reopened: true }` and the signal fires when that socket opens.
+  getChatService(getWindow).setSubscriptionLostListener(sendSubagentWatchLost);
+
+  ipcMain.on('subagents:watch', (event, request: SubagentWatchRequest) => {
+    // `event.sender.id` is the holder. A hold belongs to the renderer that
+    // took it, and only that renderer's own release — or its navigation away
+    // — can give it back.
+    applySubagentWatch(getChatService(getWindow), request, event.sender.id);
+  });
 
   // -----------------------------------------------------------------------
   // Settings
@@ -2189,7 +2332,7 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('gateway:restart', async () => {
     if ((await getGatewayConnectionProfile()).mode !== 'local') {
-      throw new Error('Restart from Mission Control is only available for the local gateway');
+      throw new Error('Restart from Desktop is only available for the local HQ');
     }
     await gw.restart();
     await refreshGatewayConnection();
@@ -2508,7 +2651,10 @@ export async function registerIpcHandlers(
     shuttingDown = true;
     conversationLifecycle.invalidate();
     gatewaySubscriptions.stop();
-    pendingConversationRuntime = disposePendingConversationRuntime(pendingConversationRuntime);
+    pendingConversationRuntime = disposePendingConversationRuntime(
+      pendingConversationRuntime,
+      chatService,
+    );
     gatewayPoller?.stop();
     await chatService?.drainBackgroundTasks();
     await shutdownGatewayOnQuit(DATA_DIR);

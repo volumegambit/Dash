@@ -9,6 +9,7 @@ import type {
   ImageBlock,
   RunOptions,
 } from './types.js';
+import { composeVoicePrompt } from './voice/prompt.js';
 
 /**
  * Resolver that returns the live agent config. Called at the top of
@@ -34,7 +35,11 @@ export class DashAgent {
     channelId: string,
     conversationId: string,
     userMessage: string,
-    options: RunOptions & { images?: ImageBlock[]; location?: ClientLocation } = {},
+    options: RunOptions & {
+      images?: ImageBlock[];
+      location?: ClientLocation;
+      modality?: 'text' | 'voice';
+    } = {},
   ): AsyncGenerator<AgentEvent> {
     // Fresh read on every chat: picks up model / fallbackModels /
     // systemPrompt / tools changes made via the gateway management
@@ -61,6 +66,15 @@ export class DashAgent {
       systemPrompt = `${systemPrompt}\n\n${composeLocationPrompt(options.location, {
         tool: config.location?.tool === true,
       })}`;
+    }
+
+    // Voice goes after environment, before memory: it is per-turn (set only
+    // when THIS turn is spoken, per VoiceSession — see the module doc on
+    // `composeVoicePrompt`), so it sits with the other per-turn dynamic
+    // context rather than with the more stable base systemPrompt. Dictated
+    // turns never set `modality`, so this never fires for them (Task B6).
+    if (options.modality === 'voice') {
+      systemPrompt = `${systemPrompt}\n\n${composeVoicePrompt()}`;
     }
 
     // Memory goes last (after environment) — it is dynamic context from past conversations and is

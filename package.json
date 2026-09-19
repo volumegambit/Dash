@@ -1,6 +1,6 @@
 {
   "name": "dash",
-  "version": "0.2.0",
+  "version": "0.3.2",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -17,11 +17,12 @@
     "packages/plugins",
     "packages/projects",
     "packages/skills",
+    "packages/speech",
     "packages/swarm",
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w contracts/mobile/v1 -w packages/paths -w packages/plugin-sdk -w packages/skills -w packages/projects -w packages/mcp -w packages/plugins -w packages/agent -w packages/swarm -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w apps/relay -w apps/relay-control-plane -w apps/gateway",
+    "build": "npm run build -w contracts/mobile/v1 -w packages/paths -w packages/plugin-sdk -w packages/skills -w packages/projects -w packages/mcp -w packages/plugins -w packages/agent -w packages/speech -w packages/swarm -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w apps/relay -w apps/relay-control-plane -w apps/gateway",
     "gateway": "node --import tsx apps/gateway/src/index.ts",
     "relay": "node --env-file-if-exists=.env --import tsx apps/relay/src/main.ts",
     "relay:e2e": "node scripts/relay-e2e.mjs",
@@ -30,7 +31,9 @@
     "mc:dev:debug": "npm run dev:debug --workspace=apps/mission-control",
     "mc:build": "npm run build --workspace=apps/mission-control",
     "mc:preview": "npm run build --workspace=apps/mission-control && npm run preview --workspace=apps/mission-control",
-    "mc:package": "npm run build --workspace=apps/mission-control && npm run package --workspace=apps/mission-control",
+    "mc:stage": "node scripts/stage-desktop-runtime.mjs",
+    "mc:smoke-runtime": "node scripts/smoke-desktop-runtime.mjs apps/mission-control/release/staging/runtime",
+    "mc:package": "npm run build && npm run mc:build && npm run mc:stage && npm run mc:smoke-runtime && npm run package --workspace=apps/mission-control",
     "website:dev": "npm run dev --workspace=apps/website",
     "website:build": "npm run build --workspace=apps/website",
     "waitlist:dev": "npm run dev --workspace=apps/waitlist",
@@ -39,7 +42,7 @@
     "web:build": "npm run build --workspace=apps/web",
     "models:audit": "tsx scripts/audit-models.ts",
     "models:audit:apply": "tsx scripts/audit-models.ts --apply",
-    "models:check": "tsx scripts/check-models-freshness.ts",
+    "models:check": "tsx scripts/check-models-freshness.ts && tsx scripts/audit-models.ts --provider openrouter --check",
     "mobile:contract-check": "npm test --workspace=@dash/mobile-contract",
     "mobile:e2e": "node --import tsx scripts/mobile-v1-e2e.mjs",
     "mobile:test-harness": "node --import tsx apps/gateway/src/mobile-test-harness-cli.ts",
@@ -49,7 +52,9 @@
     "memory:e2e": "node scripts/memory-e2e/run.mjs",
     "location:e2e": "node --import tsx scripts/location-e2e/run.mjs",
     "skills:e2e": "node scripts/skill-learning-e2e/run.mjs",
-    "lint": "biome check . && npm run typecheck --workspace=apps/mission-control && npm run typecheck --workspace=apps/web && npm run typecheck --workspace=packages/plugin-sdk && npm run typecheck --workspace=packages/plugins",
+    "subagents:e2e": "node scripts/subagents-e2e/run.mjs",
+    "speech:e2e": "node scripts/speech-e2e/run.mjs",
+    "lint": "biome check . && npm run typecheck --workspace=apps/mission-control && npm run typecheck --workspace=apps/web && npm run typecheck --workspace=packages/plugin-sdk && npm run typecheck --workspace=packages/plugins && npm run typecheck --workspace=packages/agent && npm run typecheck --workspace=packages/swarm && npm run typecheck --workspace=packages/management && npm run typecheck --workspace=apps/gateway",
     "lint:fix": "biome check --write .",
     "clean": "rm -rf contracts/*/*/dist packages/*/dist apps/*/dist apps/*/out",
     "version:sync": "V=$(node -p \"require('./package.json').version\") && for f in contracts/mobile/v1/package.json packages/*/package.json apps/*/package.json packages/skills/plugins/*/.claude-plugin/plugin.json; do node -e \"const fs=require('fs');const p=JSON.parse(fs.readFileSync('$f'));p.version='$V';fs.writeFileSync('$f',JSON.stringify(p,null,2)+'\\n')\"; done && tsx scripts/sync-ios-version.ts"

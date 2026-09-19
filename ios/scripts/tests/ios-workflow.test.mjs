@@ -20,6 +20,8 @@ const accessibilityUITestSource = await readFile(
   'ios/DashUITests/AccessibilityUITests.swift',
   'utf8',
 );
+const deployTailnetSource = await readFile('ios/scripts/deploy-tailnet.sh', 'utf8');
+const tailnetServerSource = await readFile('ios/scripts/tailnet-httpd.mjs', 'utf8');
 const composerSource = await readFile('ios/Dash/Features/Conversations/ComposerView.swift', 'utf8');
 const chatFeatureSource = await readFile(
   'ios/Dash/Features/Conversations/ChatFeature.swift',
@@ -72,6 +74,27 @@ for (const [name, source] of [
 }
 
 assert.ok(Array.isArray(steps), 'expected jobs.ios.steps in the parsed workflow');
+
+assert.match(
+  deployTailnetSource,
+  /<key>bundle-version<\/key><string>\$\{BUILD_NUM\}<\/string>/,
+  'OTA manifest bundle-version must match CFBundleVersion, not MARKETING_VERSION.CURRENT_PROJECT_VERSION',
+);
+assert.match(
+  deployTailnetSource,
+  /<key>kind<\/key><string>display-image<\/string>/,
+  'OTA manifest should include the small install display image asset',
+);
+assert.match(
+  deployTailnetSource,
+  /<key>kind<\/key><string>full-size-image<\/string>/,
+  'OTA manifest should include the full-size install image asset',
+);
+assert.match(
+  tailnetServerSource,
+  /\['\.png', 'image\/png'\]/,
+  'OTA install icon assets must be served with image/png content type',
+);
 
 for (const target of ['DashTests', 'DashContractTests', 'DashIntegrationTests', 'DashUITests']) {
   assert.equal(
@@ -410,15 +433,15 @@ assert.match(
   'the generated app target must copy PrivacyInfo.xcprivacy into the bundle',
 );
 for (const [source, hint] of [
-  [agentDetailSource, 'Connect to the gateway to start a conversation'],
-  [agentDetailSource, 'Connect to the gateway to edit'],
-  [agentDetailSource, 'Connect to the gateway to manage this agent'],
+  [agentDetailSource, 'Connect to the HQ to start a conversation'],
+  [agentDetailSource, 'Connect to the HQ to edit'],
+  [agentDetailSource, 'Connect to the HQ to manage this agent'],
 ]) {
   assert.match(source, new RegExp(`accessibilityHint\\([\\s\\S]*${hint}`));
 }
 for (const [policyProperty, hint] of [
-  ['renameDisabledHint', 'Connect to the gateway to rename'],
-  ['deleteDisabledHint', 'Connect to the gateway to delete'],
+  ['renameDisabledHint', 'Connect to the HQ to rename'],
+  ['deleteDisabledHint', 'Connect to the HQ to delete'],
 ]) {
   assert.match(
     conversationListSource,
@@ -438,7 +461,7 @@ assert.match(
 );
 assert.match(
   chatFeatureSource,
-  /if connection != \.online \{ return "Connect to the gateway to send" \}/,
+  /if connection != \.online \{ return "Connect to the HQ to send" \}/,
   'the dynamic composer hint must retain actionable offline guidance',
 );
 assert.match(

@@ -11,5 +11,9 @@
   "lastSeq": 5,
   "lastMessagePreview": "Ready from the gateway.",
   "createdAt": "2026-07-12T00:00:00.000Z",
-  "updatedAt": "2026-07-12T00:00:05.000Z"
+  "updatedAt": "2026-07-12T00:00:05.000Z",
+  "pendingCount": 0,
+  "pendingScheduling": "running",
+  "queueRevision": 0,
+  "kind": "user"
 }

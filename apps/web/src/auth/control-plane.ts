@@ -101,7 +101,7 @@ function joinUrl(baseUrl: string, path: string): string {
 
 /**
  * Control-plane error bodies shape errors as `{ error: string }` (see
- * `apps/relay-control-plane/src/api.ts`, e.g. `{ error: 'gateway not found' }`)
+ * `apps/relay-control-plane/src/api.ts`, e.g. `{ error: 'HQ not found' }`)
  * — unlike the mobile v1 surface's `{ code: string }`.
  */
 async function readErrorCode(response: Response): Promise<string | undefined> {

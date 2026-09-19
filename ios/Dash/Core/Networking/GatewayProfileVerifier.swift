@@ -25,10 +25,17 @@ struct GatewayProfileVerifier: Sendable {
     self.makeGateway = makeGateway
   }
 
+  /// Verifies the profile and RETURNS what the gateway said it can do.
+  ///
+  /// The capability set used to be checked here and discarded, which made
+  /// every optional capability invisible to the rest of the app. `speech-v1`
+  /// is the first one that comes and goes with the gateway's credentials, so
+  /// the answer has to travel back to `AppModel` rather than being re-derived
+  /// from a second `/health` call somewhere else.
   func verify(
     profile: ConnectionProfileSnapshot,
     secrets: ConnectionSecrets
-  ) async throws {
+  ) async throws -> Set<MobileCapability> {
     let endpoint = ConnectionEndpoint(profile: profile.profile, secrets: secrets)
     try endpoint.requireTrustedTransport()
     guard
@@ -64,6 +71,7 @@ struct GatewayProfileVerifier: Sendable {
         throw GatewayProfileVerificationError.identityMismatch
       }
       await gateway.shutdown()
+      return capabilities
     } catch {
       await gateway.shutdown()
       throw error

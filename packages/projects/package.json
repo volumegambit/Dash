@@ -1,6 +1,6 @@
 {
   "name": "@dash/projects",
-  "version": "0.2.0",
+  "version": "0.3.2",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -22,8 +22,12 @@
     "@types/better-sqlite3": "^7.6.13"
   },
   "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": [
+      "esm"
+    ],
     "dts": true,
     "clean": true,
     "sourcemap": true,

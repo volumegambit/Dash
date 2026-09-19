@@ -113,6 +113,225 @@ struct GatewayAPITests {
     #expect(requests[1].httpBody == nil)
   }
 
+  @Test("speech methods pin their paths, the kind query, and the audio Accept header")
+  func speechRequestShapes() async throws {
+    try URLProtocolStub.enqueue(status: 200, fixture: "speech-config.json")
+    try URLProtocolStub.enqueue(status: 200, fixture: "speech-config.json")
+    try URLProtocolStub.enqueue(status: 200, fixture: "speech-models.json")
+    try URLProtocolStub.enqueue(status: 200, fixture: "speech-transcription.json")
+    let mpeg = Data([0xFF, 0xFB, 0x90, 0x00])
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: mpeg,
+      headers: ["Content-Type": "audio/mpeg"]
+    )
+    let api = makeAPI()
+
+    let config = try await api.speechConfig()
+    _ = try await api.patchSpeechConfig(SpeechConfigPatchDTO(tts: SpeechTtsPatchDTO(voice: "nova")))
+    let models = try await api.speechModels(kind: .transcription)
+    let transcript = try await api.transcribe(
+      TranscriptionRequestDTO(audio: "AAAA", format: .wav, language: "en")
+    )
+    let audio = try await api.synthesize(text: "Ship the speech routes.")
+
+    #expect(config.config.tts.voice == "English_expressive_narrator")
+    #expect(models.map(\.id) == ["openai/whisper-large-v3", "minimax/speech-2.8-turbo"])
+    #expect(transcript.text == "Ship the speech routes.")
+    // Raw bytes, byte for byte — `send` would have tried to JSON-decode these.
+    #expect(audio == mpeg)
+
+    let requests = URLProtocolStub.requests
+    #expect(requests.map(\.httpMethod) == ["GET", "PATCH", "GET", "POST", "POST"])
+    #expect(try encodedPath(requests[0]) == "/mobile/v1/speech/config")
+    #expect(try encodedPath(requests[1]) == "/mobile/v1/speech/config")
+    #expect(try encodedPath(requests[2]) == "/mobile/v1/speech/models")
+    #expect(try encodedPath(requests[3]) == "/mobile/v1/speech/transcriptions")
+    #expect(try encodedPath(requests[4]) == "/mobile/v1/speech/speech")
+    // `kind` is required by the route and carries no default.
+    #expect(try queryNames(requests[2]) == ["kind"])
+    #expect(try queryValues(requests[2]) == ["transcription"])
+    #expect(requests[0].url?.query == nil)
+
+    // Every speech call is authenticated; only `/health` is not.
+    for request in requests {
+      #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer management-test-token")
+    }
+    for index in 0..<4 {
+      #expect(requests[index].value(forHTTPHeaderField: "Accept") == "application/json")
+    }
+    // The one operation whose success body is not JSON. Both media types are
+    // requested: `audio/mpeg` normally, `audio/wav` for a PCM-only model.
+    #expect(requests[4].value(forHTTPHeaderField: "Accept") == "audio/mpeg, audio/wav")
+    #expect(requests[4].value(forHTTPHeaderField: "Content-Type") == "application/json")
+    #expect(try stringBody(requests[4]) == ["text": "Ship the speech routes."])
+    #expect(try stringBody(requests[3]) == ["audio": "AAAA", "format": "wav", "language": "en"])
+    #expect(requests[2].httpBody == nil)
+  }
+
+  /// A failing synthesis answers JSON on the SAME request that asked for
+  /// `audio/mpeg`, so `sendData` must still map a non-2xx to an error instead
+  /// of handing the error body back as if it were audio.
+  @Test("a failed synthesis maps to a gateway error, not to error-page bytes")
+  func synthesisErrorsAreMapped() async throws {
+    URLProtocolStub.enqueue(
+      status: 413,
+      data: Data(#"{"code":"too_long","error":"text is too long","retryable":false}"#.utf8)
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.synthesize(text: "over the limit") }
+
+    guard case let .speech(code, message, _)? = error else {
+      Issue.record("expected .speech, got \(String(describing: error))")
+      return
+    }
+    #expect(code == "too_long")
+    #expect(message == "text is too long")
+  }
+
+  // MARK: - Speech error scope
+  //
+  // `mapHTTPError` reads the STATUS before the body, which is safe on every
+  // other route because the gateway owns both. `/speech/*` does not: the
+  // statuses come from `httpStatusFor` in `@dash/speech` and describe the
+  // PROVIDER's failure, so a provider's rejected key arrives as 401 and a
+  // provider outage as 502 — the two statuses `mapHTTPError` reads as "re-pair
+  // this device" and "your gateway is offline".
+
+  @Test("a provider's rejected key is a speech error, never a re-pair prompt")
+  func speechUnauthorizedDoesNotAskForRepair() async throws {
+    URLProtocolStub.enqueue(
+      status: 401,
+      data: Data(
+        #"{"code":"unauthorized","error":"openrouter rejected the API key","retryable":false}"#
+          .utf8
+      )
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.speechConfig() }
+
+    // `.unauthorized` would have become `repairRequired` in
+    // `AppModel.handleFeatureGatewayError` — telling the user to re-pair a
+    // phone whose pairing is fine, because a credential ON THE GATEWAY expired.
+    #expect(error != .unauthorized)
+    guard case let .speech(code, message, retryable)? = error else {
+      Issue.record("expected .speech, got \(String(describing: error))")
+      return
+    }
+    #expect(code == "unauthorized")
+    #expect(message == "openrouter rejected the API key")
+    #expect(retryable == false)
+  }
+
+  /// The case the LAN-profile test could not reach: `mapHTTPError` turns a 502
+  /// into `.gatewayOffline` ONLY on a relay profile.
+  @Test("a provider outage on relay is a speech error, not a gateway-offline banner")
+  func speechProviderFailureOnRelayIsNotGatewayOffline() async throws {
+    URLProtocolStub.enqueue(
+      status: 502,
+      data: Data(#"{"code":"provider","error":"openrouter returned 500","retryable":false}"#.utf8)
+    )
+    let api = makeAPI(relay: true)
+
+    let error = await gatewayError {
+      try await api.transcribe(TranscriptionRequestDTO(audio: "AAAA", format: .wav))
+    }
+
+    #expect(error != .gatewayOffline)
+    guard case let .speech(code, _, _)? = error else {
+      Issue.record("expected .speech, got \(String(describing: error))")
+      return
+    }
+    #expect(code == "provider")
+  }
+
+  @Test("an over-long synthesis surfaces its speech code and retryability")
+  func speechTooLongCarriesItsCode() async throws {
+    URLProtocolStub.enqueue(
+      status: 413,
+      data: Data(
+        #"{"code":"too_long","error":"text must be at most 4000 characters","retryable":false}"#
+          .utf8
+      )
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.synthesize(text: "over the limit") }
+
+    guard case let .speech(code, _, retryable)? = error else {
+      Issue.record("expected .speech, got \(String(describing: error))")
+      return
+    }
+    #expect(code == "too_long")
+    #expect(retryable == false)
+  }
+
+  @Test("a retryable speech failure keeps its retryable flag")
+  func speechNetworkFailureIsRetryable() async throws {
+    URLProtocolStub.enqueue(
+      status: 502,
+      data: Data(#"{"code":"network","error":"connection reset","retryable":true}"#.utf8)
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.speechModels(kind: .speech) }
+
+    guard case let .speech(_, _, retryable)? = error else {
+      Issue.record("expected .speech, got \(String(describing: error))")
+      return
+    }
+    #expect(retryable)
+  }
+
+  /// The other half of the scope: a `.gateway` request is byte-for-byte
+  /// unaffected, including one carrying the very same body.
+  @Test("a gateway-scoped 401 still maps to unauthorized")
+  func gatewayScopedUnauthorizedIsUnchanged() async throws {
+    URLProtocolStub.enqueue(
+      status: 401,
+      data: Data(#"{"code":"unauthorized","error":"bad token","retryable":false}"#.utf8)
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.listAgents() }
+
+    #expect(error == .unauthorized)
+  }
+
+  @Test("a speech failure with an undecodable body falls back to the old mapping")
+  func undecodableSpeechBodyFallsThrough() async throws {
+    // Not JSON at all — e.g. a proxy's HTML error page. There is no code to
+    // trust, so the status-first mapping is still the best available answer.
+    URLProtocolStub.enqueue(status: 503, data: Data("<html>gateway down</html>".utf8))
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.speechConfig() }
+
+    guard case let .server(body, status)? = error else {
+      Issue.record("expected .server, got \(String(describing: error))")
+      return
+    }
+    #expect(status == 503)
+    #expect(body.code == "http_503")
+  }
+
+  /// A code outside the speech vocabulary on a speech route is still the
+  /// gateway speaking, not the provider.
+  @Test("a non-speech code on a speech route keeps its gateway meaning")
+  func nonSpeechCodeOnSpeechRouteFallsThrough() async throws {
+    URLProtocolStub.enqueue(
+      status: 400,
+      data: Data(#"{"code":"validation_failed","error":"kind is required","retryable":false}"#.utf8)
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.speechModels(kind: .transcription) }
+
+    #expect(error == .validation("kind is required"))
+  }
+
   @Test("relay auth is present on HTTP")
   func relayHeaders() async throws {
     try URLProtocolStub.enqueue(status: 200, fixture: "agents-list.json")
@@ -127,6 +346,55 @@ struct GatewayAPITests {
     )
   }
 
+  /// D8 ruling 4, at the REST path — the OTHER place a `DecodingError` became
+  /// `GatewayError.updateRequired` (`HTTPTransport.send`). One malformed
+  /// persisted event in a message page used to fail the WHOLE page, so the
+  /// conversation could not be opened by recovery either. The page decodes now
+  /// and the bad event is one `.unknown` inside it; every other message and
+  /// every other event in the same message is untouched.
+  ///
+  /// `HTTPTransport` itself is unchanged: the fallback lives in
+  /// `AgentEvent.init(from:)`, so both paths inherit it from one place.
+  @Test("one malformed persisted event does not fail the whole message page")
+  func malformedEventDoesNotFailThePage() async throws {
+    let page = """
+      {"items":[
+      {"id":"m1","conversationId":"c1","turnId":"t1","ordinal":1,"role":"assistant",
+       "status":"completed","content":{"type":"assistant","events":[
+         {"type":"text_delta","text":"before"},
+         {"type":"subagent_finished","subagentId":"sub-1","subagentType":"Explore",
+          "description":"d","status":"done","report":"r","toolCallCount":1,
+          "startedAt":"2026-09-04T00:00:00.000Z"},
+         {"type":"text_delta","text":"after"}]},
+       "createdAt":"2026-07-12T00:00:02.000Z","updatedAt":"2026-07-12T00:00:05.000Z",
+       "origin":"user"}],
+      "nextCursor":null,"throughSeq":5}
+      """
+    URLProtocolStub.enqueue(status: 200, data: Data(page.utf8))
+    let api = makeAPI()
+
+    let result = try await api.messages(conversationID: "c1", limit: 40, before: nil)
+
+    #expect(result.items.count == 1)
+    guard case let .assistant(events) = result.items[0].content else {
+      Issue.record("expected an assistant message")
+      return
+    }
+    #expect(events.count == 3)
+    guard case let .unknown(type, _) = events[1] else {
+      Issue.record("the malformed event was not degraded to .unknown")
+      return
+    }
+    #expect(type == "subagent_finished")
+    // Its neighbours in the SAME message are untouched.
+    guard case let .textDelta(before) = events[0], case let .textDelta(after) = events[2] else {
+      Issue.record("neighbouring events were lost")
+      return
+    }
+    #expect(before == "before")
+    #expect(after == "after")
+  }
+
   @Test("models and every conversation read and mutation use exact routes")
   func conversationRequestShapes() async throws {
     try URLProtocolStub.enqueue(status: 200, fixture: "models-list.json")
@@ -136,6 +404,7 @@ struct GatewayAPITests {
     try URLProtocolStub.enqueue(status: 200, fixture: "conversation-summary.json")
     try URLProtocolStub.enqueue(status: 200, fixture: "conversation-summary.json")
     try URLProtocolStub.enqueue(status: 200, fixture: "conversation-messages-page.json")
+    try URLProtocolStub.enqueue(status: 200, fixture: "conversation-pending-page.json")
     try URLProtocolStub.enqueue(status: 200, fixture: "replay.json")
     let api = makeAPI()
     let conversationID = "conv/a ?"
@@ -159,11 +428,13 @@ struct GatewayAPITests {
     )
     _ = try await api.deleteConversation(id: conversationID, revision: 8)
     _ = try await api.messages(conversationID: conversationID, limit: 40, before: "before:1")
+    _ = try await api.pending(conversationID: conversationID, limit: 20, cursor: "pending:1")
     _ = try await api.replay(agentID: "agent/a", conversationID: conversationID, sinceSeq: 12)
 
     let requests = URLProtocolStub.requests
     #expect(
-      requests.map(\.httpMethod) == ["GET", "GET", "POST", "GET", "PATCH", "DELETE", "GET", "GET"])
+      requests.map(\.httpMethod)
+        == ["GET", "GET", "POST", "GET", "PATCH", "DELETE", "GET", "GET", "GET"])
     #expect(try encodedPath(requests[0]) == "/mobile/v1/models")
     #expect(try encodedPath(requests[1]) == "/mobile/v1/conversations")
     #expect(try queryNames(requests[1]) == ["agentId", "limit", "cursor"])
@@ -190,10 +461,16 @@ struct GatewayAPITests {
     #expect(try queryValues(requests[6]) == ["40", "before:1"])
     #expect(
       try encodedPath(requests[7])
+        == "/mobile/v1/conversations/conv%2Fa%20%3F/pending"
+    )
+    #expect(try queryNames(requests[7]) == ["limit", "cursor"])
+    #expect(try queryValues(requests[7]) == ["20", "pending:1"])
+    #expect(
+      try encodedPath(requests[8])
         == "/mobile/v1/agents/agent%2Fa/conversations/conv%2Fa%20%3F/events"
     )
-    #expect(try queryNames(requests[7]) == ["sinceSeq"])
-    #expect(try queryValues(requests[7]) == ["12"])
+    #expect(try queryNames(requests[8]) == ["sinceSeq"])
+    #expect(try queryValues(requests[8]) == ["12"])
   }
 
   @Test("conversation patch preserves an explicit null field")
@@ -212,6 +489,116 @@ struct GatewayAPITests {
     let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
     #expect(json.count == 1)
     #expect(json["owningIssueId"] is NSNull)
+  }
+
+  @Test("sub-agent reads and resumes use the mobile namespace and a minimal body")
+  func subagentRequestShapes() async throws {
+    try URLProtocolStub.enqueue(status: 200, fixture: "subagents-list.json")
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: Data(#"{"ok":true,"status":"running","mode":"queued"}"#.utf8)
+    )
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: Data(#"{"ok":true,"status":"running","mode":"resumed"}"#.utf8)
+    )
+    let api = makeAPI()
+
+    let list = try await api.subagents(conversationID: "conv/1 ?")
+    let correlated = try await api.resumeSubagent(
+      id: "sub/1 ?",
+      message: "keep going",
+      requestID: "req-1"
+    )
+    let uncorrelated = try await api.resumeSubagent(
+      id: "sub-2",
+      message: "keep going",
+      requestID: nil
+    )
+
+    #expect(list.subagents.count == 3)
+    #expect(correlated.mode == "queued")
+    #expect(uncorrelated.mode == "resumed")
+
+    let requests = URLProtocolStub.requests
+    #expect(requests.map(\.httpMethod) == ["GET", "POST", "POST"])
+    #expect(try encodedPath(requests[0]) == "/mobile/v1/conversations/conv%2F1%20%3F/subagents")
+    #expect(requests[0].httpBody == nil)
+    #expect(try encodedPath(requests[1]) == "/mobile/v1/subagents/sub%2F1%20%3F/resume")
+
+    let correlatedData = try #require(requests[1].httpBody)
+    let correlatedBody = try #require(
+      JSONSerialization.jsonObject(with: correlatedData) as? [String: Any]
+    )
+    #expect(correlatedBody.count == 2)
+    #expect(correlatedBody["message"] as? String == "keep going")
+    #expect(correlatedBody["requestId"] as? String == "req-1")
+
+    // Omitted, not null: the gateway 400s a blank/malformed `requestId`, and a
+    // client that never sent one must look exactly like an older client.
+    let uncorrelatedData = try #require(requests[2].httpBody)
+    let uncorrelatedBody = try #require(
+      JSONSerialization.jsonObject(with: uncorrelatedData) as? [String: Any]
+    )
+    #expect(uncorrelatedBody.count == 1)
+    #expect(uncorrelatedBody["message"] as? String == "keep going")
+  }
+
+  @Test("stopping a sub-agent posts an empty body and reports the terminal status")
+  func subagentStopRequestShape() async throws {
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: Data(#"{"ok":true,"status":"cancelled"}"#.utf8)
+    )
+    let api = makeAPI()
+
+    let stopped = try await api.stopSubagent(id: "sub/1 ?")
+
+    // The route's own status is authoritative: it falls back to writing
+    // `cancelled` itself when the cascade reached a child this gateway process
+    // no longer holds a handle for, so it is not always guessable.
+    #expect(stopped.status == "cancelled")
+    let request = try #require(URLProtocolStub.requests.last)
+    #expect(request.httpMethod == "POST")
+    #expect(try encodedPath(request) == "/mobile/v1/subagents/sub%2F1%20%3F/stop")
+    #expect(request.httpBody == nil)
+  }
+
+  @Test("stopping a child that already finished surfaces the gateway's own refusal")
+  func subagentStopAlreadyTerminal() async {
+    URLProtocolStub.enqueue(
+      status: 409,
+      data: Data(
+        #"{"code":"validation_failed","error":"Sub-agent sub-1 is already done","retryable":false}"#
+          .utf8
+      )
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { _ = try await api.stopSubagent(id: "sub-1") }
+
+    #expect(error == .validation("Sub-agent sub-1 is already done"))
+  }
+
+  @Test("a coordinator refusal to resume surfaces its own text, not a generic error")
+  func subagentResumeRefusal() async {
+    URLProtocolStub.enqueue(
+      status: 409,
+      data: Data(
+        #"{"code":"validation_failed","error":"One-shot agents cannot be resumed","retryable":false}"#
+          .utf8
+      )
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError {
+      _ = try await api.resumeSubagent(id: "sub-1", message: "again", requestID: "req-1")
+    }
+
+    // The composer shows this string verbatim (design 8.3: "disabled for
+    // one-shot types and shows the reason"), so a mapping that collapsed it to
+    // `.server` would leave the user with a status code.
+    #expect(error == .validation("One-shot agents cannot be resumed"))
   }
 
   @Test("page limits are validated before a request is sent")

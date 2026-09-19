@@ -64,7 +64,7 @@ describe('GatewayConversationRepository', () => {
     await expect(repository.list({ limit: 50 })).resolves.toEqual(page);
     expect(repository.offline).toBe(true);
     await expect(repository.create('agent-1', 'request-1')).rejects.toThrow(
-      'Gateway offline — cached conversations are read-only',
+      'HQ offline — cached conversations are read-only',
     );
     expect(client.createConversation).not.toHaveBeenCalled();
   });

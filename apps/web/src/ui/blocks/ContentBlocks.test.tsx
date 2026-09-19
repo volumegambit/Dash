@@ -398,10 +398,24 @@ describe('ContentBlocks', () => {
   it('renders a fallback unknown-block for an unrecognized event type, without throwing', () => {
     const content: ConversationContent = {
       type: 'assistant',
-      events: [{ type: 'agent_spawned', name: 'worker-1' }],
+      events: [{ type: 'telemetry_ping', channel: 'metrics' }],
     };
     expect(() => render(<ContentBlocks content={content} />)).not.toThrow();
     expect(screen.getByTestId('unknown-block')).toBeTruthy();
+  });
+
+  // Task D2: `agent_spawned` is the coordinator's name-only announcement,
+  // pushed between a child's `worker_spawned` and its `subagent_started`
+  // (`packages/swarm/src/coordinator.ts`). The sub-agent row next to it is
+  // what renders the spawn — the announcement itself must not badge every
+  // spawn with an "Unsupported content" marker.
+  it('treats agent_spawned as chrome rather than unsupported content', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'agent_spawned', name: 'worker-1' }],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.queryByTestId('unknown-block')).toBeNull();
   });
 
   it('renders a fallback unknown-block for a malformed event (missing required field), without throwing', () => {

@@ -72,7 +72,10 @@ describe('gateway connection helpers', () => {
     await expect(verifyConversationGateway(client)).resolves.toEqual({
       identity,
       apiVersion: 1,
-      capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      // Straight from `health-capabilities.json`: this asserts the fixture is
+      // passed through verbatim, so it tracks the fixture rather than pinning
+      // a list of its own.
+      capabilities: health.capabilities,
     });
     expect(client.health.mock.invocationCallOrder[0]).toBeLessThan(
       client.getIdentity.mock.invocationCallOrder[0],
@@ -188,7 +191,7 @@ describe('gateway connection helpers', () => {
 
     expect(result).toEqual({
       ok: false,
-      message: 'Could not reach that gateway. Check the URL and tokens, then try again.',
+      message: 'Could not reach that HQ. Check the URL and tokens, then try again.',
     });
   });
 
@@ -197,7 +200,7 @@ describe('gateway connection helpers', () => {
     deps.checkRemoteGateway.mockRejectedValueOnce(new Error('network down'));
 
     await expect(saveGatewayRelayConnection(validInput, deps)).rejects.toThrow(
-      'Could not reach that gateway. Check the URL and tokens, then try again.',
+      'Could not reach that HQ. Check the URL and tokens, then try again.',
     );
 
     expect(deps.setRemoteGatewaySecrets).not.toHaveBeenCalled();
@@ -246,7 +249,7 @@ describe('gateway connection helpers', () => {
     deps.checkRemoteGateway.mockRejectedValueOnce(new Error('identity unauthorized'));
 
     await expect(saveGatewayRelayConnection(validInput, deps)).rejects.toThrow(
-      'Could not reach that gateway. Check the URL and tokens, then try again.',
+      'Could not reach that HQ. Check the URL and tokens, then try again.',
     );
 
     expect(deps.setRemoteGatewaySecrets).not.toHaveBeenCalled();

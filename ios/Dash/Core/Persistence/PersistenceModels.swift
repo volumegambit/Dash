@@ -63,6 +63,24 @@ final class ConversationRecord {
   var createdAt: Date
   var updatedAt: Date
   var deletedAt: Date?
+  /// Sub-agent children (task C3 review C-1). All four are optional and
+  /// default to `nil`, so SwiftData's lightweight migration adds them to an
+  /// existing store without a plan.
+  ///
+  /// They are not decoration: `LiveChatSynchronizer.refresh` returns the
+  /// PERSISTED summary and only fetches a message page when it equals the one
+  /// the network gave (`persisted.summary == summary`, a `Hashable` compare
+  /// over every field). A child whose `kind` the round trip dropped could
+  /// therefore never satisfy that guard — no transcript, no error, no Retry —
+  /// and arrived on screen as an ordinary conversation with a composer.
+  var kind: String?
+  var parentConversationID: String?
+  var parentTurnID: String?
+  /// `SubagentInfoDTO` as JSON. A blob rather than a dozen more columns: it is
+  /// read back whole, and the DEFAULT date strategy is deliberate — it encodes
+  /// a `Date` as a `Double`, which round-trips exactly, and the equality guard
+  /// above compares `startedAt`/`endedAt`.
+  var subagentJSON: Data?
 
   init(
     scopedID: String,
@@ -80,7 +98,11 @@ final class ConversationRecord {
     lastMessagePreview: String?,
     createdAt: Date,
     updatedAt: Date,
-    deletedAt: Date?
+    deletedAt: Date?,
+    kind: String? = nil,
+    parentConversationID: String? = nil,
+    parentTurnID: String? = nil,
+    subagentJSON: Data? = nil
   ) {
     self.scopedID = scopedID
     self.gatewayID = gatewayID
@@ -98,6 +120,10 @@ final class ConversationRecord {
     self.createdAt = createdAt
     self.updatedAt = updatedAt
     self.deletedAt = deletedAt
+    self.kind = kind
+    self.parentConversationID = parentConversationID
+    self.parentTurnID = parentTurnID
+    self.subagentJSON = subagentJSON
   }
 }
 
@@ -134,6 +160,12 @@ final class MessageRecord {
   var contentData: Data
   var createdAt: Date
   var updatedAt: Date
+  /// Who caused this turn (sub-agents design 7.6), raw so an origin a newer
+  /// gateway invents survives a round-trip through the cache. Optional, and
+  /// therefore a SwiftData lightweight migration: rows written before this
+  /// column existed read back as `nil`, which the projection treats as
+  /// UNKNOWN (renders exactly like a user turn).
+  var originRaw: String?
 
   init(
     scopedID: String,
@@ -146,7 +178,8 @@ final class MessageRecord {
     statusRaw: String,
     contentData: Data,
     createdAt: Date,
-    updatedAt: Date
+    updatedAt: Date,
+    originRaw: String? = nil
   ) {
     self.scopedID = scopedID
     self.gatewayID = gatewayID
@@ -159,6 +192,7 @@ final class MessageRecord {
     self.contentData = contentData
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+    self.originRaw = originRaw
   }
 }
 
@@ -212,6 +246,41 @@ final class DraftRecord {
 }
 
 @Model
+final class WindowDraftRecord {
+  @Attribute(.unique) var scopedWindowID: String
+  var gatewayID: String
+  var conversationID: String
+  var windowID: String
+  var text: String
+  @Attribute(.externalStorage) var attachmentsData: Data?
+  var revision: Int64
+  @Attribute(.externalStorage) var pendingCommandData: Data?
+  var updatedAt: Date
+
+  init(
+    scopedWindowID: String,
+    gatewayID: String,
+    conversationID: String,
+    windowID: String,
+    text: String,
+    attachmentsData: Data? = nil,
+    revision: Int64,
+    pendingCommandData: Data? = nil,
+    updatedAt: Date
+  ) {
+    self.scopedWindowID = scopedWindowID
+    self.gatewayID = gatewayID
+    self.conversationID = conversationID
+    self.windowID = windowID
+    self.text = text
+    self.attachmentsData = attachmentsData
+    self.revision = revision
+    self.pendingCommandData = pendingCommandData
+    self.updatedAt = updatedAt
+  }
+}
+
+@Model
 final class PendingSendRecord {
   @Attribute(.unique) var scopedConversationID: String
   var gatewayID: String
@@ -221,6 +290,8 @@ final class PendingSendRecord {
   var draft: String
   @Attribute(.externalStorage) var attachmentsData: Data
   var createdAt: Date
+  var sourceWindowID: String?
+  var submittedRevision: Int64?
 
   init(
     scopedConversationID: String,
@@ -230,7 +301,9 @@ final class PendingSendRecord {
     localUserID: String,
     draft: String,
     attachmentsData: Data,
-    createdAt: Date
+    createdAt: Date,
+    sourceWindowID: String? = nil,
+    submittedRevision: Int64? = nil
   ) {
     self.scopedConversationID = scopedConversationID
     self.gatewayID = gatewayID
@@ -240,6 +313,8 @@ final class PendingSendRecord {
     self.draft = draft
     self.attachmentsData = attachmentsData
     self.createdAt = createdAt
+    self.sourceWindowID = sourceWindowID
+    self.submittedRevision = submittedRevision
   }
 }
 
@@ -272,6 +347,7 @@ enum PersistenceSchema {
       MessageRecord.self,
       AgentRecord.self,
       DraftRecord.self,
+      WindowDraftRecord.self,
       PendingSendRecord.self,
       ReplayCursorRecord.self,
     ])

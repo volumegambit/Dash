@@ -761,7 +761,7 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       keychain,
     );
 
-    await expect(gp.ensureRunning()).rejects.toThrow(/already in use by another gateway/);
+    await expect(gp.ensureRunning()).rejects.toThrow(/already in use by another HQ/);
     expect(killer.signal).not.toHaveBeenCalled();
     expect(spawner.spawn).not.toHaveBeenCalled();
   });
@@ -791,7 +791,7 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       keychain,
     );
 
-    await expect(gp.ensureRunning()).rejects.toThrow(/already in use by another gateway/);
+    await expect(gp.ensureRunning()).rejects.toThrow(/already in use by another HQ/);
     expect(spawner.spawn).not.toHaveBeenCalled();
     expect(killer.signal).not.toHaveBeenCalled();
   });
@@ -887,7 +887,7 @@ describe('GatewaySupervisor.ensureRunning()', () => {
       keychain,
     );
 
-    await expect(gp.ensureRunning()).rejects.toThrow('Gateway failed to start within 10s');
+    await expect(gp.ensureRunning()).rejects.toThrow('HQ failed to start within 10s');
     // Zombie cleanup: the spawned-but-unhealthy child is SIGKILL'd so
     // the next ensureRunning() can bind the port.
     expect(killer.signal).toHaveBeenCalledWith(76543, 'SIGKILL');

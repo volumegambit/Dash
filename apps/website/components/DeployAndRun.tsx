@@ -15,7 +15,7 @@ const BULLETS = [
   {
     Icon: Timer,
     title: 'Always-on execution',
-    description: 'Agents run autonomously in the background — check in when you want',
+    description: 'Squad members run autonomously in the background — check in when you want',
   },
 ];
 
@@ -34,8 +34,8 @@ export function DeployAndRun() {
           </h2>
 
           <p className="text-[18px] text-text-secondary leading-relaxed">
-            Deploy autonomous AI agents from Mission Control — no terminal needed. Configure,
-            launch, and manage your entire squad from one dashboard.
+            Deploy autonomous AI agents from Desktop — no terminal needed. Configure, launch, and
+            manage your entire squad from one dashboard.
           </p>
 
           {/* Feature bullets */}

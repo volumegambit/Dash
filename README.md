@@ -7,9 +7,9 @@
 
 > **Early Access** — Dash is under active development. Expect rough edges and breaking changes.
 
-Dash is a local-first runtime for deploying AI agents. Everything runs on your machine: the agents, their tools, their conversations. You manage them from **Mission Control**, a desktop app that spawns a background gateway process and gives you a UI to deploy, chat with, and supervise agents. The only outbound traffic is to the LLM provider you pick.
+Dash is a local-first runtime for deploying AI agents. Everything runs on your machine: the agents, their tools, their conversations. You manage them from **Desktop**, a desktop app that spawns a background HQ process and gives you a UI to deploy, chat with, and supervise agents. The only outbound traffic is to the LLM provider you pick.
 
-## Setting Up Mission Control
+## Setting Up Desktop
 
 ### 1. Prerequisites
 
@@ -27,34 +27,34 @@ npm run build
 npm run mc:dev
 ```
 
-`npm run mc:dev` opens Mission Control in development mode (hot-reload on renderer changes). For a production-style launch: `npm run mc:build && npm run mc:preview`.
+`npm run mc:dev` opens Desktop in development mode (hot-reload on renderer changes). For a production-style launch: `npm run mc:build && npm run mc:preview`.
 
 ### 3. First-run wizard
 
-On first launch, Mission Control walks you through three steps. The whole thing takes under a minute.
+On first launch, Desktop walks you through three steps. The whole thing takes under a minute.
 
-1. **Gateway start.** MC spawns the background gateway process (`apps/gateway`) as a detached child. You'll see a brief spinner while it comes up on port 9300 (management) and 9200 (channels). No prompts — the gateway is MC's child and is supervised automatically across restarts. Its management + chat tokens live in the OS keychain (macOS Keychain / Windows Credential Manager / libsecret on Linux), never in a plaintext file on disk.
+1. **HQ start.** Desktop spawns the background HQ process (`apps/gateway`) as a detached child. You'll see a brief spinner while it comes up on port 9300 (management) and 9200 (channels). No prompts — the HQ is Desktop's child and is supervised automatically across restarts. Its management + chat tokens live in the OS keychain (macOS Keychain / Windows Credential Manager / libsecret on Linux), never in a plaintext file on disk.
 2. **Pick a provider.** Choose Anthropic, OpenAI, or Google. You can add more providers later from *Settings → AI Providers*.
-3. **Paste your API key.** MC sends the key directly to the gateway's encrypted credential store (AES-256-GCM, key derived via OS keychain). MC itself never stores it. The key is masked in the input field to block shoulder-surfing.
+3. **Paste your API key.** Desktop sends the key directly to the HQ's encrypted credential store (AES-256-GCM, key derived via OS keychain). Desktop itself never stores it. The key is masked in the input field to block shoulder-surfing.
 
-When the wizard finishes you're in Mission Control proper.
+When the wizard finishes you're in Desktop proper.
 
 ### 4. What to do next
 
 - **Deploy your first agent** — *Agents → Deploy*. Pick a model from the dropdown (populated live from the provider's `/v1/models` endpoint, filtered through a curated allow-list), give it a name + system prompt, and choose which tools it can use.
-- **Chat with it** — *Chat → New Conversation*. Messages stream over a WebSocket directly to the gateway, no round-trip through a cloud service.
+- **Chat with it** — *Chat → New Conversation*. Messages stream over a WebSocket directly to the HQ, no round-trip through a cloud service.
 - **Reach it from Telegram or WhatsApp** — *Settings → Messaging Apps → Connect*. Paste a bot token (Telegram) or scan a QR code (WhatsApp) and your agent starts receiving messages from those platforms.
 - **Give it more tools** — *Settings → Connectors (MCP) → Add Connector*. Install any Model Context Protocol (MCP) server (Linear, GitHub, a local filesystem, anything from the [MCP ecosystem](https://modelcontextprotocol.io)) and its tools become available to your agents.
 
-All configuration lives inside Mission Control. There are no config files to hand-edit for day-to-day use. Everything Dash stores on disk lives under `~/.dash` (override with `DASH_HOME`) — `gateway/`, `desktop/`, `logs/`, and `workspaces/`.
+All configuration lives inside Desktop. There are no config files to hand-edit for day-to-day use. Everything Dash stores on disk lives under `~/.dash` (override with `DASH_HOME`) — `gateway/`, `desktop/`, `logs/`, and `workspaces/`.
 
 ## What You Get
 
 - **Local-first** — Agents run on your machine. The only outbound network calls are to the LLM provider you chose.
-- **Encrypted secrets at rest** — Provider API keys sit in `credentials.enc` (AES-256-GCM), gated by a key cached in the OS keychain. Gateway management tokens also live in the keychain.
+- **Encrypted secrets at rest** — Provider API keys sit in `credentials.enc` (AES-256-GCM), gated by a key cached in the OS keychain. HQ management tokens also live in the keychain.
 - **Tools + MCP** — Built-in tools (files, shell, fetch, web search) plus any MCP server you plug in.
 - **Messaging channels** — Agents can listen on Telegram, WhatsApp, or the built-in chat WebSocket.
-- **Gateway supervisor** — MC automatically restarts a crashed gateway and never silently kills processes it didn't spawn.
+- **HQ supervisor** — Desktop automatically restarts a crashed HQ and never silently kills processes it didn't spawn.
 - **Use Dash from the web** — Sign in with a passkey and chat with your agents from any browser, no install required, over the same hosted relay your phone uses for remote access. See [`apps/web/README.md`](apps/web/README.md) to deploy it and [docs/web.mdx](docs/web.mdx) for the end-user guide.
 
 ## Architecture
@@ -64,12 +64,12 @@ graph TB
   platforms["Chat platforms<br/><small>Telegram, WhatsApp</small>"]
 
   subgraph infra ["Your Machine"]
-    gateway["Gateway<br/><small>Hosts agents in-process<br/>Management :9300 · Chat :9200</small>"]
-    keychain["OS Keychain<br/><small>Gateway tokens</small>"]
+    gateway["HQ<br/><small>Hosts agents in-process<br/>Management :9300 · Chat :9200</small>"]
+    keychain["OS Keychain<br/><small>HQ tokens</small>"]
     enc["credentials.enc<br/><small>Provider API keys</small>"]
   end
 
-  mc["Mission Control<br/><small>Desktop app</small>"]
+  mc["Desktop<br/><small>Desktop app</small>"]
 
   platforms -- "Bot API" --> gateway
   mc -- "Deploy & manage (HTTP)" --> gateway
@@ -78,18 +78,18 @@ graph TB
   gateway -- "Read/write provider keys" --> enc
 ```
 
-**Gateway** — Single long-running process that hosts all agents in memory, serves the chat WebSocket at `/ws/chat`, exposes an HTTP management API at port 9300, and connects to external messaging platforms. Mission Control spawns it automatically on first launch and reuses it across MC restarts — the bearer token lives in the OS keychain, so a relaunched MC recognizes its own gateway without a fresh spawn.
+**HQ** — Single long-running process that hosts all agents in memory, serves the chat WebSocket at `/ws/chat`, exposes an HTTP management API at port 9300, and connects to external messaging platforms. Desktop spawns it automatically on first launch and reuses it across Desktop restarts — the bearer token lives in the OS keychain, so a relaunched Desktop recognizes its own HQ without a fresh spawn.
 
-**Mission Control** — Electron desktop app. Main process hosts the supervisor that manages the gateway lifecycle, renderer is a React + Vite UI talking to the main process over IPC.
+**Desktop** — Electron desktop app. Main process hosts the supervisor that manages the HQ lifecycle, renderer is a React + Vite UI talking to the main process over IPC.
 
 ## Development
 
 ```bash
 npm run build          # Build all packages and apps (tsup)
-npm run mc:dev         # Mission Control (dev mode, hot-reload)
-npm run mc:build       # Mission Control (production build)
-npm run mc:package     # Mission Control (package for distribution)
-npm run gateway        # Gateway standalone (pass --data-dir <path>)
+npm run mc:dev         # Desktop (dev mode, hot-reload)
+npm run mc:build       # Desktop (production build)
+npm run mc:package     # Desktop (package for distribution)
+npm run gateway        # HQ standalone (pass --data-dir <path>)
 npm test               # Full test suite (vitest)
 npm run lint           # Biome check
 npm run lint:fix       # Biome auto-fix
@@ -108,46 +108,47 @@ For the full development guide — coding conventions, testing strategy, git wor
 | `packages/channels` | Channel adapters (Telegram, WhatsApp) + message router |
 | `packages/chat` | WebSocket chat server |
 | `packages/management` | HTTP management API client |
-| `packages/mc` | Mission Control core — gateway supervisor, keychain store, state |
+| `packages/mc` | Desktop core — HQ supervisor, keychain store, state |
 | `packages/logging` | Structured logging primitives |
+| `packages/speech` | Speech config, validation, and provider abstraction for dictation, read aloud, and hands-free voice mode (OpenRouter today) |
 
 ### Apps
 
 | App | Purpose |
 |-----|---------|
-| `apps/gateway` | Agent runtime + channel gateway (Node process spawned by MC) |
+| `apps/gateway` | HQ agent runtime and messaging channels (Node process spawned by Desktop) |
 | `apps/mission-control` | Electron desktop app (main + renderer + preload) |
 | `apps/mc-cli` | Command-line companion for scripted operations |
-| `apps/relay` | Self-hosted reverse-tunnel relay for reaching a gateway remotely — see [`apps/relay/README.md`](apps/relay/README.md) |
+| `apps/relay` | Self-hosted reverse-tunnel relay for reaching an HQ remotely — see [`apps/relay/README.md`](apps/relay/README.md) |
 | `apps/web` | Browser-based chat client (passkey sign-in, no install) — see [`apps/web/README.md`](apps/web/README.md) |
 | `ios/` | Native iPhone and iPad client with shared, resumable conversation history — see [`ios/README.md`](ios/README.md) |
 | `android/` | Native Android client (chat + agent monitoring) — see [`android/README.md`](android/README.md) |
 
 ### Phone apps
 
-Pair either native client from Mission Control's **Settings → Devices** tab:
+Pair either native client from Desktop's **Settings → Devices** tab:
 
-- [`ios/`](ios/README.md) is the SwiftUI iPhone and iPad app. It shares the gateway's canonical,
-  resumable conversation history with Mission Control and can administer agents.
+- [`ios/`](ios/README.md) is the SwiftUI iPhone and iPad app. It shares the HQ's canonical,
+  resumable conversation history with Desktop and can administer agents.
 - [`android/`](android/README.md) is the Kotlin/Jetpack Compose app for chat and agent monitoring.
   Android remains a legacy, non-resumable client in this release, so its private chat sessions do
-  not appear in the shared Mission Control/iOS conversation list.
+  not appear in the shared Desktop/iOS conversation list.
 
-Both are thin remote clients to a running gateway and are separate from the npm workspace. They
+Both are thin remote clients to a running HQ and are separate from the npm workspace. They
 can connect over the local network or through Dash remote access.
 
 ### Relay (remote access)
 
-`apps/relay` is a small self-hostable service that lets the phone app reach a gateway
-behind NAT or a firewall from anywhere — the gateway dials *out* one persistent WebSocket
-and the relay routes phone traffic to it over per-gateway subdomains (wildcard TLS via
+`apps/relay` is a small self-hostable service that lets the phone app reach an HQ
+behind NAT or a firewall from anywhere — the HQ dials *out* one persistent WebSocket
+and the relay routes phone traffic to it over per-HQ subdomains (wildcard TLS via
 Caddy). See [`apps/relay/README.md`](apps/relay/README.md) for how it works, deployment
 (Caddy + systemd), the pairing-credential admin API, security posture, and a local
 end-to-end test.
 
 ## Documentation
 
-- **User guide** — [dash-aa8db5b5.mintlify.app/introduction](https://dash-aa8db5b5.mintlify.app/introduction)
+- **User guide** — [docs.dashsquad.ai](https://docs.dashsquad.ai)
 - **In-repo docs** — [`docs/`](docs/)
 - **Developer guide** — [`CLAUDE.md`](CLAUDE.md)
 

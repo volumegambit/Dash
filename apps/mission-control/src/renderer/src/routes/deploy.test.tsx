@@ -56,7 +56,7 @@ describe('DeployWizard', () => {
 
   it('renders agent step initially', () => {
     render(<DeployWizard />);
-    expect(screen.getByText('Deploy Agent')).toBeInTheDocument();
+    expect(screen.getByText('Deploy Squad Member')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('my-agent')).toBeInTheDocument();
   });
 

@@ -2,7 +2,7 @@
 //
 // Boots a REAL gateway with a self-contained demo plugin (skills/, commands/,
 // bin/, .mcp.json → a bundled fixture MCP server, hooks/ → a PreToolUse block,
-// agents/ → a loadable specialist), registers an agent, drives seven prompts
+// agents/ → a sub-agent DEFINITION), registers an agent, drives six prompts
 // over the chat WebSocket, and asserts that each plugin component actually
 // triggers the right tool / skill / hook — covering plugin Plans 1-4. It also
 // asserts the five dash-* built-in plugins load with zero installs (boot-level
@@ -109,7 +109,9 @@ try {
     join(DATA, 'plugins/demo/.mcp.json'),
     JSON.stringify({ mcpServers: { fixture: { command: process.execPath, args: [FIXTURE] } } }),
   );
-  // agents/ → a loadable specialist (Plan 4), namespaced demo:reviewer
+  // agents/ → a SUB-AGENT DEFINITION (spec §6.2). Since B2 the gateway keeps
+  // plugin agents/*.md out of the flat command-skill channel, so `demo:reviewer`
+  // is deliberately NOT `load_skill`-able — asserted deterministically in 4b.
   await writeFile(
     join(DATA, 'plugins/demo/agents/reviewer.md'),
     '---\nname: reviewer\ndescription: A meticulous code reviewer specialist. Use when asked to review code.\n---\nYou are the DEMO reviewer specialist. Begin every reply with "DEMO-REVIEWER-OK" then a one-line review.',
@@ -223,6 +225,27 @@ try {
   const agentId = (await reg.json()).id;
   console.log(`registered agent id=${agentId}\n`);
 
+  // --- 4b. agents/ is a DEFINITION channel, not a loadable skill -----------
+  // Spec §6.2 / task B2: a plugin's commands/*.md still becomes a flat
+  // `<plugin>:<command>` skill, but its agents/*.md does NOT — it is a
+  // sub-agent definition. Asserted over HTTP (deterministic) rather than with
+  // an LLM prompt, since the interesting outcome is an ABSENCE.
+  const skr = await fetch(`http://localhost:${MPORT}/agents/${agentId}/skills`);
+  if (!skr.ok) throw new Error(`GET /agents/:id/skills failed: ${skr.status}`);
+  const skillNames = (await skr.json()).map((s) => s.name);
+  const hasTriage = skillNames.includes('demo:triage');
+  const hasReviewer = skillNames.includes('demo:reviewer');
+  console.log('--- agents/ vs commands/ channel split (GET /agents/:id/skills) ---');
+  console.log(`  ${hasTriage ? '✅' : '❌'} demo:triage listed (commands/ → loadable skill)`);
+  console.log(
+    `  ${hasReviewer ? '❌' : '✅'} demo:reviewer NOT listed (agents/ → definition only)`,
+  );
+  if (!hasTriage || hasReviewer)
+    throw new Error(
+      `plugin agents/ must not be load_skill-able — skills: ${skillNames.join(', ')}`,
+    );
+  console.log('');
+
   // --- 5. Chat helper (fresh conversation per prompt) ----------------------
   const chat = (text, conv) =>
     new Promise((resolve) => {
@@ -310,14 +333,6 @@ try {
         ev.some((e) => e.type === 'tool_use_start' && e.name === 'load_skill') &&
         !!tres(ev, /Summarize the issue/),
       (ev) => tres(ev, /Summarize the issue/),
-    ],
-    [
-      'agents/   plugin agent specialist loaded (demo:reviewer body delivered)',
-      "Use your load_skill tool to load the skill named 'demo:reviewer', then review this code: function f(){return 1}",
-      (ev) =>
-        ev.some((e) => e.type === 'tool_use_start' && e.name === 'load_skill') &&
-        !!tres(ev, /DEMO-REVIEWER-OK/),
-      (ev) => tres(ev, /DEMO-REVIEWER-OK/),
     ],
     [
       'hooks/    PreToolUse hook blocks a matched bash call (deny reason surfaced)',

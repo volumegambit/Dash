@@ -85,7 +85,7 @@ export default function PrivacyPolicy() {
             Provider API keys and other credentials, encrypted at rest with AES-256-GCM. The
             encryption key is held in your operating system keychain.
           </li>
-          <li>Application and gateway logs.</li>
+          <li>Application and HQ logs.</li>
         </ul>
         <p>
           None of this is uploaded to us. We cannot read it, and we have no mechanism to request it.
@@ -135,8 +135,8 @@ export default function PrivacyPolicy() {
             connection. The relay is a pipe: we do not store the contents of your conversations.
           </li>
           <li>
-            We process connection metadata — timestamps, device and gateway identifiers, IP
-            addresses and byte counts — to route connections, enforce limits and investigate abuse.
+            We process connection metadata — timestamps, device and HQ identifiers, IP addresses and
+            byte counts — to route connections, enforce limits and investigate abuse.
           </li>
         </ul>
         <p>

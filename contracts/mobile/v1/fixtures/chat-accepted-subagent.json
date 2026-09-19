@@ -1,0 +1,12 @@
+{
+  "type": "accepted",
+  "id": "018f0f4a-5c42-7a8b-9c01-a234567890ab",
+  "conversationId": "sub_01JYQ5X7N8ZK4TQ2M9V6C3B0AH",
+  "userMessageId": "018f0f4a-5c42-7a8b-9c01-b234567890ab",
+  "assistantMessageId": "018f0f4a-5c42-7a8b-9c01-c234567890ab",
+  "revision": 2,
+  "seq": 1,
+  "origin": "parent",
+  "kind": "subagent",
+  "requestId": "req_01JQ8Z3K7M2N4P6R8T0V2W4X6Y"
+}

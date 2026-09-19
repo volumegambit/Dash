@@ -1,6 +1,6 @@
 # Dash — Development Guide
 
-Read [README.md](README.md) for project overview, architecture, package descriptions, configuration, project structure, and setup instructions. Read [`docs/`](docs/) or [dash-aa8db5b5.mintlify.app](https://dash-aa8db5b5.mintlify.app/introduction) for user-facing documentation.
+Read [README.md](README.md) for project overview, architecture, package descriptions, configuration, project structure, and setup instructions. Read [`docs/`](docs/) or [docs.dashsquad.ai](https://docs.dashsquad.ai) for user-facing documentation.
 
 ## Quick Reference
 
@@ -82,6 +82,17 @@ MEMORY_E2E_MODEL=openrouter/openai/gpt-5.5 npm run memory:e2e   # or pin a model
 
 Prereqs: **Node ≥ 22.12** and a **provider API key configured** in the gateway (`~/.dash/gateway`). It makes real (small, ~cents) LLM calls, so like `plugins:e2e` it is **not** part of `npm test`/`preflight`/CI. Run it after changes to `packages/agent/src/memory/*`, the memory prompt/tool wiring in `packages/agent/src/backends/piagent.ts`, the gateway memory wiring in `apps/gateway/src/index.ts`, or the memory routes in `apps/gateway/src/management-api.ts`. It does **not** cover `memory-sweep*.ts`: the script pins the sweep `off` and drives a frame that never schedules one, so a green run says nothing about the sweep — use the unit tests for that. The harness helpers in `scripts/memory-e2e/harness.mjs` are copied from `scripts/plugins-e2e/run.mjs` (that script has no exports and runs on import).
 
+### Speech E2E
+
+```bash
+npm run speech:e2e                                        # auto-picks a model from ~/.dash/gateway/agents.json
+SPEECH_E2E_MODEL=openrouter/openai/gpt-5.5 npm run speech:e2e   # or pin a model
+```
+
+`scripts/speech-e2e/run.mjs` boots a **real gateway** under an isolated temp `DASH_HOME` (reusing `scripts/memory-e2e/harness.mjs`) and drives the speech routes AND the hands-free voice WebSocket protocol against the **real** OpenRouter provider: (1) `GET /speech/config` shows the `openrouter` provider `available: true` and the `realtime` slot unavailable with a reason; (2) `GET /speech/models?kind=…` returns at least one transcription and one speech model; (3) `POST /mobile/v1/speech/transcriptions` on `fixtures/hello.wav` ("Hello from Dash, what is two plus two?") transcribes and the text contains "dash", "two"/"2", and "plus"/"+"; (4) `POST /mobile/v1/speech/speech` on a short sentence returns `audio/mpeg` bytes over 1 KB; (5) the validation envelope — an empty synthesis body answers `400 validation_failed`; (6) a full hands-free voice turn over `/ws/chat`: registers an agent, creates a conversation, opens its own WebSocket (not the shared harness's `driveTurn`, which drops non-turn frames), sends `voice_start`, waits for `voice_state listening` (the gateway drops `voice_audio` sent before that), then streams 600ms of calibration silence, `fixtures/hello.wav`'s raw PCM (found by walking the WAV's chunk list — `afconvert` inserts a filler chunk, so the data does not start at byte 44), and 1.5s of trailing silence as ~100ms-paced `voice_audio` frames. It asserts, in order: a final `voice_transcript` naming a `turnId`, the hub's `accepted` for that `turnId` arriving AFTER the transcript, `voice_state` visiting `transcribing` → `thinking` → `speaking`, at least one `voice_speech` with non-empty `audio`/`text` (`format: 'mp3'`, the default `minimax/speech-2.8-turbo` TTS), `done`, `voice_state listening` again, and finally `voice_stop` → `voice_stopped { reason: 'client' }`. It acknowledges every `voice_speech` with `voice_played { seq }` (a real client sends one once its playback chain drains) and asserts the second `listening` arrives AFTER that ack and less than 3s later — without that timing check the step would pass either way, since the gateway's 8s drain-safety timer advances the session on its own.
+
+Prereqs: **Node ≥ 22.12** and a **provider API key configured** in the gateway (`~/.dash/gateway`). It makes real (small, ~cents) LLM + STT + TTS calls, so like `plugins:e2e` it is **not** part of `npm test`/`preflight`/CI. Run it after changes to `packages/speech/*`, the gateway speech routes (`apps/gateway/src/speech-routes.ts`), or the voice WebSocket wiring in `apps/gateway/src/chat-ws.ts`. Step 6 needs a model that actually answers a spoken question; a model that stalls or refuses fails it within the script's 120s budget for that step, and that is a real result about the model, not a broken script. It does **not** cover the iOS client, echo cancellation, speaker barge-in, mute, the realtime provider slot (no provider currently offers it), or any other client UI.
+
 ### Skill learning E2E
 
 ```bash
@@ -96,6 +107,49 @@ It asserts the **mechanism, never the wording**: the review is unattended and ru
 Two things it exists to catch, both invisible to the unit tests: (1) the agent-registration validator must accept the `skills.{learning,minToolCalls}` keys, and (2) **only a `resumable: true` turn runs through `resumable-chat-hub.ts`** — a non-resumable turn streams straight through `chat-ws.ts` and is never reviewed. That second point applies equally to the memory sweep, which no E2E covers; `driveTurn` in the shared harness takes a `resumable` option (default `false`, so `memory:e2e` is unchanged).
 
 Prereqs: **Node ≥ 22.12** and a **provider API key configured** in the gateway. Real (small, ~cents) LLM calls, so like `plugins:e2e` it is **not** part of `npm test`/`preflight`/CI. Run it after changes to `packages/agent/src/skills/learning/*`, `apps/gateway/src/skill-review*.ts`, or the wiring in `apps/gateway/src/index.ts`. Step 1 needs a model that really calls tools and step 2 needs one that returns usable JSON — a model that does neither fails this smoke, and that is a real result about the model, not a broken script.
+
+### Sub-agents E2E
+
+```bash
+npm run subagents:e2e                                    # auto-picks a model from ~/.dash/gateway/agents.json
+npm run subagents:e2e -- --only 1,2,8                    # a subset, to iterate without re-spending
+SUBAGENTS_E2E_MODEL=openrouter/deepseek/deepseek-v4-pro npm run subagents:e2e   # or pin a model
+```
+
+`scripts/subagents-e2e/run.mjs` boots a **real gateway** under an isolated temp `DASH_HOME`
+(reusing `scripts/memory-e2e/harness.mjs`), `git init`s a throwaway workspace that gitignores
+`docs/plans/`, registers three agents, and drives the sub-agent feature end to end over the chat
+WebSocket: a **foreground** `agent` call (asserting the tool result is byte-equal to the child's
+report), **parallel** children (two `subagent_started` before any `subagent_finished`), a
+**background** child whose completion wakes the parent as a server-initiated notification turn
+(`accepted { origin: 'notification' }`, a `<task-notification>` prompt), **resume** via both the
+`send_message` tool and `POST /subagents/:id/resume` (which is the only path that echoes
+`accepted.requestId`), **nesting** to depth 2 plus the `depth limit reached` refusal at
+`subagents.maxDepth: 0`, the **cancel cascade** (`POST /subagents/:id/stop` → a
+`subagent_finished { status: 'cancelled' }` notification), **worktree isolation** (a clean child's
+worktree is removed; one holding a gitignored deliverable is kept), the **legacy swarm
+facades** (`spawn_worker` / `wait_workers` / `check_workers`, asserted on their results), and a
+**parked one-shot child answered with the `send_message` tool** (a background `Explore` child
+calls `ask_orchestrator`, and the parent answers it inside the same turn — a question is bounded
+by the parent's turn, since `SwarmRun.finalize` fires the run's `closed` and a pending
+`ask_orchestrator` then rejects with `ask_orchestrator aborted`).
+
+Two things it exists to catch that the unit tests cannot: (1) it collects **every** frame type
+seen on every socket and asserts no retired `worker_*` event appears anywhere in the run — a
+positive-absence check; and (2) it watches a **conversation**, not a turn, because the harness's
+`driveTurn` drops frames whose `id` is not the turn it started, which is exactly the frames a
+notification turn arrives on. Every turn it drives is `resumable: true`, since only a resumable
+turn runs through `resumable-chat-hub.ts` and only that hub delivers notification turns to
+subscribers.
+
+Prereqs: **Node ≥ 22.12** and a **provider API key configured** in the gateway. Real (small,
+~cents) LLM calls across roughly 25 model turns, so like `plugins:e2e` it is **not** part of
+`npm test`/`preflight`/CI. Run it after changes to `packages/swarm/*`,
+`apps/gateway/src/subagent-*.ts`, `notification-driver.ts` or `resumable-chat-hub.ts`. Assertions
+1-6 need a model that actually calls tools and nests a delegation two levels deep: a model that
+does neither fails them, and that is a real result about the model, not a broken script — the
+model that ran is printed in the banner and in the summary. It does **not** exercise any client
+UI, boot recovery, or the cap refusals.
 
 ### Clerk auth E2E
 
@@ -137,7 +191,9 @@ GitHub Actions runs on every push to `main` and on PRs. The workflow (`.github/w
 
 The agent model dropdown is populated by querying provider `/v1/models` endpoints, then filtering through the curated provider catalogs bundled with the `dash-core-providers` plugin at `apps/gateway/plugins/dash-core-providers/providers/*.json`. Each catalog carries a `supportedPatterns` allow-list, a static `models[]` (the bootstrap/offline list), and a per-catalog `reviewedAt` date. The gateway loads these catalogs via `@dash/plugins` and owns all model logic at runtime; MC just renders what the gateway returns.
 
-`npm run models:check` gates on the **oldest** `reviewedAt` across all catalogs: it warns when that is more than 30 days old and CI hard-fails the build at 60 days.
+`npm run models:check` also checks live OpenRouter frontier-family coverage and metadata without credentials; missing models, drift, or a failed audit cause a nonzero exit. Read [scripts/MODEL_UPDATES.md](scripts/MODEL_UPDATES.md) for the current update procedure and selection policy.
+
+The date gate checks the **oldest** `reviewedAt` across all catalogs: it warns when that is more than 30 days old and CI hard-fails the build at 60 days.
 
 **Before any of the following actions, check the catalogs' `reviewedAt` (or run `npm run models:check`):**
 
@@ -203,6 +259,8 @@ cd docs/plans && git add . && git commit -m "add <feature> plan" && git push
 ```
 
 ## Documentation Maintenance
+
+`docs/` is a git submodule pointing at **https://github.com/volumegambit/mintlify-docs** (the Mintlify source for [docs.dashsquad.ai](https://docs.dashsquad.ai)). Run `git submodule update --init` after cloning. To change docs, commit and push inside `docs/` first, then commit the updated `docs` pointer in this repo. `docs/plans/` sits inside that checkout but is ignored by it.
 
 Docs in `docs/` are **user-facing only**. They help users set up, configure, and use Dash. Do not add developer-facing details (CI, internal tooling, contribution workflows, linter configs).
 

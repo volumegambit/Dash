@@ -10,7 +10,14 @@ import { defineConfig } from 'tsup';
 const builtinPattern = new RegExp(`from "((?:${builtinModules.join('|')})(?:/[^"]*)?)"`, 'g');
 
 export default defineConfig({
-  entry: ['src/index.ts', 'src/runtime/provider-keys.ts'],
+  // Every entry beyond `src/index.ts` exists because the RENDERER needs it.
+  // The barrel is Electron-MAIN only: it re-exports the supervisor and the
+  // keychain store, which reach for `node:os` / `node:child_process` /
+  // `@napi-rs/keyring`. Vite externalizes those for the browser, so a single
+  // value import of `@dash/mc` from the renderer throws at module evaluation
+  // ("Module \"os\" has been externalized…") and the window renders BLANK.
+  // Browser-safe modules therefore get their own entry + `exports` subpath.
+  entry: ['src/index.ts', 'src/runtime/provider-keys.ts', 'src/runtime/gateway-client.ts'],
   format: ['esm'],
   dts: true,
   clean: true,

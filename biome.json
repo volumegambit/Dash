@@ -44,12 +44,14 @@
       "**/dist/**",
       "**/out/**",
       "**/build/**",
+      "apps/mission-control/release/**",
       "**/node_modules/**",
       "data/**",
       "**/*.gen.ts",
       "apps/gateway/plugins/dash-core-providers/**",
       ".claude/**",
       ".worktrees/**",
+      ".superpowers/**",
       "apps/website/.next/**"
     ]
   }

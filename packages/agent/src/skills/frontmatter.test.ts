@@ -41,8 +41,8 @@ dependencies:
 Skill body here.`;
 
     const result = parseFrontmatter(raw);
-    expect(result).not.toBeNull();
-    const fm = result?.frontmatter;
+    if (!result) throw new Error('expected frontmatter to parse');
+    const fm = result.frontmatter;
     expect(fm.name).toBe('full-skill');
     expect(fm.description).toBe('A fully featured skill');
     expect(fm.trigger).toBe('/full');

@@ -3,18 +3,18 @@ import { buildMainWindowOptions, revealWhenReady } from './main-window.js';
 
 describe('buildMainWindowOptions', () => {
   it('creates the window hidden to avoid the white-screen flash on startup', () => {
-    const options = buildMainWindowOptions('Mission Control', '/preload/index.js');
+    const options = buildMainWindowOptions('Desktop', '/preload/index.js');
     expect(options.show).toBe(false);
   });
 
   it('keeps the dark backgroundColor as a fallback for post-paint gaps', () => {
-    const options = buildMainWindowOptions('Mission Control', '/preload/index.js');
+    const options = buildMainWindowOptions('Desktop', '/preload/index.js');
     expect(options.backgroundColor).toBe('#0a0a0a');
   });
 
   it('applies the given title and preload path with isolation settings intact', () => {
-    const options = buildMainWindowOptions('Mission Control (dev)', '/preload/index.js');
-    expect(options.title).toBe('Mission Control (dev)');
+    const options = buildMainWindowOptions('Desktop (dev)', '/preload/index.js');
+    expect(options.title).toBe('Desktop (dev)');
     expect(options.webPreferences).toEqual({
       preload: '/preload/index.js',
       contextIsolation: true,
@@ -23,7 +23,7 @@ describe('buildMainWindowOptions', () => {
   });
 
   it('keeps the existing window geometry', () => {
-    const options = buildMainWindowOptions('Mission Control', '/preload/index.js');
+    const options = buildMainWindowOptions('Desktop', '/preload/index.js');
     expect(options).toMatchObject({ width: 1200, height: 800, minWidth: 800, minHeight: 600 });
   });
 });

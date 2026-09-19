@@ -19,6 +19,13 @@ export function buildModel(catalog: ProviderCatalog, model: CatalogModel): Model
     provider: catalog.id,
     baseUrl: catalog.baseUrl,
     reasoning: model.reasoning ?? false,
+    // Forwarded so a reasoning-REQUIRED model can say so (`{ off: null }`).
+    // pi-ai clamps the session's thinking level through this map; without it
+    // every catalog model looks happy with thinking `off`, which makes the
+    // host omit `reasoning_effort` and the provider reject the request.
+    ...(model.thinkingLevelMap !== undefined
+      ? { thinkingLevelMap: model.thinkingLevelMap as Model<Api>['thinkingLevelMap'] }
+      : {}),
     input: model.input ?? ['text'],
     cost: model.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: model.contextWindow,
@@ -98,8 +105,14 @@ export function createPluginModelCatalog(
           contextWindow: catalog.dynamicModelDefaults.contextWindow,
           maxTokens: catalog.dynamicModelDefaults.maxTokens,
           input: registered ? [...registered.input] : undefined,
+          reasoning: registered?.reasoning,
         };
-        return buildModel(catalog, synthesized);
+        return {
+          ...buildModel(catalog, synthesized),
+          // Some reasoning models cannot turn thinking off. Keep the SDK's
+          // level mapping with the capability so requests remain compatible.
+          thinkingLevelMap: registered?.thinkingLevelMap,
+        };
       }
 
       return null;

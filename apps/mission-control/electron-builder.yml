@@ -5,6 +5,9 @@ copyright: Copyright © 2026 Dash AI Labs Pte. Ltd.
 directories:
   buildResources: build
   output: release
+  app: release/staging/app
+
+npmRebuild: false
 
 # Do not run `npm install --production` inside the workspace before packaging:
 # in an npm workspace it prunes the ROOT node_modules (including
@@ -16,119 +19,11 @@ files:
   - out/**/*
 
 extraResources:
-  - from: ../../apps/gateway/dist
-    to: apps/gateway/dist
+  - from: release/staging/runtime
+    to: .
     filter:
       - "**/*"
-  - from: ../../packages/agent/dist
-    to: packages/agent/dist
-    filter:
-      - "**/*"
-  - from: ../../packages/channels/dist
-    to: packages/channels/dist
-    filter:
-      - "**/*"
-  - from: ../../packages/chat/dist
-    to: packages/chat/dist
-    filter:
-      - "**/*"
-  - from: ../../packages/management/dist
-    to: packages/management/dist
-    filter:
-      - "**/*"
-  - from: ../../packages/mc/dist
-    to: packages/mc/dist
-    filter:
-      - "**/*"
-  - from: ../../node_modules
-    to: node_modules
-    filter:
-      # Runtime dependencies only — dev/build tools are excluded.
-      # To regenerate: check production deps of apps/gateway,
-      # packages/agent, packages/channels, packages/chat, packages/management.
-      - "@cacheable/**"
-      - "@hapi/**"
-      - "@hono/**"
-      - "@pinojs/**"
-      - "@protobufjs/**"
-      - "@whiskeysockets/**"
-      - "ansi-regex/**"
-      - "argparse/**"
-      - "async-mutex/**"
-      - "asynckit/**"
-      - "atomic-sleep/**"
-      - "axios/**"
-      - "builder-util-runtime/**"
-      - "call-bind-apply-helpers/**"
-      - "cliui/**"
-      - "combined-stream/**"
-      - "curve25519-js/**"
-      - "debug/**"
-      - "delayed-stream/**"
-      - "dijkstrajs/**"
-      - "dotenv/**"
-      - "dunder-proto/**"
-      - "electron-updater/**"
-      - "emoji-regex/**"
-      - "es-define-property/**"
-      - "es-errors/**"
-      - "es-object-atoms/**"
-      - "es-set-tostringtag/**"
-      - "escalade/**"
-      - "follow-redirects/**"
-      - "form-data/**"
-      - "fs-extra/**"
-      - "function-bind/**"
-      - "get-caller-file/**"
-      - "get-intrinsic/**"
-      - "get-proto/**"
-      - "gopd/**"
-      - "graceful-fs/**"
-      - "grammy/**"
-      - "has-symbols/**"
-      - "has-tostringtag/**"
-      - "hasown/**"
-      - "hono/**"
-      - "is-fullwidth-code-point/**"
-      - "js-yaml/**"
-      - "jsonfile/**"
-      - "lazy-val/**"
-      - "libsignal/**"
-      - "lodash.escaperegexp/**"
-      - "lodash.isequal/**"
-      - "long/**"
-      - "math-intrinsics/**"
-      - "mime-db/**"
-      - "mime-types/**"
-      - "ms/**"
-      - "music-metadata/**"
-      - "on-exit-leak-free/**"
-      - "pino/**"
-      - "pino-abstract-transport/**"
-      - "pino-std-serializers/**"
-      - "pngjs/**"
-      - "process-warning/**"
-      - "protobufjs/**"
-      - "proxy-from-env/**"
-      - "qrcode/**"
-      - "quick-format-unescaped/**"
-      - "real-require/**"
-      - "require-directory/**"
-      - "safe-stable-stringify/**"
-      - "sax/**"
-      - "semver/**"
-      - "sonic-boom/**"
-      - "split2/**"
-      - "string-width/**"
-      - "strip-ansi/**"
-      - "thread-stream/**"
-      - "tiny-typed-emitter/**"
-      - "tslib/**"
-      - "universalify/**"
-      - "ws/**"
-      - "y18n/**"
-      - "yargs/**"
-      - "yargs-parser/**"
+
 mac:
   target:
     - target: dmg

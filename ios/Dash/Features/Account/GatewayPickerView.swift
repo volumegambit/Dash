@@ -7,15 +7,15 @@ enum AccountCopy {
   static let cpUnreachable =
     "Couldn't reach your Dash account service. Check your connection and try again."
   static let notEnrolled =
-    "This gateway needs to be re-enrolled from Mission Control before app access works."
+    "This HQ needs to be re-enrolled from Desktop before app access works."
   static let emptyAccount =
-    "No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine."
+    "No HQs linked to your account yet. Open Desktop → Settings → Devices → Remote access to enroll this machine."
   static let pendingApproval =
     "This device is waiting for approval from one of your signer devices."
   /// Not one of the plan's four binding constants — used for connect
   /// failures with no designated copy (`AccountConnectError.verificationFailed`
   /// / `.installFailed`, or a raw/untyped error from the `onConnected` sink).
-  static let connectFailed = "Dash couldn't finish connecting to this gateway. Try again."
+  static let connectFailed = "Dash couldn't finish connecting to this HQ. Try again."
 }
 
 /// Drives `GatewayPickerView`'s four-state load lifecycle and per-row connect
@@ -164,7 +164,7 @@ struct GatewayPickerView: View {
 
   var body: some View {
     content
-      .navigationTitle("Choose a Gateway")
+      .navigationTitle("Choose an HQ")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
@@ -200,7 +200,7 @@ struct GatewayPickerView: View {
   private var content: some View {
     switch viewModel.state {
     case .loading:
-      ProgressView("Loading your gateways")
+      ProgressView("Loading your HQs")
         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
     case .loaded(let gateways):
@@ -222,7 +222,7 @@ struct GatewayPickerView: View {
 
     case .empty:
       ContentUnavailableView {
-        Label("No Gateways Yet", systemImage: "server.rack")
+        Label("No HQs Yet", systemImage: "server.rack")
       } description: {
         Text(AccountCopy.emptyAccount)
       } actions: {

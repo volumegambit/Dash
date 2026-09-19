@@ -18,6 +18,7 @@ import {
   GatewayHttpError,
   GatewayManagementClient,
   InvalidGatewayLanTlsFingerprintError,
+  subagentsEnabledFor,
 } from './gateway-client.js';
 
 const BASE_URL = 'http://localhost:9300';
@@ -246,7 +247,7 @@ describe('GatewayManagementClient', () => {
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await expect(client.createAgent(req)).rejects.toThrow(
-        'Gateway createAgent failed: 409 Agent already exists',
+        'HQ createAgent failed: 409 Agent already exists',
       );
     });
   });
@@ -270,7 +271,7 @@ describe('GatewayManagementClient', () => {
       mockError(500);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.listAgents()).rejects.toThrow('Gateway listAgents failed: 500');
+      await expect(client.listAgents()).rejects.toThrow('HQ listAgents failed: 500');
     });
   });
 
@@ -302,9 +303,7 @@ describe('GatewayManagementClient', () => {
       mockError(404, 'not found');
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.getAgent('missing')).rejects.toThrow(
-        'Gateway getAgent failed: 404 not found',
-      );
+      await expect(client.getAgent('missing')).rejects.toThrow('HQ getAgent failed: 404 not found');
     });
   });
 
@@ -334,9 +333,7 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.updateAgent('missing', {})).rejects.toThrow(
-        'Gateway updateAgent failed: 404',
-      );
+      await expect(client.updateAgent('missing', {})).rejects.toThrow('HQ updateAgent failed: 404');
     });
   });
 
@@ -360,9 +357,7 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.removeAgent('missing')).rejects.toThrow(
-        'Gateway removeAgent failed: 404',
-      );
+      await expect(client.removeAgent('missing')).rejects.toThrow('HQ removeAgent failed: 404');
     });
   });
 
@@ -386,9 +381,7 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.disableAgent('missing')).rejects.toThrow(
-        'Gateway disableAgent failed: 404',
-      );
+      await expect(client.disableAgent('missing')).rejects.toThrow('HQ disableAgent failed: 404');
     });
   });
 
@@ -412,9 +405,7 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.enableAgent('missing')).rejects.toThrow(
-        'Gateway enableAgent failed: 404',
-      );
+      await expect(client.enableAgent('missing')).rejects.toThrow('HQ enableAgent failed: 404');
     });
   });
 
@@ -453,7 +444,7 @@ describe('GatewayManagementClient', () => {
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await expect(
         client.registerChannel({ name: 'bad', adapter: 'telegram', routing: [] }),
-      ).rejects.toThrow('Gateway registerChannel failed: 400 invalid config');
+      ).rejects.toThrow('HQ registerChannel failed: 400 invalid config');
     });
   });
 
@@ -476,7 +467,7 @@ describe('GatewayManagementClient', () => {
       mockError(500);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.listChannels()).rejects.toThrow('Gateway listChannels failed: 500');
+      await expect(client.listChannels()).rejects.toThrow('HQ listChannels failed: 500');
     });
   });
 
@@ -508,7 +499,7 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.getChannel('missing')).rejects.toThrow('Gateway getChannel failed: 404');
+      await expect(client.getChannel('missing')).rejects.toThrow('HQ getChannel failed: 404');
     });
   });
 
@@ -535,7 +526,7 @@ describe('GatewayManagementClient', () => {
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await expect(client.updateChannel('missing', {})).rejects.toThrow(
-        'Gateway updateChannel failed: 404',
+        'HQ updateChannel failed: 404',
       );
     });
   });
@@ -560,9 +551,7 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.removeChannel('missing')).rejects.toThrow(
-        'Gateway removeChannel failed: 404',
-      );
+      await expect(client.removeChannel('missing')).rejects.toThrow('HQ removeChannel failed: 404');
     });
   });
 
@@ -591,7 +580,7 @@ describe('GatewayManagementClient', () => {
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await expect(client.setCredential('', 'val')).rejects.toThrow(
-        'Gateway setCredential failed: 400 invalid key',
+        'HQ setCredential failed: 400 invalid key',
       );
     });
   });
@@ -614,7 +603,7 @@ describe('GatewayManagementClient', () => {
       mockError(403);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.listCredentials()).rejects.toThrow('Gateway listCredentials failed: 403');
+      await expect(client.listCredentials()).rejects.toThrow('HQ listCredentials failed: 403');
     });
   });
 
@@ -651,7 +640,7 @@ describe('GatewayManagementClient', () => {
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await expect(client.removeCredential('missing')).rejects.toThrow(
-        'Gateway removeCredential failed: 404',
+        'HQ removeCredential failed: 404',
       );
     });
   });
@@ -844,11 +833,49 @@ describe('GatewayManagementClient', () => {
       const malformed = await client.getConversation('conv-1').catch((caught: unknown) => caught);
       expect(plain).toBeInstanceOf(GatewayHttpError);
       expect((plain as GatewayHttpError).apiError).toBeUndefined();
-      expect((plain as Error).message).toBe(
-        'Gateway getConversation failed: 502 upstream unavailable',
-      );
+      expect((plain as Error).message).toBe('HQ getConversation failed: 502 upstream unavailable');
       expect(malformed).toBeInstanceOf(GatewayHttpError);
       expect((malformed as GatewayHttpError).apiError).toBeUndefined();
     });
+  });
+});
+
+/**
+ * The gateway reads `subagents?.enabled ?? swarm?.enabled ?? true`
+ * (`apps/gateway/src/subagent-config.ts`). Reading only ONE of the two blocks
+ * has been a Mission Control defect twice — the Swarm card rendered every
+ * default agent as OFF, and the chat route hid the Sub-agents panel for the
+ * same population — so the precedence lives in one place with its own cases.
+ */
+describe('subagentsEnabledFor', () => {
+  const base = { model: 'm', systemPrompt: 'p' };
+
+  it('is ON for an agent with neither block — the default population', () => {
+    expect(subagentsEnabledFor(base)).toBe(true);
+  });
+
+  it('honours the legacy swarm block when there is no subagents block', () => {
+    expect(subagentsEnabledFor({ ...base, swarm: { enabled: false } })).toBe(false);
+    expect(subagentsEnabledFor({ ...base, swarm: { enabled: true } })).toBe(true);
+  });
+
+  it('lets subagents.enabled win over the legacy block, in both directions', () => {
+    expect(
+      subagentsEnabledFor({ ...base, swarm: { enabled: false }, subagents: { enabled: true } }),
+    ).toBe(true);
+    expect(
+      subagentsEnabledFor({ ...base, swarm: { enabled: true }, subagents: { enabled: false } }),
+    ).toBe(false);
+  });
+
+  it('ignores a subagents block that sets everything BUT the gate', () => {
+    expect(subagentsEnabledFor({ ...base, subagents: { maxDepth: 0 } })).toBe(true);
+    expect(
+      subagentsEnabledFor({ ...base, swarm: { enabled: false }, subagents: { maxDepth: 0 } }),
+    ).toBe(false);
+  });
+
+  it('is OFF when there is no agent at all', () => {
+    expect(subagentsEnabledFor(undefined)).toBe(false);
   });
 });

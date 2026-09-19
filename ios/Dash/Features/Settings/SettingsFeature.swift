@@ -58,7 +58,7 @@ final class SettingsFeature {
     case .online: "Online"
     case .reconnecting: "Reconnecting"
     case .offline: "Offline"
-    case .gatewayOffline: "Gateway offline"
+    case .gatewayOffline: "HQ offline"
     case .rateLimited: "Rate limited"
     case .repairRequired: "Session no longer authorized"
     case .updateRequired: "Update required"
@@ -123,7 +123,7 @@ final class SettingsFeature {
   /// through the account gateway list, which needs the current connection
   /// dropped first, so the copy names both halves of that in order.
   static let reauthorizeMessage =
-    "Sign in again from the gateway list, or Disconnect & Forget this gateway, then try again."
+    "Sign in again from the HQ list, or Disconnect & Forget this HQ, then try again."
 
   var displayValues: String {
     [
@@ -208,9 +208,9 @@ final class SettingsFeature {
     } catch GatewayError.unauthorized {
       error = Self.reauthorizeMessage
     } catch GatewayError.capabilityRequired, GatewayError.updateRequired {
-      error = "Update Dash on this device and the gateway, then try again."
+      error = "Update Dash on this device and the HQ, then try again."
     } catch {
-      self.error = "Dash couldn't reconnect. Check the gateway and try again."
+      self.error = "Dash couldn't reconnect. Check the HQ and try again."
     }
   }
 
@@ -247,13 +247,13 @@ final class SettingsFeature {
     do {
       try await disconnectAction()
     } catch SettingsDisconnectError.keychain {
-      error = "Dash couldn't remove this gateway from Keychain. Try again."
+      error = "Dash couldn't remove this HQ from Keychain. Try again."
     } catch SettingsDisconnectError.localCleanup {
-      error = "The connection was removed, but Dash couldn't remove all cached gateway data."
+      error = "The connection was removed, but Dash couldn't remove all cached HQ data."
     } catch is CancellationError {
       return
     } catch {
-      self.error = "Dash couldn't disconnect from this gateway. Try again."
+      self.error = "Dash couldn't disconnect from this HQ. Try again."
     }
   }
 }

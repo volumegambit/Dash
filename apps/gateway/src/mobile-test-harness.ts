@@ -1,29 +1,25 @@
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import type { Server } from 'node:http';
-import { createServer as createHttpsServer } from 'node:https';
-import type { AddressInfo, Socket } from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
 import { StructuredLoggerImpl } from '@dash/logging';
-import { serve } from '@hono/node-server';
-import { createNodeWebSocket } from '@hono/node-ws';
-import { Hono } from 'hono';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
+import { createGatewayApplication } from './app/application.js';
+import { type OwnedGatewayListener, listenGatewaySurface } from './app/listener.js';
+import { createRuntimeStatusReader } from './app/runtime-status.js';
 import { ChannelRegistry } from './channel-registry.js';
-import { mountChatWs } from './chat-ws.js';
+import { createAgentBridge } from './channels/service.js';
 import { createConversationAutoTitleService } from './conversation-auto-title.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
+import { createExecutionCoordinator } from './execution-coordinator.js';
 import { createDynamicGateway } from './gateway.js';
-import { createLanMobileApp } from './lan-mobile-app.js';
 import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
-import { createGatewayManagementApp } from './management-api.js';
 import { ModelsStore } from './models-store.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
-import { mountWsTicketRoute } from './ws-ticket-store.js';
 
 export type MobileTestHarnessScenario = 'stream' | 'question' | 'slow';
 
@@ -174,89 +170,13 @@ class ScriptedMobileBackend implements AgentBackend {
   }
 }
 
-interface OwnedServer {
-  server: Server;
-  close(): Promise<void>;
-}
-
-async function listen(
-  app: Hono,
-  injectWebSocket: (server: Server) => void,
-  tls?: { privateKey: string; certificate: string },
-): Promise<OwnedServer> {
-  const server = serve(
-    tls
-      ? {
-          fetch: app.fetch,
-          hostname: '127.0.0.1',
-          port: 0,
-          createServer: createHttpsServer,
-          serverOptions: { key: tls.privateKey, cert: tls.certificate },
-        }
-      : { fetch: app.fetch, hostname: '127.0.0.1', port: 0 },
-  ) as Server;
-  const sockets = new Set<Socket>();
-  let closing = false;
-  let closePromise: Promise<void> | undefined;
-  const trackConnection = (socket: Socket): void => {
-    if (closing) {
-      socket.destroy();
-      return;
-    }
-    sockets.add(socket);
-    socket.once('close', () => sockets.delete(socket));
-  };
-  server.on('connection', trackConnection);
-
-  const close = (): Promise<void> => {
-    closePromise ??= new Promise<void>((resolve, reject) => {
-      closing = true;
-      const finish = (error?: Error): void => {
-        server.off('connection', trackConnection);
-        sockets.clear();
-        if (error) reject(error);
-        else resolve();
-      };
-      if (!server.listening) {
-        for (const socket of sockets) socket.destroy();
-        finish();
-        return;
-      }
-      server.close((error) => finish(error));
-      server.closeAllConnections();
-      for (const socket of sockets) socket.destroy();
-    });
-    return closePromise;
-  };
-
-  try {
-    injectWebSocket(server);
-    await new Promise<void>((resolve, reject) => {
-      const onListening = (): void => {
-        server.off('error', onError);
-        resolve();
-      };
-      const onError = (error: Error): void => {
-        server.off('listening', onListening);
-        reject(error);
-      };
-      server.once('listening', onListening);
-      server.once('error', onError);
-    });
-    return { server, close };
-  } catch (error) {
-    await close().catch(() => undefined);
-    throw error;
-  }
-}
-
-function portOf(ownedServer: OwnedServer): number {
+function portOf(ownedServer: OwnedGatewayListener): number {
   const address = ownedServer.server.address() as AddressInfo | null;
   if (!address) throw new Error('Mobile test harness listener has no address');
   return address.port;
 }
 
-function closeServer(server: OwnedServer | undefined): Promise<void> {
+function closeServer(server: OwnedGatewayListener | undefined): Promise<void> {
   return server?.close() ?? Promise.resolve();
 }
 
@@ -281,9 +201,9 @@ export async function startMobileTestHarness(
   const eventBus = new EventBus();
   const gateway = createDynamicGateway({ dataDir });
   const slowEventRelease = deferred<void>();
-  let managementServer: OwnedServer | undefined;
-  let chatServer: OwnedServer | undefined;
-  let lanServer: OwnedServer | undefined;
+  let managementServer: OwnedGatewayListener | undefined;
+  let chatServer: OwnedGatewayListener | undefined;
+  let lanServer: OwnedGatewayListener | undefined;
 
   await credentialStore.init();
   const registered = agentRegistry.register({
@@ -304,16 +224,6 @@ export async function startMobileTestHarness(
     memoryDir: (agentId) => join(dataDir, 'memory', agentId),
     createBackend: async () => new ScriptedMobileBackend(scenario, slowEventRelease.promise),
   });
-  gateway.registerAgent(registered.id, {
-    chat(channelId, conversationId, text) {
-      return agents.chat({ agentId: registered.id, channelId, conversationId, text });
-    },
-    listSkills() {
-      return agents.listSkills(registered.id);
-    },
-  });
-  await gateway.start();
-
   const autoTitle = createConversationAutoTitleService({
     conversations,
     generateTitle: async () => 'Mobile test conversation',
@@ -325,7 +235,7 @@ export async function startMobileTestHarness(
       }),
     logger,
   });
-  const hub = createResumableChatHub({
+  const execution = createExecutionCoordinator({
     conversations,
     agents,
     autoTitle,
@@ -337,10 +247,15 @@ export async function startMobileTestHarness(
       }),
   });
 
+  const hub = createResumableChatHub({ conversations, execution });
+  gateway.registerAgent(registered.id, createAgentBridge(registered.id, { execution, agents }));
+  await gateway.start();
+
   let stopPromise: Promise<void> | undefined;
   const stop = (): Promise<void> => {
     stopPromise ??= (async () => {
-      await hub.stop();
+      await execution.stop();
+      hub.dispose();
       await autoTitle.flush();
       await agents.stop();
       await gateway.stop();
@@ -356,23 +271,30 @@ export async function startMobileTestHarness(
 
   try {
     const lanTls = await loadOrCreateLanTlsIdentity(dataDir, ['127.0.0.1']);
-    const managementApp = createGatewayManagementApp({
-      gateway,
-      agents,
-      agentRegistry,
-      channelRegistry,
-      identity: { gatewayId, publicKey },
-      credentialStore,
-      modelsStore,
-      conversationService: conversations,
-      resumableChatHub: hub,
-      mobileToken: chatToken,
-      token: managementToken,
-      lanTlsFingerprint: lanTls.fingerprint,
-      startedAt: '2026-07-12T00:00:00.000Z',
-      eventBus,
-      logger,
+    const application = createGatewayApplication({
+      hub,
+      lan: true,
+      management: {
+        gateway,
+        agents,
+        agentRegistry,
+        channelRegistry,
+        identity: { gatewayId, publicKey },
+        credentialStore,
+        modelsStore,
+        conversationService: conversations,
+        runtimeStatus: createRuntimeStatusReader({ execution, agents, gateway }),
+        execution,
+        mobileToken: chatToken,
+        token: managementToken,
+        lanTlsFingerprint: lanTls.fingerprint,
+        startedAt: '2026-07-12T00:00:00.000Z',
+        eventBus,
+        logger,
+        dataDir,
+      },
     });
+    const managementApp = application.management.app;
     managementApp.post('/mobile/v1/__mobile-test/slow/release', (context) => {
       if (context.req.header('Authorization') !== `Bearer ${chatToken}`) {
         return context.json({ error: 'Unauthorized' }, 401);
@@ -383,42 +305,20 @@ export async function startMobileTestHarness(
       slowEventRelease.resolve();
       return context.body(null, 204);
     });
-    const managementWebSocket = createNodeWebSocket({ app: managementApp });
-    managementServer = await listen(managementApp, managementWebSocket.injectWebSocket);
-
-    // Mirrors the production wiring in index.ts: ONE ticket store, created
-    // before any listener (which also registers `POST /mobile/v1/ws-ticket` on
-    // `managementApp`), threaded into EVERY `/ws/chat` mount below. The chat
-    // listener is the one the relay forwards browser traffic to, so a ticket
-    // minted over HTTP has to be redeemable there — not only on the pinned LAN
-    // surface.
-    const wsTickets = mountWsTicketRoute(managementApp);
-
-    const chatApp = new Hono();
-    const chatWebSocket = createNodeWebSocket({ app: chatApp });
-    mountChatWs(chatApp, {
-      agents,
-      resumableChatHub: hub,
-      token: chatToken,
-      upgradeWebSocket: chatWebSocket.upgradeWebSocket,
-      eventLogStore: conversations.eventLog,
-      verbose: false,
-      wsTickets,
+    managementServer = await listenGatewaySurface(application.management, {
+      hostname: '127.0.0.1',
+      port: 0,
     });
-    chatServer = await listen(chatApp, chatWebSocket.injectWebSocket);
-
-    const lanApp = createLanMobileApp(managementApp);
-    const lanWebSocket = createNodeWebSocket({ app: lanApp });
-    mountChatWs(lanApp, {
-      agents,
-      resumableChatHub: hub,
-      token: chatToken,
-      upgradeWebSocket: lanWebSocket.upgradeWebSocket,
-      eventLogStore: conversations.eventLog,
-      verbose: false,
-      wsTickets,
+    chatServer = await listenGatewaySurface(application.chat, {
+      hostname: '127.0.0.1',
+      port: 0,
     });
-    lanServer = await listen(lanApp, lanWebSocket.injectWebSocket, lanTls);
+    if (!application.lan) throw new Error('Mobile harness requires a LAN surface');
+    lanServer = await listenGatewaySurface(application.lan, {
+      hostname: '127.0.0.1',
+      port: 0,
+      tls: lanTls,
+    });
 
     const managementPort = portOf(managementServer);
     const chatPort = portOf(chatServer);

@@ -7,16 +7,16 @@ import {
 import type { CredentialStore, StoredCredential } from '../auth/credential-store.js';
 import { PendingApproval } from './PendingApproval.js';
 
-/** Exact copy the brief mandates — points the user at Mission Control, since
+/** Exact copy the brief mandates — points the user at Desktop, since
  * gateways are enrolled there, not from the web client. */
 export const GATEWAY_EMPTY_STATE_COPY =
-  'No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine.';
+  'No HQs linked to your account yet. Open Desktop → Settings → Devices → Remote access to enroll this machine.';
 
 /** Exact copy for the 409 the control plane returns when a gateway hasn't
  * registered a chat token yet (`ControlPlaneClient.createWebPairing`) — it
- * needs a fresh Mission Control enroll before browser pairing can work. */
+ * needs a fresh Desktop enroll before browser pairing can work. */
 export const GATEWAY_NEEDS_REENROLL_COPY =
-  'This gateway needs to be re-enrolled from Mission Control before web access works.';
+  'This HQ needs to be re-enrolled from Desktop before web access works.';
 
 /** Coarse UA sniffing for a human-readable device label only (never used for
  * feature detection) — order matters: Edge/Opera UAs also contain "Chrome",
@@ -62,7 +62,7 @@ interface PendingApprovalState {
  * Lists the account's gateways (by `subdomain` — `GatewayInfo` has no
  * `label`) and pairs this browser with whichever one the user picks: mints a
  * web-client credential, persists it, then hands off to `onReady`. Gateway
- * *enrollment* itself happens in Mission Control, not here — an empty list
+ * *enrollment* itself happens in Desktop, not here — an empty list
  * just points the user there.
  *
  * A signer-gated account (Task 3) makes `createWebPairing` resolve
@@ -109,7 +109,7 @@ export function GatewayPicker({
       if (err instanceof ControlPlaneApiError && err.status === 409) {
         setError(GATEWAY_NEEDS_REENROLL_COPY);
       } else {
-        setError(err instanceof Error ? err.message : 'Failed to pair with this gateway.');
+        setError(err instanceof Error ? err.message : 'Failed to pair with this HQ.');
       }
       setPendingId(null);
     }
@@ -145,7 +145,7 @@ export function GatewayPicker({
 
   return (
     <div>
-      <p>Choose a gateway to connect to.</p>
+      <p>Choose an HQ to connect to.</p>
       <ul className="pick-gateway-list">
         {gateways.map((gateway) => (
           <li key={gateway.gatewayId}>

@@ -61,7 +61,7 @@ assert.match(
 );
 assert.match(
   readme,
-  /Same-gateway reactivation preserves that floor/,
+  /Same-HQ reactivation preserves that floor/,
   'README must document the lifecycle boundary for reconnecting the same gateway',
 );
 assert.match(

@@ -171,10 +171,10 @@ export class ConversationController {
   private assertWritableRef(ref: ConversationRef): void {
     this.assertWritable();
     if (this.authority === 'gateway' && ref.origin !== 'gateway') {
-      throw new Error('On this Mac conversations are read-only with this gateway');
+      throw new Error('On this Mac conversations are read-only with this HQ');
     }
     if (this.authority === 'legacy' && ref.origin !== 'local') {
-      throw new Error('Gateway conversation is not available through this older gateway');
+      throw new Error('HQ conversation is not available through this older HQ');
     }
   }
 }

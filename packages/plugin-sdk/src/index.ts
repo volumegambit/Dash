@@ -102,6 +102,22 @@ export interface CatalogModel {
   maxTokens: number;
   /** Whether the model supports extended reasoning / thinking. */
   reasoning?: boolean;
+  /**
+   * Which thinking levels this model accepts, and what to send for each.
+   *
+   * Omit for a model that is happy with thinking disabled — the host then
+   * treats every level as available (including `off`). Declare it when the
+   * model is FUSSY about thinking:
+   *
+   * - `{ off: null }` marks a reasoning-REQUIRED model (e.g. GPT-5 / o-series /
+   *   Gemini 3 Pro). Without this, the host resolves thinking to `off`, omits
+   *   `reasoning_effort` from the request, and the provider 400s.
+   * - A string value remaps a level to the provider's own wire value.
+   * - `null` on any level removes it from the supported set.
+   */
+  thinkingLevelMap?: Partial<
+    Record<'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh', string | null>
+  >;
   /** Accepted input modalities. */
   input?: ('text' | 'image')[];
   /** Per-million-token cost breakdown. */

@@ -37,22 +37,22 @@ describe('mobile documentation', () => {
     expect(iosGuide).toContain('## Manage agents');
     expect(iosGuide).toContain('Disconnect & Forget');
     expect(docsConfig).toContain('"ios"');
-    expect(remote).toContain('Dash for Android connects to your gateway over your local Wi-Fi');
+    expect(remote).toContain('Dash for Android connects to your HQ over your local Wi-Fi');
     expect(remote).toContain('Dash for iOS always connects through the hosted relay');
     expect(remote).toContain('Android remains a legacy, non-resumable client');
-    expect(architecture).toContain('gateway-authoritative conversation history');
+    expect(architecture).toContain('HQ-authoritative conversation history');
     expect(architecture).toContain('Android remains a legacy, non-resumable client');
     expect(api).toContain('GET /conversations');
     expect(api).toContain('conversation-sync-v1');
     expect(api).toContain('accepted');
     expect(api).toContain('resume');
     expect(troubleshooting).toContain('Active on another device');
-    expect(troubleshooting).toContain('re-enrolled from Mission Control before app access works');
+    expect(troubleshooting).toContain('re-enrolled from Desktop before app access works');
     expect(troubleshooting).toContain(
       "Couldn't reach your Dash account service. Check your connection and try again.",
     );
     expect(troubleshooting).toContain(
-      'No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine.',
+      'No HQs linked to your account yet. Open Desktop → Settings → Devices → Remote access to enroll this machine.',
     );
     expect(ios).toContain('run-live-gateway-tests.mjs');
     expect(ios).toContain('run-live-account-flow-test.mjs');
@@ -128,8 +128,8 @@ describe('mobile documentation', () => {
     expect(ipcContract).toContain('// Pairing (mobile apps)');
     expect(troubleshooting).toContain('No usable LAN IPv4 address is available');
     expect(troubleshooting).toContain('same network as the phone');
-    expect(troubleshooting).toContain('Switch to the local gateway before pairing a device');
-    expect(troubleshooting).toContain('**Settings → General → Gateway**');
+    expect(troubleshooting).toContain('Switch to the local HQ before pairing a device');
+    expect(troubleshooting).toContain('**Settings → General → HQ**');
     expect(troubleshooting).toContain('**Use this computer**');
   });
 
@@ -155,32 +155,32 @@ describe('mobile documentation', () => {
         "Couldn't reach your Dash account service. Check your connection and try again.",
       );
       expect(document).toContain(
-        'No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine.',
+        'No HQs linked to your account yet. Open Desktop → Settings → Devices → Remote access to enroll this machine.',
       );
       expect(document).toContain(
-        'This gateway needs to be re-enrolled from Mission Control before app access works.',
+        'This HQ needs to be re-enrolled from Desktop before app access works.',
       );
     }
-    expect(guide).toContain('gateway picker');
+    expect(guide).toContain('HQ picker');
     expect(guide).not.toContain('Scan the displayed QR code');
     expect(readme).toContain('run-live-account-flow-test.mjs');
     expect(readme).not.toContain('scanning, pasting, or entering a pairing code');
 
     expect(qa).toContain('## Sign-in and security');
-    expect(qa).toContain('Disconnect & Forget, then reconnect from the gateway picker');
+    expect(qa).toContain('Disconnect & Forget, then reconnect from the HQ picker');
     expect(qa).not.toContain('paste/manual fallback');
 
     expect(remote).toContain('Dash for iOS always connects through the hosted relay');
     expect(remote).not.toContain('Scan it with the Dash iOS or Android app');
 
-    expect(troubleshooting).not.toContain('iPhone cannot reach a gateway on local Wi-Fi');
+    expect(troubleshooting).not.toContain('iPhone cannot reach an HQ on local Wi-Fi');
 
     // notEnrolled has a working, self-service remedy (`healEnrolledGatewayChatToken` re-pushes
     // the chat token on every local-gateway launch) — docs must point at that, not a dead end.
     // `docs/web.mdx` describes the SAME not-enrolled gateway healed by the SAME token push, so
     // it must not keep telling browser users to re-run enrollment by hand.
     for (const document of [guide, troubleshooting, readme, web]) {
-      expect(document).toContain('updates the gateway');
+      expect(document).toContain('updates the HQ');
       expect(document).not.toContain('redo Remote access setup');
     }
     expect(web).not.toContain('re-run enrollment');
@@ -205,15 +205,15 @@ describe('mobile documentation', () => {
       expect(document).toContain(
         'Waiting for approval — scan this code with the Dash app on your phone.',
       );
-      expect(document).toContain('Approval declined. You can try again from the gateway list.');
-      expect(document).toContain('The code expired. Try again from the gateway list.');
+      expect(document).toContain('Approval declined. You can try again from the HQ list.');
+      expect(document).toContain('The code expired. Try again from the HQ list.');
     }
     expect(web).toContain('Approve this device');
     expect(web).toContain('Approve a device');
 
     // Exact copy from ios/Dash/Features/Account/ApproveDeviceView.swift — binding, verbatim.
     for (const document of [guide, readme, qa, troubleshooting, mcQA]) {
-      expect(document).toContain('Allow "<device>" to access <gateway>?');
+      expect(document).toContain('Allow "<device>" to access <HQ>?');
     }
     for (const document of [guide, readme, qa, troubleshooting]) {
       expect(document).toContain('This code has expired. Ask the device to try again.');

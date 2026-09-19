@@ -390,7 +390,7 @@ export class GatewaySupervisor {
       // code got into the respawn loop. Propagate so the poller
       // reports unhealthy and retries next tick.
       throw new Error(
-        `Port ${managementPort} listener is unresponsive or not a gateway: ${probe.reason}`,
+        `Port ${managementPort} listener is unresponsive or not an HQ: ${probe.reason}`,
       );
     }
 
@@ -410,8 +410,8 @@ export class GatewaySupervisor {
         // loudly with the recovery command.
         const pidHint = probe.pid !== undefined ? ` PID ${probe.pid}` : '';
         throw new Error(
-          `Port ${managementPort} is already in use by another gateway${pidHint} that we did not spawn. ` +
-            `Stop it manually before starting MC: lsof -ti :${managementPort} | xargs kill`,
+          `Port ${managementPort} is already in use by another HQ${pidHint} that we did not spawn. ` +
+            `Stop it manually before starting Desktop: lsof -ti :${managementPort} | xargs kill`,
         );
       }
       // State + keychain token both present — try to reuse.
@@ -439,7 +439,7 @@ export class GatewaySupervisor {
           // different process.
           if (probe.pid === undefined) {
             throw new Error(
-              'The running gateway needs a mobile transport upgrade and its listener PID could not be verified; restart the gateway manually to apply it',
+              'The running HQ needs a mobile transport upgrade and its listener PID could not be verified; restart HQ manually to apply it',
             );
           }
           await this.shutdownStaleProcess(probe.pid, state.port, keychainToken);
@@ -459,7 +459,7 @@ export class GatewaySupervisor {
         // information they need to decide.
         const pidHint = probe.pid !== undefined ? ` PID ${probe.pid}` : '';
         throw new Error(
-          `Port ${managementPort} is held by a gateway${pidHint} that does not accept our token. This is not the gateway MC spawned. Stop it manually and restart: lsof -ti :${managementPort} | xargs kill`,
+          `Port ${managementPort} is held by an HQ${pidHint} that does not accept our token. This is not the HQ Desktop spawned. Stop it manually and restart: lsof -ti :${managementPort} | xargs kill`,
         );
       }
     }
@@ -538,7 +538,7 @@ export class GatewaySupervisor {
     await mkdir(logsDir, { recursive: true });
     const logPath = join(logsDir, 'gateway.log');
     const logFd = openSync(logPath, 'a');
-    writeSync(logFd, `\n--- Gateway starting at ${new Date().toISOString()} ---\n`);
+    writeSync(logFd, `\n--- HQ starting at ${new Date().toISOString()} ---\n`);
 
     const gateway = this.spawner.spawn('node', spawnArgs, {
       env: { ...process.env },
@@ -566,7 +566,7 @@ export class GatewaySupervisor {
     while (Date.now() < deadline) {
       await new Promise<void>((r) => setTimeout(r, 300));
       if (spawnError) {
-        throw new Error(`Failed to launch the gateway process: ${spawnError.message}`, {
+        throw new Error(`Failed to launch the HQ process: ${spawnError.message}`, {
           cause: spawnError,
         });
       }
@@ -592,11 +592,11 @@ export class GatewaySupervisor {
           /* already dead */
         }
       }
-      throw new Error('Gateway failed to start within 10s');
+      throw new Error('HQ failed to start within 10s');
     }
 
     const gatewayPid = gateway.pid;
-    if (!gatewayPid) throw new Error('Gateway process has no PID');
+    if (!gatewayPid) throw new Error('HQ process has no PID');
     await store.write({
       pid: gatewayPid,
       startedAt: health.startedAt,

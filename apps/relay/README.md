@@ -1,83 +1,83 @@
 # Dash Relay
 
-The relay lets the **Dash phone app reach a gateway running on your home or office
+The relay lets the **Dash phone app reach an HQ running on your home or office
 machine from anywhere on the internet** — without port-forwarding, a static IP, or
-exposing the gateway directly.
+exposing the HQ directly.
 
-It is a small, self-hostable Node service. You run **one** relay; every gateway you
+It is a small, self-hostable Node service. You run **one** relay; every HQ you
 own dials into it and becomes reachable at its own subdomain.
 
-> **Using Mission Control?** You likely don't need this README. Mission Control's
+> **Using Desktop?** You likely don't need this README. Desktop's
 > **Settings → Devices → Remote access** uses the **hosted Dash relay**: sign in to
-> Dash, claim a permanent subdomain, and the gateway enrolls and reconnects on its
+> Dash, claim a permanent subdomain, and the HQ enrolls and reconnects on its
 > own — there is no form for entering relay credentials. That flow is documented in
 > [docs/remote-access.mdx](../../docs/remote-access.mdx).
 >
-> **Setup at a glance (self-hosted):** deploy a relay (below), start your gateway
+> **Setup at a glance (self-hosted):** deploy a relay (below), start your HQ
 > with `--relay-url` / `--relay-token` / `--gateway-id`, and provision a per-device
 > pairing credential through the admin API. This runs the same tunnel the hosted
 > relay uses, in a form you operate and script yourself — e.g. for a headless
-> gateway.
+> HQ.
 
 ---
 
 ## When you need it
 
 - **You need it** to reach your agents from your phone when you're away from home — the
-  gateway sits behind NAT/a firewall with no public address.
-- **You don't need it** when your phone and gateway are on the same Wi-Fi/LAN. Pair
-  directly over the local network instead (Mission Control → Settings → Devices).
+  HQ sits behind NAT/a firewall with no public address.
+- **You don't need it** when your phone and HQ are on the same Wi-Fi/LAN. Pair
+  directly over the local network instead (Desktop → Settings → Devices).
 
 ---
 
 ## How it works
 
-The relay is a **reverse tunnel**. Crucially, the gateway connects *out* to the relay —
+The relay is a **reverse tunnel**. Crucially, the HQ connects *out* to the relay —
 outbound connections pass through NAT and firewalls, inbound ones don't.
 
 ```
- Phone  ──HTTPS/WSS──▶  Relay  ──┐                         (gateway dials OUT:
+ Phone  ──HTTPS/WSS──▶  Relay  ──┐                         (HQ dials OUT:
 (anywhere)            (public TLS) │  one persistent WSS     one socket, then
                                    ▼                         requests flow back
-                                Gateway ──127.0.0.1──▶ its own loopback servers
+                                HQ      ──127.0.0.1──▶ its own loopback servers
                               (behind NAT)              (management :9300, chat :9200)
 ```
 
-1. The **gateway dials out** one persistent WebSocket to the relay and registers under a
+1. The **HQ dials out** one persistent WebSocket to the relay and registers under a
    stable `gatewayId`.
-2. A **phone** reaches a gateway at `https://<gatewayId>.<your-zone>` (and
+2. A **phone** reaches an HQ at `https://<gatewayId>.<your-zone>` (and
    `wss://<gatewayId>.<your-zone>/ws/chat`). The relay routes by the `Host` subdomain.
-3. Each phone request is **multiplexed** as a stream onto the gateway's single socket.
-4. The gateway **replays** each stream against its own `127.0.0.1` servers and pipes the
-   response back. The gateway is "just another localhost client" to itself — its servers
+3. Each phone request is **multiplexed** as a stream onto the HQ's single socket.
+4. The HQ **replays** each stream against its own `127.0.0.1` servers and pipes the
+   response back. The HQ is "just another localhost client" to itself — its servers
    and auth are untouched.
 
 The relay pipes **opaque bytes**. It never inspects, logs, or persists your message
-content or your gateway tokens.
+content or your HQ tokens.
 
 ### Three independent auth layers (all end-to-end)
 
 | Layer | Secret | Checked by | On failure |
 |-------|--------|-----------|------------|
-| Gateway admission | relay token (Bearer on dial-in) — or, in [hosted mode](#hosted-multi-tenant-mode), a signed dial token + holder-of-key proof | relay | WS close `4401` |
+| HQ admission | relay token (Bearer on dial-in) — or, in [hosted mode](#hosted-multi-tenant-mode), a signed dial token + holder-of-key proof | relay | WS close `4401` |
 | Per-pairing credential | `x-dash-relay-credential` header | relay (against its store) | `401` / WS `4401` |
-| App ↔ gateway | management Bearer / chat `?token=` | **the gateway** (forwarded verbatim) | gateway's own `401`/`4001` |
+| App ↔ HQ | management Bearer / chat `?token=` | **the HQ** (forwarded verbatim) | HQ's own `401`/`4001` |
 
 ---
 
 ## Quick start (local)
 
-Run a relay and a gateway on your own machine and drive it with `curl`. Requires
-Node.js 22.12+ (the gateway needs 22.12+ for `undici`).
+Run a relay and an HQ on your own machine and drive it with `curl`. Requires
+Node.js 22.12+ (the HQ needs 22.12+ for `undici`).
 
 ```bash
-# From the repo root — build the relay and gateway
+# From the repo root — build the relay and HQ
 npm run build
 
 # 1. Start the relay (admin API on, so pairing credentials are enforced)
 node apps/relay/dist/main.js --port 8788 --relay-token devrelay --admin-secret devadmin &
 
-# 2. Start a gateway that dials the relay as gateway "demo"
+# 2. Start a HQ that dials the relay as HQ "demo"
 node apps/gateway/dist/index.js \
   --management-port 9355 --channel-port 9255 \
   --token devmgmt --chat-token devchat \
@@ -92,28 +92,28 @@ CRED=$(curl -s -X POST -H "Authorization: Bearer devadmin" \
   http://127.0.0.1:8788/admin/pairings | python3 -c 'import sys,json;print(json.load(sys.stdin)["credential"])')
 
 # 4. Make a phone-style request through the relay.
-#    Host picks the gateway; the credential gets past the relay; the Bearer is the
-#    gateway's own token, forwarded untouched.
+#    Host picks the HQ; the credential gets past the relay; the Bearer is the
+#    HQ's own token, forwarded untouched.
 curl -s -H "Host: demo.relay.local" \
      -H "x-dash-relay-credential: $CRED" \
      -H "Authorization: Bearer devmgmt" \
      http://127.0.0.1:8788/agents          # → [] (200)
 ```
 
-Without the credential you get `401`; with a wrong gateway Bearer you get `401`
-*from the gateway* (the relay forwarded it). For a one-command, fully-automated check,
-run `npm run relay:e2e`, which spawns a real relay + real gateway and asserts the whole
+Without the credential you get `401`; with a wrong HQ Bearer you get `401`
+*from the HQ* (the relay forwarded it). For a one-command, fully-automated check,
+run `npm run relay:e2e`, which spawns a real relay + real HQ and asserts the whole
 round-trip.
 
 > For a dev relay without credential enforcement, omit `--admin-secret`. Pairing
-> credentials are then accepted permissively (the gateway tokens remain the real auth).
+> credentials are then accepted permissively (the HQ tokens remain the real auth).
 
 ---
 
 ## Production deployment
 
 The relay binds loopback by default; **Caddy** terminates TLS in front of it and serves a
-**wildcard** certificate for `*.relay.<your-zone>` so every gateway gets its own
+**wildcard** certificate for `*.relay.<your-zone>` so every HQ gets its own
 subdomain. Wildcards require ACME **DNS-01**, so you need a Caddy build with your DNS
 provider's plugin. The ready-made artifacts are in [`deploy/`](deploy/).
 
@@ -151,15 +151,15 @@ sudo systemctl enable --now dash-relay
 
 The unit is hardened (`DynamicUser`, `ProtectSystem=strict`, loopback bind behind Caddy).
 
-### 4. Point your gateway at it
+### 4. Point your HQ at it
 
-Start the gateway with:
+Start the HQ with:
 
 ```bash
 --relay-url wss://relay.example.com --relay-token <same as RELAY_TOKEN> --gateway-id <stable id>
 ```
 
-The gateway then registers and is reachable at `https://<gatewayId>.relay.example.com`.
+The HQ then registers and is reachable at `https://<gatewayId>.relay.example.com`.
 
 ---
 
@@ -171,7 +171,7 @@ The gateway then registers and is reachable at `https://<gatewayId>.relay.exampl
 |------|-----|---------|---------|
 | `--port` | `RELAY_PORT` | `8443` | Port to listen on (Caddy proxies to it). |
 | `--host` | `RELAY_HOST` | `127.0.0.1` | Bind address. Loopback by default (Caddy fronts it); use `0.0.0.0` to expose directly. |
-| `--relay-token` | `RELAY_TOKEN` | — *(required in self-hosted mode)* | Shared secret a gateway must present to register. Not used in hosted mode. |
+| `--relay-token` | `RELAY_TOKEN` | — *(required in self-hosted mode)* | Shared secret an HQ must present to register. Not used in hosted mode. |
 | `--admin-secret` | `RELAY_ADMIN_SECRET` | — *(optional)* | Enables the admin API and real pairing-credential enforcement. |
 | `--dial-token-public-key` | `RELAY_DIAL_TOKEN_PUBLIC_KEY` | — *(optional)* | Path to a PEM-encoded Ed25519 public key. Setting it switches the relay into hosted (multi-tenant) mode — see below. |
 | `--store-path` | `RELAY_STORE_PATH` | `relay-creds.db` | Hosted mode only: path to the durable SQLite pairing-credential store. |
@@ -181,9 +181,9 @@ The gateway then registers and is reachable at `https://<gatewayId>.relay.exampl
 The last two flags are how the **Dash-run hosted relay** is deployed; a self-hosted
 relay normally leaves them unset. When `--dial-token-public-key` is set:
 
-- **Gateway admission changes.** Instead of the shared relay token, each gateway dials
+- **HQ admission changes.** Instead of the shared relay token, each HQ dials
   in with a control-plane-signed **dial token** bound to its `gatewayId`, plus a fresh
-  **proof** signed with the gateway's own private key (holder-of-key — a token stolen
+  **proof** signed with the HQ's own private key (holder-of-key — a token stolen
   at rest or in flight is useless without the key). Both are verified offline against
   the supplied public key, so `--relay-token` is ignored and no longer required.
 - **Pairings become durable.** Per-pairing credentials live in a SQLite store
@@ -191,15 +191,15 @@ relay normally leaves them unset. When `--dial-token-public-key` is set:
   credentials. `--admin-secret` still gates the admin API, which the control plane
   drives to provision and revoke pairings.
 
-Everything else — subdomain routing, forwarded gateway auth, rate limits — is identical.
+Everything else — subdomain routing, forwarded HQ auth, rate limits — is identical.
 
-### Gateway relay mode
+### HQ relay mode
 
 | Flag | Meaning |
 |------|---------|
 | `--relay-url` | Relay base URL, e.g. `wss://relay.example.com`. Enables relay mode with `--relay-token`. |
 | `--relay-token` | Must equal the relay's `RELAY_TOKEN`. |
-| `--gateway-id` | Stable id the relay routes by (`<gatewayId>.<zone>`). If omitted, the gateway generates and persists one under its data dir. |
+| `--gateway-id` | Stable id the relay routes by (`<gatewayId>.<zone>`). If omitted, the HQ generates and persists one under its data dir. |
 
 ---
 
@@ -211,7 +211,7 @@ control plane drives this same API server-side.) On a self-hosted relay you call
 yourself: provision a credential when pairing a device, revoke it when un-pairing.
 
 ```bash
-# Provision a credential for a gateway (one per paired device).
+# Provision a credential for a HQ (one per paired device).
 # tenantId is required by the API; the self-hosted store doesn't segregate by it,
 # so any fixed value works.
 curl -X POST -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
@@ -219,14 +219,14 @@ curl -X POST -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
   https://admin.relay.example.com/admin/pairings
 # → { "gatewayId": "<id>", "credential": "<256-bit credential>" }
 
-# Revoke one credential (omit "credential" to revoke every device for the gateway)
+# Revoke one credential (omit "credential" to revoke every device for the HQ)
 curl -X POST -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
   -H "content-type: application/json" \
   -d '{"tenantId":"self-hosted","gatewayId":"<id>","credential":"<cred>"}' \
   https://admin.relay.example.com/admin/pairings/revoke
 # → { "ok": true }
 
-# Force-close a gateway's live tunnel (it drops immediately; it can re-dial)
+# Force-close a HQ's live tunnel (it drops immediately; it can re-dial)
 curl -X POST -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
   -H "content-type: application/json" -d '{"tenantId":"self-hosted","gatewayId":"<id>"}' \
   https://admin.relay.example.com/admin/gateways/revoke
@@ -248,18 +248,18 @@ curl -X POST -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
 
 ## Security posture
 
-- **Three independent auth layers** (table above). The relay never sees inside the gateway
-  tokens — it forwards them and the gateway authenticates.
+- **Three independent auth layers** (table above). The relay never sees inside the HQ
+  tokens — it forwards them and the HQ authenticates.
 - **Constant-time** comparison for the relay token, admin secret, and pairing credentials.
 - **No payload logging or persistence.** The relay pipes opaque bytes.
 - **Loopback by default.** The Node process binds `127.0.0.1`; Caddy is the only public
   listener.
-- **Abuse limits per gateway**: a token-bucket rate limit (default 50 req/s, burst 100)
+- **Abuse limits per HQ**: a token-bucket rate limit (default 50 req/s, burst 100)
   and a concurrent-stream cap (default 256). Over-limit HTTP gets `429`, WebSocket gets
   close `4429`.
 - **Backpressure**: credit-based flow control means a slow phone throttles the upstream
   instead of letting the relay buffer without bound.
-- **Resilience**: if the relay restarts, the gateway re-dials with exponential backoff,
+- **Resilience**: if the relay restarts, the HQ re-dials with exponential backoff,
   and a ping/pong heartbeat detects a dead peer.
 
 ---
@@ -268,17 +268,17 @@ curl -X POST -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
 
 | You see | Meaning | Fix |
 |---------|---------|-----|
-| `502 No gateway connected` | No gateway is registered for that subdomain | Start the gateway in relay mode; check it logs `[relay] connected`. |
-| `401 Unauthorized` (HTTP) | Missing/invalid pairing credential, **or** the gateway rejected the forwarded token | Provision a credential; verify the gateway's own token. |
-| `429 Too Many Requests` | Rate limit or stream cap for that gateway | Back off; the bucket refills. |
-| WS close `4401` | Bad relay token (gateway dial-in) or invalid pairing credential | Check `--relay-token` matches; re-provision. |
+| `502 No HQ connected` | No HQ is registered for that subdomain | Start the HQ in relay mode; check it logs `[relay] connected`. |
+| `401 Unauthorized` (HTTP) | Missing/invalid pairing credential, **or** the HQ rejected the forwarded token | Provision a credential; verify the HQ's own token. |
+| `429 Too Many Requests` | Rate limit or stream cap for that HQ | Back off; the bucket refills. |
+| WS close `4401` | Bad relay token (HQ dial-in) or invalid pairing credential | Check `--relay-token` matches; re-provision. |
 | WS close `4429` | Phone throttled | Back off and retry. |
 
 **Logs.** The relay logs lifecycle only (listening, admin enabled, connections) — never
-payloads. The gateway logs `[relay] connected` / `[relay] socket error` so you can watch
+payloads. The HQ logs `[relay] connected` / `[relay] socket error` so you can watch
 dial-out and reconnects.
 
 ```bash
 npm run relay        # run the relay from source (tsx), prints to stdout
-npm run relay:e2e    # full local end-to-end smoke (real relay + real gateway)
+npm run relay:e2e    # full local end-to-end smoke (real relay + real HQ)
 ```

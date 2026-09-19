@@ -79,12 +79,28 @@ extension AppDependenciesFactory {
     }
 
     static var initialTab: AppTab? {
-      let environment = ProcessInfo.processInfo.environment
-      guard
-        let raw = environment["DASH_UI_TEST_TAB"]
-          ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tab")
-      else { return nil }
+      guard let raw = rawInitialTab else { return nil }
+      // `settings-speech` is a ROUTE, not a tab: it lands on Settings and
+      // pushes Settings > Speech. Kept in this one option rather than a
+      // second variable because a capture asks for a surface, and Speech is
+      // one of Settings' surfaces.
+      if raw == speechSettingsTab { return .settings }
       return AppTab(rawValue: raw)
+    }
+
+    /// Whether the launch asked for Settings > Speech, the one screen in
+    /// Settings that is behind a tap and so unreachable from `simctl`.
+    /// `SettingsView` reads this and pushes the screen itself, since a
+    /// pushed detail view is view state rather than `AppModel` state.
+    static var opensSpeechSettings: Bool {
+      rawInitialTab == speechSettingsTab
+    }
+
+    private static let speechSettingsTab = "settings-speech"
+
+    private static var rawInitialTab: String? {
+      ProcessInfo.processInfo.environment["DASH_UI_TEST_TAB"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tab")
     }
 
     /// Start every tool card expanded, so a capture can show the tool BODIES.
@@ -101,6 +117,31 @@ extension AppDependenciesFactory {
       let environment = ProcessInfo.processInfo.environment
       return environment["DASH_UI_TEST_TOOL_GALLERY"]
         ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tool-gallery")
+    }
+
+    /// Seeds the composer's dictation state: `recording`, `uploading` or
+    /// `failed`. Like `toolGallery`, this exists because the states behind it
+    /// are unreachable from `simctl` — dictation needs a tap, a microphone
+    /// and a gateway — so none of the three could be looked at on any screen.
+    ///
+    /// It drives the REAL `DictationFeature` through the UI-test fakes below
+    /// rather than writing a phase, so a capture cannot show a state the app
+    /// is unable to reach.
+    static var dictation: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_DICTATION"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-dictation")
+    }
+
+    /// Opens the hands-free voice cover and drives it into one state:
+    /// `listening`, `thinking`, `speaking`, `muted` or `ended`. Same reason
+    /// `dictation` exists — every one of those needs a tap, a microphone, a
+    /// speech provider and a live socket, so none of them could be looked at
+    /// on any screen before this.
+    static var voice: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_VOICE"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-voice")
     }
 
     static var expandTools: Bool {
@@ -245,6 +286,20 @@ extension AppDependenciesFactory {
 
     var connection: GatewayConnectionState {
       self == .pairedOffline ? .offline : .online
+    }
+
+    /// What this scenario's fake gateway advertises.
+    ///
+    /// Only `.pairedOnline` carries `speech-v1`, which is what makes the
+    /// composer's mic testable in BOTH directions: every other scenario —
+    /// `.pairedOffline` in particular — stands in for a gateway that has no
+    /// speech provider, where `chat.dictate` must not exist at all.
+    var capabilities: Set<MobileCapability> {
+      var advertised: Set<MobileCapability> = [.conversationSyncV1, .chatResumeV1]
+      if self == .pairedOnline {
+        advertised.insert(.speechV1)
+      }
+      return advertised
     }
   }
 
@@ -662,13 +717,45 @@ extension AppDependenciesFactory {
       ]
     }
 
+    /// The id of the scripted NOTIFICATION turn on the parent conversation.
+    ///
+    /// §8.5's row: the gateway starts a turn on the orchestrator's own
+    /// conversation to wake it with a background child's result, and the body
+    /// is a machine-written `<subagent-result>` envelope the user never typed.
+    /// It exists so `chat.notification.<messageId>` — named in the D5 brief's
+    /// identifier list and in its Step 1 — is queried by something. Before
+    /// this, `NotificationRowView` was reachable in the app and rendered by no
+    /// test at any level.
+    static let notificationID = "ui-notification"
+
     static func cachedMessages(for scenario: UITestScenario) -> [ConversationMessageDTO] {
       #if DEBUG
         if let batch = UITestLaunchOptions.toolGallery {
           return toolGalleryMessages(batch)
         }
       #endif
-      if scenario == .streamingReconnect || scenario == .pendingRecovery { return [] }
+      if scenario == .streamingReconnect {
+        return [
+          message(
+            id: notificationID,
+            turnID: "ui-notification-turn",
+            role: .user,
+            status: .completed,
+            // `<summary>` on purpose: `notificationRowLabel` prefers it over
+            // the sender form and over the fallback, so the rendered label is
+            // deterministic and the UI test can assert the SUMMARY rather than
+            // the envelope.
+            text:
+              "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
+              + "<subagent-result id=\"ui-subagent\">"
+              + "<summary>researcher finished the launch checklist review</summary>"
+              + "</subagent-result>",
+            ordinal: 1,
+            origin: MessageOrigin.notification.rawValue
+          )
+        ]
+      }
+      if scenario == .pendingRecovery { return [] }
       if scenario == .longTranscript { return longTranscriptMessages }
       if scenario == .remoteBusy {
         return [
@@ -775,6 +862,126 @@ extension AppDependenciesFactory {
       )
     }
 
+    /// The id of the child `streaming-reconnect` spawns. Shared by the
+    /// scripted retired-mirror/`subagent_started` pair, by the row's
+    /// accessibility identifier, and by the child conversation this transcript
+    /// belongs to — because a worker id IS the child's conversation id.
+    static let subagentID = "ui-subagent"
+
+    /// The child's OWN transcript, served by `subagentTranscript(childID:)`
+    /// when a row is expanded (design 8.3).
+    ///
+    /// Two rows, both load-bearing:
+    ///
+    /// 1. A `origin: "parent"` user row — §8.5's muted "from orchestrator"
+    ///    line. It must keep its text (that text is the instruction the child
+    ///    is working from) and must offer neither Retry nor Edit & Resend.
+    /// 2. An assistant row whose `tool_use` id is `ui-tool` — the SAME id the
+    ///    parent's own tool card uses. That collision is deliberate: a
+    ///    `tool_use` id is only unique within its conversation, so the nested
+    ///    card answering to `chat.subagent.ui-subagent.tool.ui-tool` while the
+    ///    parent's answers to `chat.tool.ui-tool` is what proves §8.6's
+    ///    namespacing in the running app.
+    static func subagentMessages() -> [ConversationMessageDTO] {
+      [
+        ConversationMessageDTO(
+          id: "ui-subagent-brief",
+          conversationId: subagentID,
+          turnId: "ui-subagent-turn",
+          ordinal: 1,
+          role: .user,
+          status: .completed,
+          content: .user(text: "Check whether the launch checklist is complete", images: nil),
+          createdAt: now,
+          updatedAt: now,
+          origin: MessageOrigin.parent.rawValue
+        ),
+        ConversationMessageDTO(
+          id: "ui-subagent-reply",
+          conversationId: subagentID,
+          turnId: "ui-subagent-turn",
+          ordinal: 2,
+          role: .assistant,
+          status: .completed,
+          content: .assistant(events: [
+            .toolUseStart(id: "ui-tool", name: "search", input: .object(["query": .string("checklist")])),
+            .toolResult(
+              id: "ui-tool",
+              name: "search",
+              content: "Checklist is 4 of 5 done",
+              isError: false,
+              details: nil
+            ),
+            .response(
+              content: "Four of five items are done.",
+              usage: UsageDTO(
+                inputTokens: 3,
+                outputTokens: 5,
+                cacheReadTokens: nil,
+                cacheWriteTokens: nil
+              )
+            ),
+          ]),
+          createdAt: now.addingTimeInterval(1),
+          updatedAt: now.addingTimeInterval(1)
+        ),
+      ]
+    }
+
+    /// The id of the SECOND child `streaming-reconnect` spawns, adjacent to
+    /// the first so the two render as one parallel group (§8.2), and parked on
+    /// a question so its inline reply composer renders (§8.1).
+    static let secondSubagentID = "ui-subagent-2"
+
+    /// What `GET /conversations/{id}/subagents` serves for the shared
+    /// conversation — the tasks sheet's WHOLE model (§8.4).
+    ///
+    /// Both children are `background: true` and both are LIVE, deliberately:
+    /// that is the case the sheet exists for. A background child's finish
+    /// never reaches the parent's event stream, so the fold can only ever read
+    /// it as running, and the list is the only surface that can tell the
+    /// truth. It is also served BEFORE any turn is sent, which is honest —
+    /// these children outlive the turn that spawned them, so a client opening
+    /// the conversation later must still see them.
+    static func subagentListEntries() -> [SubagentListEntryDTO] {
+      [
+        SubagentListEntryDTO(
+          id: subagentID,
+          name: "scout",
+          type: "researcher",
+          description: "Check launch readiness",
+          status: "running",
+          background: true,
+          depth: 1,
+          startedAt: subagentStartedAt,
+          endedAt: nil,
+          usage: nil,
+          toolCallCount: 3,
+          report: nil,
+          oneShot: false
+        ),
+        SubagentListEntryDTO(
+          id: secondSubagentID,
+          name: nil,
+          type: "reviewer",
+          description: "Double-check the rollout steps",
+          status: "waiting_input",
+          background: true,
+          depth: 1,
+          startedAt: subagentStartedAt.addingTimeInterval(2),
+          endedAt: nil,
+          usage: nil,
+          toolCallCount: 1,
+          report: nil,
+          oneShot: false
+        ),
+      ]
+    }
+
+    /// Shared by the scripted `subagent_started` and by the REST list, so the
+    /// row and the sheet cannot disagree about when a child began.
+    static let subagentStartedAt = Date(timeIntervalSince1970: 1_788_480_000)
+
     static func message(
       id: String,
       turnID: String,
@@ -783,7 +990,8 @@ extension AppDependenciesFactory {
       text: String = "",
       images: [MessageImage]? = nil,
       events: [AgentEvent] = [],
-      ordinal: Int
+      ordinal: Int,
+      origin: String? = nil
     ) -> ConversationMessageDTO {
       ConversationMessageDTO(
         id: id,
@@ -794,7 +1002,8 @@ extension AppDependenciesFactory {
         status: status,
         content: role == .user ? .user(text: text, images: images) : .assistant(events: events),
         createdAt: now.addingTimeInterval(TimeInterval(ordinal)),
-        updatedAt: now.addingTimeInterval(TimeInterval(ordinal))
+        updatedAt: now.addingTimeInterval(TimeInterval(ordinal)),
+        origin: origin
       )
     }
 
@@ -1051,7 +1260,10 @@ extension AppDependenciesFactory {
         makeSyncEngine: { _ in
           UITestSyncEngine(snapshot: await store.syncSnapshot())
         },
-        verifyProfile: { _ in },
+        verifyProfile: { _ in scenario.capabilities },
+        // The same answer `/health` gives at launch, so a UI test sees the
+        // capability without having to trigger a reconnect first.
+        fetchCapabilities: { _ in scenario.capabilities },
         rememberProfile: { _ in },
         deleteProfileSecrets: { profile in
           await keychain.delete(for: profile.id)
@@ -1083,7 +1295,53 @@ extension AppDependenciesFactory {
             clock: clock,
             announcer: UITestAccessibilityAnnouncer(),
             recoveryChanges: recoveryChanges,
-            makeID: { source.next() }
+            makeID: { source.next() },
+            makeDictation: {
+              DictationFeature(
+                recorder: UITestAudioRecorder(),
+                permission: UITestSpeechPermission(),
+                transcriber: UITestSpeechTranscriber(seed: UITestLaunchOptions.dictation),
+                // Deliberately the SYSTEM clock, not `UITestClock` (which is
+                // frozen): the countdown has to actually count down in a
+                // capture, and a UI test never runs a recording near the 60 s
+                // cap.
+                clock: SystemAppClock(),
+                session: UITestSpeechSessionControl(),
+                interruptions: { AsyncStream { _ in } }
+              )
+            },
+            makeVoiceMode: { id, agentID, conversationID, transport in
+              VoiceModeFeature(
+                id: id,
+                agentID: agentID,
+                conversationID: conversationID,
+                transport: transport,
+                capture: UITestAudioCapture(),
+                player: UITestAudioPlayer(),
+                haptics: UITestVoiceHaptics(),
+                permission: UITestSpeechPermission(),
+                session: UITestSpeechSessionControl(),
+                // Deliberately never dismissing: `DASH_UI_TEST_VOICE=ended`
+                // exists so the ended state can be READ — and photographed —
+                // and a cover that took itself down after 1.5 s could be
+                // neither.
+                dismissDelay: nil
+              )
+            }
+          )
+        },
+        // Settings > Speech, answered from the contract fixtures
+        // (`contracts/mobile/v1/fixtures/speech-{config,models}.json`) so the
+        // screen has a provider, two model lists and a voice list without a
+        // gateway. Patches are merged the way `mergeSpeechConfig` merges
+        // them, so a UI test that changes a picker sees what the gateway
+        // would have answered.
+        makeSpeechSettingsFeature: { _ in
+          SpeechSettingsFeature(
+            api: UITestSpeechConfigurator(),
+            synthesizer: UITestSpeechSynthesizer(),
+            player: UITestAudioPlayer(),
+            session: UITestSpeechSessionControl()
           )
         },
         pairingFeatureFactory: PairingFeatureFactory(
@@ -1113,6 +1371,244 @@ extension AppDependenciesFactory {
               clock: clock
             )
       )
+    }
+  }
+
+  /// A microphone that is always granted: a UI test cannot answer the system
+  /// permission alert, and the alert is not what these tests are about.
+  private struct UITestSpeechPermission: SpeechPermissionRequesting {
+    func requestMicrophone() async -> Bool { true }
+  }
+
+  /// No `AVAudioSession` in a UI test: the simulator has no input route, and
+  /// arming one would make the harness depend on the host Mac's audio.
+  private struct UITestSpeechSessionControl: SpeechSessionControlling {
+    func activateRecording() throws {}
+    func activatePlayback() throws {}
+    func deactivate() {}
+  }
+
+  /// Produces a moving meter and a fixed clip. Reuses the real
+  /// `AudioLevelBroadcaster`, so the fresh-stream-per-recording contract is
+  /// the same one `AudioRecorderService` implements.
+  private actor UITestAudioRecorder: AudioRecording {
+    nonisolated let levels = AudioLevelBroadcaster()
+    nonisolated var level: AsyncStream<Float> { levels.stream }
+    private var meterTask: Task<Void, Never>?
+
+    func start(maxDuration: Duration) async throws {
+      meterTask?.cancel()
+      meterTask = Task { [levels] in
+        var step = 0
+        while Task.isCancelled == false {
+          do {
+            try await Task.sleep(for: .milliseconds(120))
+          } catch {
+            return
+          }
+          // A slow sweep between a murmur and a shout, so a capture catches
+          // the bar somewhere visible rather than at silence.
+          levels.yield(Float(0.05 + 0.2 * abs(sin(Double(step) / 4))))
+          step += 1
+        }
+      }
+    }
+
+    func stop() async throws -> Data {
+      endMetering()
+      return Data("ui-test-clip".utf8)
+    }
+
+    func cancel() async {
+      endMetering()
+    }
+
+    private func endMetering() {
+      meterTask?.cancel()
+      meterTask = nil
+      levels.finish()
+    }
+  }
+
+  /// Answers "hello world" — the string `DictationUITests` asserts lands in
+  /// the composer — unless the launch option asks for a state that needs the
+  /// upload to hang (`uploading`) or fail (`failed`).
+  /// A microphone that is live but silent: the stream NEVER finishes, since
+  /// a finished stream is voice mode's interruption signal and would end
+  /// every seeded session a fraction of a second after it opened.
+  private actor UITestAudioCapture: AudioCapturing {
+    private var continuation: AsyncStream<Data>.Continuation?
+
+    func start() async throws -> AsyncStream<Data> {
+      let pair = AsyncStream<Data>.makeStream()
+      continuation = pair.continuation
+      return pair.stream
+    }
+
+    func stop() async {
+      continuation?.finish()
+      continuation = nil
+    }
+  }
+
+  /// A simulator has no taptic engine, and a UI test has no way to observe
+  /// one. Silence keeps the console clean.
+  private struct UITestVoiceHaptics: VoiceHaptics {
+    func impact(_ weight: VoiceHapticWeight) {}
+    func error() {}
+  }
+
+  private struct UITestSpeechTranscriber: SpeechTranscribing {
+    let seed: String?
+
+    func transcribe(_ request: TranscriptionRequestDTO) async throws -> TranscriptionResponseDTO {
+      switch seed {
+      case "uploading":
+        // Long enough to outlive any capture; cancelled with the app.
+        try await Task.sleep(for: .seconds(600))
+        throw CancellationError()
+      case "failed":
+        throw GatewayError.speech(
+          code: "unavailable",
+          message: "speech is not configured on this gateway",
+          retryable: false
+        )
+      default:
+        return TranscriptionResponseDTO(text: "hello world", durationSeconds: 1.5)
+      }
+    }
+  }
+
+  /// The gateway's speech-config half. Starts from the bundled fixture and
+  /// merges patches per section, exactly as `mergeSpeechConfig` does — a fake
+  /// that echoed the request back would let a broken one-key patch pass.
+  private actor UITestSpeechConfigurator: SpeechConfiguring {
+    private var config = SpeechConfigDTO(
+      stt: SpeechSttConfigDTO(
+        provider: "openrouter",
+        model: "openai/whisper-large-v3",
+        language: "en"
+      ),
+      tts: SpeechTtsConfigDTO(
+        provider: "openrouter",
+        model: "minimax/speech-2.8-turbo",
+        voice: "English_expressive_narrator",
+        speed: 1
+      ),
+      realtime: SpeechRealtimeConfigDTO(provider: nil)
+    )
+
+    private let providers: [SpeechProviderStatusDTO] = [
+      SpeechProviderStatusDTO(
+        id: "openrouter",
+        capabilities: SpeechCapabilitiesDTO(transcription: true, speech: true, realtime: false),
+        available: true
+      ),
+      SpeechProviderStatusDTO(
+        id: "realtime",
+        capabilities: SpeechCapabilitiesDTO(transcription: false, speech: false, realtime: true),
+        available: false,
+        reason: .noProviderOffersRealtime
+      ),
+    ]
+
+    func speechConfig() async throws -> SpeechConfigResponseDTO {
+      SpeechConfigResponseDTO(config: config, providers: providers)
+    }
+
+    func patchSpeechConfig(_ patch: SpeechConfigPatchDTO) async throws -> SpeechConfigResponseDTO {
+      config = SpeechConfigDTO(
+        stt: SpeechSttConfigDTO(
+          provider: patch.stt?.provider ?? config.stt.provider,
+          model: patch.stt?.model ?? config.stt.model,
+          // An omitted key leaves the language alone; an explicit null
+          // clears it — `mergeSpeechConfig`'s rule, so the fake cannot pass a
+          // patch the gateway would treat differently.
+          language: patch.stt?.language.map(\.value) ?? config.stt.language
+        ),
+        tts: SpeechTtsConfigDTO(
+          provider: patch.tts?.provider ?? config.tts.provider,
+          model: patch.tts?.model ?? config.tts.model,
+          voice: patch.tts?.voice ?? config.tts.voice,
+          speed: patch.tts?.speed ?? config.tts.speed
+        ),
+        realtime: patch.realtime ?? config.realtime
+      )
+      return SpeechConfigResponseDTO(config: config, providers: providers)
+    }
+
+    func speechModels(kind: SpeechModelKind) async throws -> [SpeechModelDTO] {
+      switch kind {
+      case .transcription:
+        return [
+          SpeechModelDTO(
+            id: "openai/whisper-large-v3",
+            name: "Whisper Large v3",
+            kind: .transcription,
+            voices: nil
+          )
+        ]
+      case .speech:
+        return [
+          SpeechModelDTO(
+            id: "minimax/speech-2.8-turbo",
+            name: "MiniMax: Speech 2.8 Turbo",
+            kind: .speech,
+            voices: ["English_expressive_narrator", "English_radiant_girl"]
+          )
+        ]
+      }
+    }
+  }
+
+  /// Hands back a few bytes so "Preview voice" reaches the player. The bytes
+  /// are never decoded: `UITestAudioPlayer` stands in for playback.
+  private struct UITestSpeechSynthesizer: SpeechSynthesizing {
+    func synthesize(text: String) async throws -> Data {
+      Data([0x49, 0x44, 0x33])
+    }
+  }
+
+  /// A player with no audio route — the simulator's route is the host Mac's.
+  /// `playMP3` takes about as long as a short sample would, so the preview
+  /// button's progress state is visible in a capture.
+  private actor UITestAudioPlayer: AudioPlaying {
+    private var playing = false
+    // Fix round 2 (item 4): `AudioPlaying` dropped its default no-op
+    // `enqueuePCM`/`flush` — this fake records both so a UI-test scenario
+    // driving voice mode can be extended later without silently no-op-ing.
+    private(set) var enqueued: [(Data, Double)] = []
+    private(set) var flushCount = 0
+    private(set) var drainWaits = 0
+
+    var isPlaying: Bool { playing }
+
+    func playMP3(_ data: Data) async throws {
+      playing = true
+      defer { playing = false }
+      try? await Task.sleep(for: .seconds(2))
+    }
+
+    func stop() async {
+      playing = false
+    }
+
+    func enqueuePCM(_ data: Data, sampleRate: Double) async {
+      enqueued.append((data, sampleRate))
+    }
+
+    /// Recorded as an enqueue at the decoded rate a UI test can assert on,
+    /// rather than decoding for real: the scenario's bytes are a stub.
+    func enqueueCompressed(_ data: Data) async {
+      enqueued.append((data, 0))
+    }
+
+    func awaitDrain() async {
+      drainWaits += 1
+    }
+
+    func flush() async {
+      flushCount += 1
     }
   }
 
@@ -1403,6 +1899,9 @@ extension AppDependenciesFactory {
     private var memoryValues: [String: [MemoryInfoDTO]] = UITestScenarioFixtures.memories
     private var skillValues: [String: [SkillDTO]] = UITestScenarioFixtures.skills
     private var didFailSleepingAgentEnable = false
+    /// Mutable, because `stopSubagent` really terminalizes a row here the way
+    /// the route does — that is what lets a UI test watch the badge count down.
+    private var subagentEntries: [SubagentListEntryDTO] = []
 
     init(scenario: UITestScenario, dataIdentifier: String) {
       self.dataIdentifier = dataIdentifier
@@ -1423,6 +1922,9 @@ extension AppDependenciesFactory {
       if scenario == .pendingRecovery || scenario == .activeRecovery {
         pendingSends[conversationValues[0].id] = UITestScenarioFixtures.recoveredPendingSend
         drafts[conversationValues[0].id] = UITestScenarioFixtures.recoveredNewerDraft
+      }
+      if scenario == .streamingReconnect {
+        subagentEntries = UITestScenarioFixtures.subagentListEntries()
       }
     }
 
@@ -1505,7 +2007,7 @@ extension AppDependenciesFactory {
       let value = ConversationSummaryDTO(
         id: "conversation-\(request.agentId)",
         agentId: request.agentId,
-        agentName: agent?.name ?? "Agent",
+        agentName: agent?.name ?? "Squad member",
         // Final-review fix C2 (fixture-fidelity follow-up): the real gateway
         // ignores nothing here — `create(agentID:)` (ConversationListFeature.swift)
         // always sends `title: nil` for the compose-first flow, so the
@@ -1934,6 +2436,79 @@ extension AppDependenciesFactory {
       return []
     }
 
+    func subagentTranscript(childID: String) throws -> SubagentTranscriptSnapshot {
+      guard subagentEntries.contains(where: { $0.id == childID }) else {
+        throw GatewayError.notFound
+      }
+      return SubagentTranscriptSnapshot(
+        messages: childID == UITestScenarioFixtures.subagentID
+          ? UITestScenarioFixtures.subagentMessages()
+          : [],
+        // Not one-shot, so the body composer is offered. The waiting-input
+        // reply is enabled either way — a one-shot child parked on
+        // `ask_orchestrator` can still be answered.
+        oneShot: false
+      )
+    }
+
+    func subagents(conversationID: String) -> [SubagentListEntryDTO] {
+      guard conversationID == UITestScenarioFixtures.sharedConversation.id else { return [] }
+      return subagentEntries
+    }
+
+    func stopSubagent(id: String) throws -> String {
+      guard let index = subagentEntries.firstIndex(where: { $0.id == id }) else {
+        throw GatewayError.notFound
+      }
+      let entry = subagentEntries[index]
+      // The route 409s a child that is ALREADY terminal rather than silently
+      // succeeding, so a client that raced the child's own finish learns which
+      // of the two won. Reproduced here verbatim
+      // (`apps/gateway/src/subagent-management.ts:424-431`).
+      guard SubagentCardStatus(wire: entry.status).isTerminal == false else {
+        throw GatewayError.validation("Sub-agent \(id) is already \(entry.status)")
+      }
+      subagentEntries[index] = SubagentListEntryDTO(
+        id: entry.id,
+        name: entry.name,
+        type: entry.type,
+        description: entry.description,
+        status: "cancelled",
+        background: entry.background,
+        depth: entry.depth,
+        startedAt: entry.startedAt,
+        endedAt: UITestScenarioFixtures.now,
+        usage: entry.usage,
+        toolCallCount: entry.toolCallCount,
+        report: entry.report,
+        oneShot: entry.oneShot
+      )
+      return "cancelled"
+    }
+
+    func resumeSubagent(id: String, message: String, requestID: String) throws {
+      guard let entry = subagentEntries.first(where: { $0.id == id }) else {
+        throw GatewayError.notFound
+      }
+      // A TERMINAL child is refused, reproducing `coordinator.resumeChild`'s
+      // own text (`packages/swarm/src/coordinator.ts:717`): a finished child
+      // has no live handle, so a resume goes down the rebuild path and a grant
+      // that cannot be rebuilt is refused with a 409. This is reachable from
+      // the tasks sheet by design — `SubagentTaskRow.canResume` offers Resume
+      // on every non-one-shot child including one that has finished — and it
+      // is the refusal that had no render site at all before D6 fix round 1.
+      guard SubagentCardStatus(wire: entry.status).isTerminal == false else {
+        throw GatewayError.validation(
+          "Agent \"\(entry.name ?? entry.id)\" cannot be resumed: its grant cannot be rebuilt."
+        )
+      }
+      // Otherwise the scripted gateway accepts it; the assertion that matters
+      // is in the app, where the optimistic row must render as an orchestrator
+      // row carrying the user's own text.
+      _ = message
+      _ = requestID
+    }
+
     func shutdown() {}
   }
 
@@ -2009,6 +2584,39 @@ extension AppDependenciesFactory {
 
     func connect() {}
 
+    /// The UI-test harness has no gateway to subscribe against; a
+    /// server-initiated turn is scripted directly onto `continuation`.
+    func subscribe(agentID: String, conversationID: String) {}
+
+    func unsubscribe(agentID: String, conversationID: String) {}
+
+    // The UI-test harness has no voice session to drive; these are no-ops.
+    func voiceStart(id: String, agentID: String, conversationID: String) {
+      _ = id
+      _ = agentID
+      _ = conversationID
+    }
+
+    func voiceAudio(id: String, seq: Int, pcm: Data) {
+      _ = id
+      _ = seq
+      _ = pcm
+    }
+
+    func voiceMute(id: String, muted: Bool) {
+      _ = id
+      _ = muted
+    }
+
+    func voicePlayed(id: String, seq: Int) {
+      _ = id
+      _ = seq
+    }
+
+    func voiceStop(id: String) {
+      _ = id
+    }
+
     func sendTurn(
       id: String,
       agentID: String,
@@ -2083,7 +2691,11 @@ extension AppDependenciesFactory {
           userMessageId: "user-ui-turn",
           assistantMessageId: "assistant-ui-turn",
           revision: 2,
-          seq: takeSequence()
+          seq: takeSequence(),
+          origin: nil,
+          kind: nil,
+          requestId: nil,
+          pendingItemId: nil
         )
       )
       guard await pause(.milliseconds(100)) else { return }
@@ -2149,8 +2761,14 @@ extension AppDependenciesFactory {
       yieldEvent(
         turnID: turnID,
         conversationID: conversationID,
+        // A PERSISTED PRE-D8 shape: the retired `worker_spawned` mirror ahead
+        // of the `subagent_started` that is now the only anchor. Nothing emits
+        // this pair any more; the scenario keeps it because
+        // `ConversationUITests` asserting exactly ONE
+        // `chat.subagent.ui-subagent` element is the D8 drop policy proven in
+        // the running app, not just in the reducer.
         .workerSpawned(
-          workerId: "ui-worker",
+          workerId: "ui-subagent",
           runId: "ui-run",
           role: "researcher",
           brief: "Check launch readiness",
@@ -2160,13 +2778,84 @@ extension AppDependenciesFactory {
       yieldEvent(
         turnID: turnID,
         conversationID: conversationID,
-        .workerStatus(
-          workerId: "ui-worker",
-          runId: "ui-run",
-          role: "researcher",
+        .subagentStarted(
+          subagentId: "ui-subagent",
+          name: "scout",
+          subagentType: "researcher",
+          description: "Check launch readiness",
+          prompt: "Check whether the launch checklist is complete",
+          // `background: true` is load-bearing for the UI assertions, not
+          // decoration. This scenario's child never reports a terminal event
+          // and the parent turn DOES end, so a foreground child would be
+          // end-of-stream terminalized to `cancelled` mid-test — the row's
+          // label would depend on whether the assertion won the race against
+          // the scripted `done`. A background child is exempt (it is spawned
+          // to outlive its turn), so the row reads "Running" in both phases,
+          // and the exemption is pinned in the running app rather than only in
+          // the reducer.
+          model: "openai/gpt-5",
+          background: true,
+          depth: 1,
+          startedAt: Date(timeIntervalSince1970: 1_788_480_000),
+          isolation: nil,
+          parentTurnId: turnID
+        )
+      )
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        .subagentProgress(
+          subagentId: "ui-subagent",
           status: .running,
+          toolCallCount: 3,
+          elapsedMs: 7200,
           detail: "Reviewing the checklist",
           question: nil
+        )
+      )
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        // A SECOND child spawned inside the same message with nothing but
+        // sub-agent chrome in between, which is exactly §8.2's adjacency rule
+        // (`SubagentDraft.chromeRank`) — so the two render inside one parallel
+        // group with a summary line and a dot strip. Nothing had ever rendered
+        // that chrome in a UI test before; every existing sub-agent test ran
+        // against a cluster of ONE, where the group header does not exist.
+        //
+        // `background: true` for the same reason the first child is: this
+        // scenario's children never report a terminal event and the parent turn
+        // does end, so a foreground child would be end-of-stream terminalized
+        // to `cancelled` mid-test — and D1's rule that a question never
+        // survives onto a terminal row would then clear the reply below.
+        .subagentStarted(
+          subagentId: "ui-subagent-2",
+          name: nil,
+          subagentType: "reviewer",
+          description: "Double-check the rollout steps",
+          prompt: "Double-check the rollout steps",
+          model: "openai/gpt-5",
+          background: true,
+          depth: 1,
+          startedAt: Date(timeIntervalSince1970: 1_788_480_002),
+          isolation: nil,
+          parentTurnId: turnID
+        )
+      )
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        // Parks the second child on a question, so §8.1's inline reply
+        // composer RENDERS. D5 closed with that composer never having been
+        // rendered by any test — only what it sends was pinned, at feature
+        // level — and this is the cheapest thing that closes it.
+        .subagentProgress(
+          subagentId: "ui-subagent-2",
+          status: .waitingInput,
+          toolCallCount: 1,
+          elapsedMs: 3000,
+          detail: nil,
+          question: "Should the rollback step come first?"
         )
       )
       yieldEvent(
@@ -2219,7 +2908,11 @@ extension AppDependenciesFactory {
           userMessageId: "user-ui-turn",
           assistantMessageId: "assistant-ui-turn",
           revision: 2,
-          seq: takeSequence()
+          seq: takeSequence(),
+          origin: nil,
+          kind: nil,
+          requestId: nil,
+          pendingItemId: nil
         )
       )
       let reply = UITestScenarioFixtures.longTranscriptStreamedReply

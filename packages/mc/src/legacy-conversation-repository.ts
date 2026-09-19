@@ -27,6 +27,14 @@ function summary(record: McConversation, agentName: string): ConversationSummary
     lastMessagePreview: '',
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    // The legacy desktop store has no shared pending-work scheduler. Expose
+    // the neutral queue projection required by the canonical mobile shape.
+    pendingCount: 0,
+    pendingScheduling: 'running',
+    queueRevision: 0,
+    // The legacy store predates sub-agent conversations and only ever held
+    // user ones; `kind` became required on `ConversationSummary` with them.
+    kind: 'user',
   };
 }
 

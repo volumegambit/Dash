@@ -26,7 +26,7 @@ const groups: SettingsNavGroup[] = [
   {
     items: [
       { to: '/settings', label: 'General', icon: Wrench, exact: true },
-      { to: '/settings/agent-defaults', label: 'Agent Defaults', icon: SlidersHorizontal },
+      { to: '/settings/agent-defaults', label: 'Squad Defaults', icon: SlidersHorizontal },
     ],
   },
   {

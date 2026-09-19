@@ -177,7 +177,7 @@ struct SettingsFeatureTests {
 
       #expect(
         feature.error
-          == "Sign in again from the gateway list, or Disconnect & Forget this gateway, then try again."
+          == "Sign in again from the HQ list, or Disconnect & Forget this HQ, then try again."
       )
       #expect(feature.error?.contains("Re-pair") == false)
     }
@@ -228,7 +228,10 @@ struct SettingsFeatureTests {
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
         makeSyncEngine: { _ in SettingsSyncEngine() },
-        verifyProfile: { _ in try await lifecycle.verify() },
+        verifyProfile: { _ in
+          try await lifecycle.verify()
+          return [.conversationSyncV1, .chatResumeV1]
+        },
         deleteProfileSecrets: { _ in await lifecycle.deleteSecrets() }
       )
     )
@@ -261,7 +264,7 @@ struct SettingsFeatureTests {
     await feature.disconnectAndForget(confirmed: true)
 
     #expect(await actions.calls == [.disconnect])
-    #expect(feature.error == "Dash couldn't remove this gateway from Keychain. Try again.")
+    #expect(feature.error == "Dash couldn't remove this HQ from Keychain. Try again.")
     #expect(feature.isForgetting == false)
   }
 
@@ -275,7 +278,7 @@ struct SettingsFeatureTests {
     #expect(await actions.calls == [.disconnect])
     #expect(
       feature.error
-        == "The connection was removed, but Dash couldn't remove all cached gateway data."
+        == "The connection was removed, but Dash couldn't remove all cached HQ data."
     )
   }
 
@@ -292,6 +295,7 @@ struct SettingsFeatureTests {
         verifyProfile: { value in
           #expect(value == profile)
           await events.record(.verify)
+          return [.conversationSyncV1, .chatResumeV1]
         }
       )
     )
@@ -361,7 +365,7 @@ struct SettingsFeatureTests {
     #expect(model.selectedProfile == profile)
     #expect(model.settingsFeature === feature)
     #expect(model.connectionState == .repairRequired)
-    #expect(feature.error == "Dash couldn't remove this gateway from Keychain. Try again.")
+    #expect(feature.error == "Dash couldn't remove this HQ from Keychain. Try again.")
   }
 
   @Test("AppModel clears an unusable profile after cache purge failure")
@@ -384,7 +388,7 @@ struct SettingsFeatureTests {
     #expect(model.settingsFeature == nil)
     #expect(
       feature.error
-        == "The connection was removed, but Dash couldn't remove all cached gateway data."
+        == "The connection was removed, but Dash couldn't remove all cached HQ data."
     )
   }
 
@@ -398,9 +402,12 @@ struct SettingsFeatureTests {
     )
     let verifier = GatewayProfileVerifier { _, _ in gateway }
 
-    try await verifier.verify(profile: profile(), secrets: secrets())
+    let capabilities = try await verifier.verify(profile: profile(), secrets: secrets())
 
     #expect(await gateway.calls == [.health, .identity, .shutdown])
+    // The verifier no longer discards what it checked: the capability set is
+    // its return value, which is what lets `AppModel` retain it.
+    #expect(capabilities == [.conversationSyncV1, .chatResumeV1])
   }
 
   @Test("profile verifier rejects missing capabilities and always shuts down")
@@ -480,7 +487,7 @@ struct SettingsFeatureTests {
     await gateway.releaseHealth()
 
     do {
-      try await operation.value
+      _ = try await operation.value
       Issue.record("Expected profile verification to preserve cancellation")
     } catch {
       #expect(error is CancellationError)

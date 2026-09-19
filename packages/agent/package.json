@@ -1,6 +1,6 @@
 {
   "name": "@dash/agent",
-  "version": "0.2.0",
+  "version": "0.3.2",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
@@ -15,7 +15,8 @@
   },
   "scripts": {
     "build": "tsup",
-    "dev": "tsup --watch"
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@dash/mcp": "*",

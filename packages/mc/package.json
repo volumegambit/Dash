@@ -1,6 +1,6 @@
 {
   "name": "@dash/mc",
-  "version": "0.2.0",
+  "version": "0.3.2",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,6 +12,10 @@
     "./provider-keys": {
       "import": "./dist/runtime/provider-keys.js",
       "types": "./dist/runtime/provider-keys.d.ts"
+    },
+    "./gateway-client": {
+      "import": "./dist/runtime/gateway-client.js",
+      "types": "./dist/runtime/gateway-client.d.ts"
     }
   },
   "scripts": {

@@ -11,8 +11,8 @@ import type {
 export const APPROVAL_HEADING = 'Approve this device';
 export const WAITING_FOR_APPROVAL_COPY =
   'Waiting for approval — scan this code with the Dash app on your phone.';
-export const APPROVAL_DECLINED_COPY = 'Approval declined. You can try again from the gateway list.';
-export const APPROVAL_EXPIRED_COPY = 'The code expired. Try again from the gateway list.';
+export const APPROVAL_DECLINED_COPY = 'Approval declined. You can try again from the HQ list.';
+export const APPROVAL_EXPIRED_COPY = 'The code expired. Try again from the HQ list.';
 
 const POLL_INTERVAL_MS = 2_000;
 const COUNTDOWN_TICK_MS = 1_000;
@@ -286,7 +286,7 @@ export function PendingApproval({
         </>
       )}
       <button type="button" onClick={onBack}>
-        Back to gateways
+        Back to HQs
       </button>
     </div>
   );

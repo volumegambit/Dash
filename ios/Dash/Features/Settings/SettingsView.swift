@@ -5,6 +5,9 @@ struct SettingsView: View {
   @Environment(SettingsFeature.self) private var feature
   @Environment(AppModel.self) private var appModel
   @State private var showForgetConfirmation = false
+  #if DEBUG
+    @State private var showsSpeechSettings = false
+  #endif
   @State private var approveDeviceViewModel: ApproveDeviceViewModel?
   @State private var didCopyPublicKey = false
 
@@ -12,8 +15,11 @@ struct SettingsView: View {
     // `@Environment` hands back a plain reference; `@Bindable` is what turns an
     // @Observable into something `$`-bindable for the location Toggle.
     @Bindable var feature = feature
+    // The composer Return-key preference lives in its own observable singleton
+    // so the composer and this Picker can never disagree about it.
+    @Bindable var composerPreferences = ComposerPreferences.shared
     return Form {
-      Section("Gateway") {
+      Section("HQ") {
         LabeledContent("Name") {
           // `LabeledContent(_:value:)` wraps a long value onto its own line
           // below the label, which is why a gateway hostname broke the
@@ -25,7 +31,7 @@ struct SettingsView: View {
             .truncationMode(.middle)
             .textSelection(.enabled)
         }
-        LabeledContent("Gateway ID") {
+        LabeledContent("HQ ID") {
           Text(feature.identity.gatewayId)
             .textSelection(.enabled)
             .lineLimit(1)
@@ -102,6 +108,53 @@ struct SettingsView: View {
       }
 
       Section {
+        Picker("Return key", selection: $composerPreferences.returnKeySends) {
+          Text("New line").tag(false)
+          Text("Send message").tag(true)
+        }
+        .frame(minHeight: 44)
+        .accessibilityIdentifier("settings.return-key")
+      } header: {
+        Text("Composer")
+      } footer: {
+        Text(
+          """
+          What the Return key does in the message composer, on both the \
+          hardware and on-screen keyboards. Cmd+Return always sends; \
+          Shift+Return always inserts a new line.
+          """
+        )
+      }
+
+      Section {
+        // Gated on the LIVE gateway's capabilities, not on the profile: a
+        // gateway gains and loses `speech-v1` with its provider credentials
+        // (see `AppModel.gatewayCapabilities`), so the row appears and
+        // disappears with the capability rather than being permanently
+        // decided at pairing time.
+        if appModel.speechAvailable {
+          NavigationLink {
+            SpeechSettingsHost()
+          } label: {
+            Label("Speech", systemImage: "waveform")
+          }
+          .frame(minHeight: 44)
+          .accessibilityIdentifier("settings.speech")
+        }
+      } header: {
+        Text("Speech")
+      } footer: {
+        Text(
+          appModel.speechAvailable
+            ? "Dictation, read aloud, and the voice your agent speaks with."
+            : "Update your HQ to use speech."
+        )
+        .accessibilityIdentifier(
+          appModel.speechAvailable ? "settings.speech.description" : "settings.speech.unavailable"
+        )
+      }
+
+      Section {
         Button("Approve a device") {
           approveDeviceViewModel = appModel.makeApproveDeviceViewModel()
         }
@@ -142,14 +195,14 @@ struct SettingsView: View {
           Button("Cancel", role: .cancel) {}
         } message: {
           Text(
-            "This removes this gateway's connection secrets, offline cache, drafts, and attachments from this device."
+            "This removes this HQ's connection secrets, offline cache, drafts, and attachments from this device."
           )
         }
 
         if feature.isForgetting {
           HStack {
             ProgressView()
-            Text("Removing gateway data")
+            Text("Removing HQ data")
               .foregroundStyle(.secondary)
           }
           .accessibilityElement(children: .combine)
@@ -158,22 +211,62 @@ struct SettingsView: View {
         Text("Device")
       } footer: {
         Text(
-          "Connection secrets, offline cache, drafts, and attachments for this gateway are removed from this device."
+          "Connection secrets, offline cache, drafts, and attachments for this HQ are removed from this device."
         )
+      }
+
+      Section {
+        LabeledContent("Version") {
+          // Middle-dot join so the build number — the only thing that changes
+          // between two OTA installs of the same marketing version — is
+          // always visible next to it, which is what confirms which build is
+          // actually running.
+          Text(Self.versionDisplay)
+            .textSelection(.enabled)
+            .accessibilityIdentifier("settings.version.value")
+        }
+        .frame(minHeight: 44)
+      } header: {
+        Text("About")
       }
     }
     .accessibilityIdentifier("settings.list")
     .navigationTitle("Settings")
+    // Debug-only deep link: `simctl` has no tap, so a pushed detail view is
+    // unreachable from a capture run without one. The UI tests tap the row
+    // like a person does. See `UITestLaunchOptions.opensSpeechSettings`.
+    #if DEBUG
+      .navigationDestination(isPresented: $showsSpeechSettings) { SpeechSettingsHost() }
+      // Keyed on the capability, not a bare `.task`: `speech-v1` arrives from
+      // an async `/health` probe (`adoptCapabilities`), so a once-on-appear
+      // task can run before the row exists and leave the capture script
+      // writing a Settings screenshot under the name `settings-speech`.
+      .task(id: appModel.speechAvailable) {
+        guard UITestLaunchOptions.opensSpeechSettings, appModel.speechAvailable else { return }
+        showsSpeechSettings = true
+      }
+    #endif
     .alert("Settings update failed", isPresented: errorPresented) {
       Button("OK") { feature.error = nil }
     } message: {
-      Text(feature.error ?? "Dash couldn't update gateway settings.")
+      Text(feature.error ?? "Dash couldn't update HQ settings.")
     }
     .sheet(isPresented: approveDeviceSheetPresented) {
       if let approveDeviceViewModel {
         ApproveDeviceView(viewModel: approveDeviceViewModel)
       }
     }
+  }
+
+  /// The marketing version and build number as `1.2.3 (456)`, read from the
+  /// app's Info.plist. The build number is what distinguishes two OTA installs
+  /// of the same version, so it is always shown — this row exists to confirm
+  /// which build is actually running on the device.
+  static var versionDisplay: String {
+    let info = Bundle.main.infoDictionary
+    let short = info?["CFBundleShortVersionString"] as? String ?? "—"
+    let build = info?["CFBundleVersion"] as? String ?? "—"
+    return "\(short) (\(build))"
   }
 
   /// Tap to copy the full key (settings clarity 2026-09-05).

@@ -1,5 +1,5 @@
 {
-  "$schema": "rendering-parity fixture — shared by apps/web/src/ui/blocks/rendering-parity.test.ts and ios/DashTests/Features/RenderingParityTests.swift. One source of truth for tool-presentation.ts / ToolPresentation.swift parity (design doc appendix §3). Do not edit either consumer's expectations without updating this file.",
+  "$schema": "rendering-parity fixture — shared by apps/web/src/ui/blocks/rendering-parity.test.ts and ios/DashTests/Features/RenderingParityTests.swift. One source of truth for tool-presentation.ts / ToolPresentation.swift (label, summarize, truncate, details — design doc appendix §3) and for subagents.ts / SubagentFormat.swift (elapsed, toolCount — sub-agents design §8.1, §8.7). Do not edit either consumer's expectations without updating this file.",
   "cases": [
     {
       "name": "label: bash maps to Bash",
@@ -687,6 +687,96 @@
       "kind": "label",
       "toolName": "linear__search_issues",
       "expectedLabel": "Search Issues"
+    },
+    {
+      "name": "label: agent maps to Agent",
+      "kind": "label",
+      "toolName": "agent",
+      "expectedLabel": "Agent"
+    },
+    {
+      "name": "label: send_message maps to Send Message",
+      "kind": "label",
+      "toolName": "send_message",
+      "expectedLabel": "Send Message"
+    },
+    {
+      "name": "summarize: agent uses description as its primary key (the `aside` decoy sorts BEFORE `description`, so a platform falling back to first-string-by-key-order returns \"decoy\" and fails)",
+      "kind": "summarize",
+      "toolName": "agent",
+      "input": {
+        "aside": "decoy",
+        "subagent_type": "code-reviewer",
+        "description": "Review the diff",
+        "prompt": "Review the diff and report findings"
+      },
+      "expectedSummary": "Review the diff"
+    },
+    {
+      "name": "elapsed: 0ms -> 0s (zero is whole seconds)",
+      "kind": "elapsed",
+      "inputMs": 0,
+      "expectedText": "0s"
+    },
+    {
+      "name": "elapsed: 45000ms -> 45s (sub-minute is whole seconds)",
+      "kind": "elapsed",
+      "inputMs": 45000,
+      "expectedText": "45s"
+    },
+    {
+      "name": "elapsed: 59999ms -> 59s (sub-minute floors, never rounds up to a minute)",
+      "kind": "elapsed",
+      "inputMs": 59999,
+      "expectedText": "59s"
+    },
+    {
+      "name": "elapsed: 60000ms -> 1m 00s (exactly one minute pads seconds to two digits)",
+      "kind": "elapsed",
+      "inputMs": 60000,
+      "expectedText": "1m 00s"
+    },
+    {
+      "name": "elapsed: 72000ms -> 1m 12s (minutes and seconds)",
+      "kind": "elapsed",
+      "inputMs": 72000,
+      "expectedText": "1m 12s"
+    },
+    {
+      "name": "elapsed: 3599999ms -> 59m 59s (one millisecond under an hour stays in minutes)",
+      "kind": "elapsed",
+      "inputMs": 3599999,
+      "expectedText": "59m 59s"
+    },
+    {
+      "name": "elapsed: 3600000ms -> 1h 00m (exactly one hour pads minutes to two digits)",
+      "kind": "elapsed",
+      "inputMs": 3600000,
+      "expectedText": "1h 00m"
+    },
+    {
+      "name": "elapsed: 7380000ms -> 2h 03m (hours drop seconds and pad minutes)",
+      "kind": "elapsed",
+      "inputMs": 7380000,
+      "expectedText": "2h 03m"
+    },
+    {
+      "name": "toolCount: 0 -> 0 tool uses",
+      "kind": "toolCount",
+      "inputCount": 0,
+      "expectedText": "0 tool uses"
+    },
+    {
+      "name": "toolCount: 1 -> 1 tool use",
+      "kind": "toolCount",
+      "inputCount": 1,
+      "expectedText": "1 tool use"
+    },
+    {
+      "name": "toolCount: 12 -> 12 tool uses",
+      "kind": "toolCount",
+      "inputCount": 12,
+      "expectedText": "12 tool uses"
     }
   ]
 }

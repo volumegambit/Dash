@@ -1,10 +1,13 @@
 {
   "name": "@dash/gateway",
-  "version": "0.2.0",
+  "version": "0.3.2",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "plugins"],
+  "files": [
+    "dist",
+    "plugins"
+  ],
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -14,6 +17,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "node --import tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
     "start": "node dist/index.js"
   },
   "dependencies": {
@@ -30,6 +34,7 @@
     "@dash/projects": "*",
     "@dash/relay": "*",
     "@dash/skills": "*",
+    "@dash/speech": "*",
     "@dash/swarm": "*",
     "@earendil-works/pi-ai": "^0.79.8",
     "@hono/node-server": "^1",
@@ -47,8 +52,12 @@
     "tsx": "^4.19.0"
   },
   "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": [
+      "esm"
+    ],
     "dts": true,
     "clean": true,
     "sourcemap": true,

@@ -5,12 +5,16 @@ import UniformTypeIdentifiers
 
 /// What a key does in the composer on iOS (UI-quality goal, Phase D).
 ///
-/// A declaration, not a description: `ComposerView` routes its Shift+Tab
-/// branch through `action(key:shift:command:)`, and
+/// A declaration, not a description: `ComposerView` routes its Return and
+/// Shift+Tab branches through `action(key:shift:command:returnKeySends:)`, and
 /// `ComposerKeyContractTests` cross-checks every case against the `ios`
 /// column of `scripts/fixtures/composer-key-contract.json` — the same file
-/// the web suite generates its tests from. Changing the behaviour on one side
-/// without the other fails the build's tests.
+/// the web and Mission Control suites generate their tests from. Changing the
+/// behaviour on one side without the other fails the build's tests.
+///
+/// Plain Return is configurable via `returnKeySends` (the user's Settings
+/// choice, default false = newline); see
+/// `docs/plans/2026-09-13-composer-return-key-configurable-design.md`.
 ///
 /// Why it exists: Shift+Return inserted a newline on web and Mission Control
 /// and was silently impossible here, because SwiftUI's `onSubmit` fires on
@@ -36,13 +40,22 @@ enum ComposerKeyContract {
     case native
   }
 
-  static func action(key: String, shift: Bool, command: Bool) -> Action {
+  /// `returnKeySends` carries the user's "what does plain Return do" setting
+  /// (`ComposerPreferences.shared.returnKeySends`, default false). When false
+  /// plain Return inserts a newline; when true it sends. The modifier rows are
+  /// unchanged by it: Shift+Return always inserts a newline, ⌘Return always
+  /// sends.
+  static func action(key: String, shift: Bool, command: Bool, returnKeySends: Bool) -> Action {
     switch (key, shift, command) {
     // ⌘Return sends — the send button carries this shortcut.
     case ("Enter", _, true): .send
-    // Return and Shift+Return both insert a newline. `TextField` does it
-    // natively once `.onSubmit` is gone; the composer must not intercept.
-    case ("Enter", _, false): .newline
+    // Shift+Return always inserts a newline, on every client (see the
+    // fixture's Shift+Return row).
+    case ("Enter", true, false): .newline
+    // Plain Return: the user's setting decides. `TextField` did NOT splice a
+    // hardware Return natively (that assumption was the 2026-09-13 bug), so
+    // the composer handles this itself — see `ComposerView`'s `.onKeyPress`.
+    case ("Enter", false, false): returnKeySends ? .send : .newline
     // Shift+Tab is a deliberate override of reverse focus traversal.
     case ("Tab", true, _): .newline
     // Plain Tab is deliberately NOT overridden: taking both directions would
@@ -52,15 +65,31 @@ enum ComposerKeyContract {
     }
   }
 
-  static func mechanism(key: String, shift: Bool, command: Bool) -> Mechanism? {
-    guard action(key: key, shift: shift, command: command) == .newline else { return nil }
-    // Only Shift+Tab is spliced by this app; Return relies on `TextField`.
-    return key == "Tab" ? .handler : .native
+  static func mechanism(
+    key: String, shift: Bool, command: Bool, returnKeySends: Bool
+  ) -> Mechanism? {
+    guard action(key: key, shift: shift, command: command, returnKeySends: returnKeySends) == .newline
+    else { return nil }
+    // Both Enter and Shift+Tab are spliced by this app now: the 2026-09-13 bug
+    // was that Return relied on `TextField` to insert the newline natively,
+    // which a hardware keyboard never did on iPad.
+    return .handler
   }
 }
 
 struct ComposerView: View {
   @Environment(ChatFeature.self) private var feature
+  @Binding var windowDraft: ChatWindowDraftState
+  /// The "what does Return do" setting. Read inline so `body` observes it
+  /// (`ComposerPreferences` is `@Observable`) — flipping it in Settings
+  /// re-evaluates `submitLabel` and the `.onKeyPress` branch here without any
+  /// extra plumbing.
+  private var prefs: ComposerPreferences { .shared }
+  /// Speech is a property of the CONNECTED GATEWAY, not of a conversation:
+  /// `AppModel.gatewayCapabilities` is the one place that knows whether this
+  /// gateway advertises `speech-v1`, so the mic is gated from here rather
+  /// than from `ChatFeature`, which never sees a capability.
+  @Environment(AppModel.self) private var appModel
 
   /// Monotonic counter bumped by `ChatView` when ⌘L
   /// (`KeyboardCommand.focusComposer`) fires. A counter rather than a `Bool`
@@ -91,6 +120,7 @@ struct ComposerView: View {
   // tick regardless of how the async call resolves, matching a physical
   // button's immediate feedback.
   @State private var actionFeedbackTick = 0
+  @State private var dictationFeedbackTick = 0
   // Compose-first new chat (Task 3, audit #16): "keyboard-ready" composer —
   // a brand-new conversation should land with the keyboard already up
   // rather than making the user tap the text field first. Scoped to
@@ -105,61 +135,95 @@ struct ComposerView: View {
   // deliberately dismissed it.
   @FocusState private var isDraftFocused: Bool
   @State private var hasAttemptedAutoFocus = false
+  #if DEBUG
+    /// One-shot, like `hasAttemptedAutoFocus`: `DASH_UI_TEST_DICTATION` seeds
+    /// the dictation state exactly once, on whichever pass first finds a
+    /// non-nil `feature.dictation` — the capability arrives asynchronously,
+    /// so that is often not the first.
+    @State private var hasSeededDictation = false
+    /// The same one-shot for `DASH_UI_TEST_VOICE`. Seeded from HERE rather
+    /// than from `ChatView` because `voiceModeAvailable` is set by this
+    /// view's own capability sync — a `.task` one level up races it.
+    @State private var hasSeededVoice = false
+  #endif
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      if feature.state.attachments.isEmpty == false {
+      if windowDraft.attachments.isEmpty == false {
         attachmentStrip
       }
 
       HStack(alignment: .bottom, spacing: 8) {
-        photoPicker
-
-        TextField("Message", text: draftBinding, axis: .vertical)
-          .lineLimit(1...6)
-          .textFieldStyle(.plain)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 10)
-          .frame(minHeight: 44)
-          .background(Color.secondary.opacity(DashTheme.Opacity.fillMuted), in: RoundedRectangle(cornerRadius: DashTheme.Radius.xLarge))
-          .disabled(feature.draftEditingAllowed == false)
-          .focused($isDraftFocused)
-          .accessibilityIdentifier("chat.composer")
-          .keyboardShortcut("l", modifiers: .command)
-          // Return inserts a newline; ⌘Return sends (the send button already
-          // carries that shortcut). Previously `.onSubmit` fired on every
-          // Return, and SwiftUI's `onSubmit` has no modifier awareness — so
-          // with a hardware keyboard there was NO way to type a newline in
-          // the composer at all. `.submitLabel(.send)` goes with it, so the
-          // software keyboard's return key stops advertising a send it no
-          // longer performs.
-          .onKeyPress(keys: [.tab], phases: .down) { press in
-            // Through the contract, so the declaration is load-bearing rather
-            // than decorative: if the table changes, this branch changes with
-            // it and `ComposerKeyContractTests` checks both against the shared
-            // fixture.
-            let shift = press.modifiers.contains(.shift)
-            let action = ComposerKeyContract.action(
-              key: "Tab", shift: shift, command: press.modifiers.contains(.command))
-            guard action == .newline else { return .ignored }
-            guard feature.draftEditingAllowed else { return .ignored }
-            // Appends rather than splitting at the caret: SwiftUI's
-            // `TextField` does not expose a selection, and reaching one
-            // would mean replacing the whole input with a `UITextView`
-            // wrapper. Return already gives a caret-correct newline here,
-            // so this is the redundant convenience path.
-            //
-            // Through `updateDraft`, not `state.draft` directly — that is
-            // the path `draftBinding` uses, and the one that persists the
-            // per-conversation draft.
-            Task { await feature.updateDraft(feature.state.draft + "\n") }
-            return .handled
+        // While a dictation runs, the field, the attach menu and send are all
+        // replaced: the only actions that still make sense are the two that
+        // end the recording, and a draft typed over a running meter reads as
+        // two inputs competing for the same message.
+        if let dictation = feature.dictation,
+          dictation.isBusy,
+          feature.ownsDictation(windowID: windowDraft.windowID)
+        {
+          if dictation.isUploading {
+            transcribingIndicator
+          } else {
+            DictationBar(
+              dictation: dictation,
+              onCancel: { Task { await dictation.cancel() } },
+              onFinish: { Task { await dictation.finish() } }
+            )
+          }
+        } else {
+          if feature.dictation != nil {
+            dictationButton
           }
 
-        primaryAction
+          photoPicker
+
+          ComposerTextInput(
+            text: draftBinding,
+            isFocused: Binding(
+              get: { isDraftFocused },
+              set: { isDraftFocused = $0 }
+            ),
+            placeholder: "Message",
+            isDisabled: feature.draftEditingAllowed == false,
+            returnKeySends: prefs.returnKeySends,
+            onSend: {
+              guard
+                feature.canSend(
+                  draft: windowDraft.text,
+                  attachments: windowDraft.attachments
+                )
+              else { return }
+              submit(.primary)
+            },
+            onActionFeedback: { actionFeedbackTick += 1 }
+          )
+          .frame(minHeight: 44, maxHeight: 148)
+          .background(
+            Color.secondary.opacity(DashTheme.Opacity.fillMuted),
+            in: RoundedRectangle(cornerRadius: DashTheme.Radius.xLarge)
+          )
+          .keyboardShortcut("l", modifiers: .command)
+
+          primaryAction
+
+          if feature.voiceModeAvailable {
+            voiceModeButton
+          }
+        }
       }
 
-      if let message = pickerError ?? feature.composerDisabledReason {
+      if let dictation = feature.dictation,
+        feature.ownsDictation(windowID: windowDraft.windowID),
+        let message = dictation.failureMessage
+      {
+        DictationFailureRow(
+          message: message,
+          showsSettingsAction: dictation.showsSettingsAction,
+          onOpenSettings: openSettings,
+          onDismiss: { feature.acknowledgeDictationFailure(windowID: windowDraft.windowID) }
+        )
+      } else if let message = pickerError ?? feature.composerDisabledReason {
         Label(message, systemImage: pickerError == nil ? "info.circle" : "exclamationmark.circle")
           .font(.caption)
           .foregroundStyle(pickerError == nil ? Color.secondary : Color.red)
@@ -195,7 +259,7 @@ struct ComposerView: View {
     .dropDestination(for: DroppedImage.self) { items, _ in
       let selections = DroppedImage.selections(from: items)
       guard selections.isEmpty == false else { return false }
-      Task { await feature.addSelections(selections) }
+      addSelections(selections)
       return true
     } isTargeted: { isDropTargeted.wrappedValue = $0 }
     .onChange(of: selectedItems) { _, items in
@@ -224,7 +288,12 @@ struct ComposerView: View {
       Task { await importFiles(result) }
     }
     .sensoryFeedback(.impact(weight: .light), trigger: actionFeedbackTick)
+    // Design §4: the transcript landing in the draft earns a `.success`, the
+    // one moment in dictation where something the user cannot see happened.
+    .sensoryFeedback(.success, trigger: dictationFeedbackTick)
     .task { attemptAutoFocus() }
+    .task { updateDictationAvailability() }
+    .onChange(of: appModel.speechAvailable) { _, _ in updateDictationAvailability() }
     .onChange(of: feature.draftEditingAllowed) { _, allowed in
       guard allowed else { return }
       attemptAutoFocus()
@@ -235,6 +304,20 @@ struct ComposerView: View {
     .onChange(of: feature.hasLoadedCache) { _, loaded in
       guard loaded else { return }
       attemptAutoFocus()
+    }
+    .onChange(of: feature.windowDraftResolution) { _, resolution in
+      guard let resolution else { return }
+      var next = windowDraft
+      guard next.apply(resolution) else { return }
+      windowDraft = next
+    }
+    .onChange(of: feature.dictationInsertion) { _, insertion in
+      guard let insertion, insertion.sourceWindowID == windowDraft.windowID else { return }
+      var next = windowDraft
+      next.appendDictation(insertion.text)
+      windowDraft = next
+      saveWindowDraft(next)
+      dictationFeedbackTick &+= 1
     }
     // ⌘L. Unlike `attemptAutoFocus()` this is NOT one-shot and is NOT gated
     // on `isFreshConversation`: the user asked for the field explicitly, so
@@ -263,21 +346,63 @@ struct ComposerView: View {
 
   private var draftBinding: Binding<String> {
     Binding(
-      get: { feature.state.draft },
+      get: { windowDraft.text },
       set: { value in
-        Task { await feature.updateDraft(value) }
+        var next = windowDraft
+        next.edit(value)
+        windowDraft = next
+        saveWindowDraft(next)
       }
     )
+  }
+
+  private func saveWindowDraft(_ draft: ChatWindowDraftState) {
+    guard let windowID = draft.windowID else { return }
+    Task {
+      await feature.saveWindowDraft(
+        text: draft.text,
+        attachments: draft.attachments,
+        revision: draft.revision,
+        windowID: windowID
+      )
+    }
+  }
+
+  private enum SubmissionIntent {
+    case primary
+    case interrupt
+  }
+
+  private func submit(_ intent: SubmissionIntent) {
+    var next = windowDraft
+    _ = next.beginSubmission()
+    guard let payload = next.payload else { return }
+    windowDraft = next
+    Task {
+      switch intent {
+      case .primary:
+        if feature.state.activeTurnID != nil, feature.conversationControlAvailable {
+          await feature.sendFollowUp(payload: payload)
+        } else {
+          await feature.send(payload: payload)
+        }
+      case .interrupt:
+        await feature.interruptAndSend(payload: payload)
+      }
+    }
   }
 
   private var attachmentStrip: some View {
     ScrollView(.horizontal) {
       HStack(spacing: 10) {
-        ForEach(Array(feature.state.attachments.enumerated()), id: \.element.id) {
+        ForEach(Array(windowDraft.attachments.enumerated()), id: \.element.id) {
           index,
           attachment in
           AttachmentThumbnail(attachment: attachment) {
-            Task { await feature.removeAttachment(id: attachment.id) }
+            var next = windowDraft
+            next.replaceAttachments(next.attachments.filter { $0.id != attachment.id })
+            windowDraft = next
+            saveWindowDraft(next)
           }
           .accessibilityLabel("Attached image \(index + 1)")
           // iPad goal Phase B, Task 8 (forwarded from Task 7): lets a UI
@@ -293,7 +418,133 @@ struct ComposerView: View {
   }
 
   private var remainingAttachmentSlots: Int {
-    ImageAttachmentValidator.maximumCount - feature.state.attachments.count
+    ImageAttachmentValidator.maximumCount - windowDraft.attachments.count
+  }
+
+  /// Design §4: the mic sits left of the paperclip, and is disabled by the
+  /// same rule the field is — a turn in progress, a read-only conversation or
+  /// a blocked composer means there is nothing to dictate INTO.
+  private var dictationButton: some View {
+    Button {
+      actionFeedbackTick += 1
+      guard let windowID = windowDraft.windowID else { return }
+      Task { await feature.startDictation(windowID: windowID) }
+    } label: {
+      Image(systemName: "mic")
+        .font(.title3)
+        .frame(width: 44, height: 44)
+        .contentShape(Rectangle())
+    }
+    .disabled(
+      feature.draftEditingAllowed == false
+        || (feature.dictationOwnerWindowID != nil
+          && feature.ownsDictation(windowID: windowDraft.windowID) == false)
+    )
+    .accessibilityLabel("Dictate a message")
+    .accessibilityHint("Records up to 60 seconds and adds what you say to your message")
+    .accessibilityIdentifier("chat.dictate")
+  }
+
+  /// Design §4: hands-free voice mode, right of send — the last thing on the
+  /// row, because it replaces the whole composer rather than adding to the
+  /// draft. Disabled by the same rule the field is: a turn already in
+  /// progress, a read-only conversation or a blocked composer means there is
+  /// nothing to talk INTO.
+  private var voiceModeButton: some View {
+    Button {
+      actionFeedbackTick += 1
+      guard let voice = feature.startVoiceMode() else { return }
+      Task { await voice.start() }
+    } label: {
+      Image(systemName: "waveform")
+        .font(.title3)
+        .frame(width: 44, height: 44)
+        .contentShape(Rectangle())
+    }
+    .disabled(feature.draftEditingAllowed == false)
+    .accessibilityLabel("Start voice mode")
+    .accessibilityHint("Talk with your agent hands-free")
+    .accessibilityIdentifier("chat.voice")
+  }
+
+  /// The upload. No cancel: the clip is already recorded and the request is
+  /// seconds long — the honest thing is to say what is happening and let it
+  /// finish. Starting another recording cancels it.
+  private var transcribingIndicator: some View {
+    HStack(spacing: 8) {
+      ProgressView()
+      Text("Transcribing…")
+        .font(.callout)
+        .foregroundStyle(.secondary)
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 12)
+    .frame(minHeight: 44)
+    .frame(maxWidth: .infinity)
+    .background(
+      Color.secondary.opacity(DashTheme.Opacity.fillMuted),
+      in: RoundedRectangle(cornerRadius: DashTheme.Radius.xLarge)
+    )
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Transcribing")
+    .accessibilityIdentifier("chat.dictation.uploading")
+  }
+
+  /// One gate, two surfaces: `AppModel.speechAvailable` is the only place
+  /// that knows whether this GATEWAY advertises `speech-v1`, and neither the
+  /// mic nor the waveform belongs on a gateway that cannot speak.
+  private func updateDictationAvailability() {
+    feature.syncDictation(available: appModel.speechAvailable)
+    feature.syncVoiceMode(available: appModel.speechAvailable)
+    #if DEBUG
+      seedDictationForUITesting()
+      seedVoiceModeForUITesting()
+    #endif
+  }
+
+  #if DEBUG
+    /// `DASH_UI_TEST_DICTATION=recording|uploading|failed` drives the REAL
+    /// state machine through the UI-test fakes rather than writing a phase
+    /// directly, so a capture cannot show a state the app can't reach.
+    /// `uploading` hangs in the fake transcriber; `failed` throws from it.
+    private func seedDictationForUITesting() {
+      guard
+        hasSeededDictation == false,
+        let seed = UITestLaunchOptions.dictation,
+        let dictation = feature.dictation
+      else { return }
+      hasSeededDictation = true
+      Task {
+        await dictation.start()
+        guard seed != "recording" else { return }
+        await dictation.finish()
+      }
+    }
+  #endif
+
+  #if DEBUG
+    /// `DASH_UI_TEST_VOICE=listening|thinking|speaking|muted|ended` opens the
+    /// cover and drives it into one state through the REAL feature and the
+    /// REAL reducer, from canned frames — a tap, a microphone and a gateway
+    /// with a speech provider are all unreachable from `simctl`, and a
+    /// capture must not be able to show a state the app cannot reach.
+    private func seedVoiceModeForUITesting() {
+      guard
+        hasSeededVoice == false,
+        let seed = UITestLaunchOptions.voice,
+        let voice = feature.startVoiceMode()
+      else { return }
+      hasSeededVoice = true
+      Task {
+        await voice.start()
+        voice.seedForUITesting(seed)
+      }
+    }
+  #endif
+
+  private func openSettings() {
+    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+    UIApplication.shared.open(url)
   }
 
   /// Audit #19: photo library, camera (when the device has one), or the
@@ -347,13 +598,65 @@ struct ComposerView: View {
 
   private func addFileSelections(_ selections: [ImageSelection]) async {
     guard selections.isEmpty == false else { return }
-    await feature.addSelections(selections)
-    pickerError = nil
+    addSelections(selections)
+  }
+
+  private func addSelections(_ selections: [ImageSelection]) {
+    do {
+      var next = windowDraft
+      let attachments = try feature.prepareSelections(
+        selections,
+        appendingTo: next.attachments
+      )
+      next.replaceAttachments(attachments)
+      windowDraft = next
+      saveWindowDraft(next)
+      pickerError = nil
+    } catch {
+      pickerError = error.localizedDescription
+    }
   }
 
   @ViewBuilder
   private var primaryAction: some View {
-    if feature.state.activeTurnID != nil, feature.state.composerBlock == nil {
+    if feature.state.activeTurnID != nil, feature.conversationControlAvailable {
+      HStack(spacing: 2) {
+        Button {
+          actionFeedbackTick += 1
+          submit(.primary)
+        } label: {
+          Image(systemName: "arrow.up.circle.fill")
+            .font(.title2)
+            .frame(width: 44, height: 44)
+        }
+        .disabled(
+          feature.canSend(draft: windowDraft.text, attachments: windowDraft.attachments) == false
+        )
+        .keyboardShortcut(.return, modifiers: .command)
+        .accessibilityLabel("Add Follow Up")
+        .accessibilityHint("Sends after the active response finishes")
+        .accessibilityIdentifier("chat.followUp")
+
+        Menu {
+          Button {
+            actionFeedbackTick += 1
+            submit(.interrupt)
+          } label: {
+            Label("Interrupt & send", systemImage: "bolt.fill")
+          }
+          .disabled(
+            feature.canInterruptAndSend(
+              draft: windowDraft.text,
+              attachments: windowDraft.attachments
+            ) == false
+          )
+        } label: {
+          Image(systemName: "chevron.up.circle")
+            .frame(width: 36, height: 44)
+        }
+        .accessibilityLabel("Send options")
+      }
+    } else if feature.state.activeTurnID != nil, feature.state.composerBlock == nil {
       Button {
         actionFeedbackTick += 1
         Task { await feature.cancel() }
@@ -374,13 +677,15 @@ struct ComposerView: View {
     } else {
       Button {
         actionFeedbackTick += 1
-        Task { await feature.send() }
+        submit(.primary)
       } label: {
         Image(systemName: "arrow.up.circle.fill")
           .font(.title2)
           .frame(width: 44, height: 44)
       }
-      .disabled(feature.canSend == false)
+      .disabled(
+        feature.canSend(draft: windowDraft.text, attachments: windowDraft.attachments) == false
+      )
       .keyboardShortcut(.return, modifiers: .command)
       .accessibilityLabel("Send message")
       .accessibilityHint(feature.composerDisabledReason ?? "")
@@ -419,8 +724,7 @@ struct ComposerView: View {
         }
         selections.append(ImageSelection(data: data, type: type))
       }
-      await feature.addSelections(selections)
-      pickerError = nil
+      addSelections(selections)
     } catch let error as AttachmentPickerError {
       pickerError = error.message
     } catch {

@@ -1,0 +1,8 @@
+{
+  "type": "remove_pending",
+  "id": "918f0f4a-5c42-7a8b-9c01-1234567890ab",
+  "agentId": "agent-01",
+  "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+  "pendingId": "818f0f4a-5c42-7a8b-9c01-1234567890ab",
+  "expectedVersion": 2
+}

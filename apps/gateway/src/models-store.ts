@@ -9,25 +9,23 @@ import type { FilteredModel } from '@dash/plugin-sdk';
  * `channels.json`, `agents.json`, and `gateway-state.json` in the gateway
  * data directory.
  *
- * `supportedModelsReviewedAt` is a stale-detection key. The fingerprint is now
- * supplied by the caller from LIVE catalog data (the newest `reviewedAt` across
- * the loaded provider catalogs) rather than a source constant: when a catalog
- * audit bumps a `reviewedAt` (patterns changed), the persisted file no longer
- * matches the current fingerprint and `load()` treats it as missing, forcing a
- * clean refetch. The field name is kept for on-disk compatibility — an existing
- * `models.json` written under the pre-catalog fingerprint format simply
- * mismatches the new catalog fingerprint and refetches once.
+ * `supportedModelsReviewedAt` retains the review date for compatibility.
+ * `catalogFingerprint` hashes the full loaded catalogs, so same-day edits and
+ * changes to older-reviewed providers invalidate the persisted list as well.
+ * Errors and retryAfter preserve a failed refresh across process restarts.
  */
 export interface ModelsStoreFile {
   fetchedAt: string;
   supportedModelsReviewedAt: string;
   models: FilteredModel[];
+  catalogFingerprint?: string;
+  errors?: Record<string, string>;
+  retryAfter?: string;
 }
 
 /**
  * Persistent gateway model store. Atomic writes via tmp+rename. Stale
- * invalidation against a caller-supplied fingerprint (the newest catalog
- * `reviewedAt`), so the store never serves data curated under a different
+ * invalidation against a caller-supplied catalog content fingerprint, so the store never serves data curated under a different
  * catalog revision.
  */
 export class ModelsStore {
@@ -72,7 +70,10 @@ export class ModelsStore {
    * Callers treat null as "no usable data, refetch live or return the
    * catalogs' static models depending on credential state".
    */
-  async load(currentReviewedAt: string): Promise<ModelsStoreFile | null> {
+  async load(
+    currentReviewedAt: string,
+    catalogFingerprint?: string,
+  ): Promise<ModelsStoreFile | null> {
     if (!existsSync(this.filePath)) return null;
     let raw: string;
     try {
@@ -88,7 +89,23 @@ export class ModelsStore {
       // overwrites it cleanly.
       return null;
     }
-    if (parsed.supportedModelsReviewedAt !== currentReviewedAt) {
+    if (
+      !parsed ||
+      !Array.isArray(parsed.models) ||
+      typeof parsed.fetchedAt !== 'string' ||
+      parsed.models.some(
+        (m) =>
+          !m ||
+          typeof m.value !== 'string' ||
+          typeof m.provider !== 'string' ||
+          typeof m.label !== 'string',
+      )
+    )
+      return null;
+    if (
+      parsed.supportedModelsReviewedAt !== currentReviewedAt ||
+      (catalogFingerprint !== undefined && parsed.catalogFingerprint !== catalogFingerprint)
+    ) {
       // Catalogs have been re-reviewed since this file was written. Force a
       // refresh so curation stays in sync.
       return null;
@@ -102,11 +119,18 @@ export class ModelsStore {
    * queue so two concurrent `GET /models` refreshes can't race the rename
    * (matches the pattern used by AgentRegistry, ChannelRegistry).
    */
-  async save(models: FilteredModel[], reviewedAt: string): Promise<void> {
+  async save(
+    models: FilteredModel[],
+    reviewedAt: string,
+    options: Pick<ModelsStoreFile, 'catalogFingerprint' | 'errors' | 'retryAfter'> & {
+      fetchedAt?: string;
+    } = {},
+  ): Promise<void> {
     await this.enqueue(async () => {
       await mkdir(dirname(this.filePath), { recursive: true });
       const payload: ModelsStoreFile = {
-        fetchedAt: new Date().toISOString(),
+        ...options,
+        fetchedAt: options.fetchedAt ?? new Date().toISOString(),
         supportedModelsReviewedAt: reviewedAt,
         models,
       };

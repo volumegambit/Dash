@@ -2,6 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "mobile-chat-ws",
   "$defs": {
+    "ConversationId": {
+      "$comment": "A user conversation id is a uuid; a sub-agent conversation id is sub_<ulid> (design 2026-09-04 sub-agents, 7.4). Child conversations stream over the same frames, so every conversationId accepts either shape.",
+      "type": "string",
+      "pattern": "^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|sub_[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26})$"
+    },
     "MobileImage": {
       "type": "object",
       "additionalProperties": false,
@@ -88,7 +93,25 @@
         "conversation_busy",
         "rate_limited",
         "gateway_offline",
-        "capability_required"
+        "capability_required",
+        "too_large",
+        "too_long",
+        "provider",
+        "network",
+        "unavailable",
+        "invalid"
+      ]
+    },
+    "SpeechErrorCode": {
+      "$comment": "packages/speech/src/errors.ts's SpeechErrorCode, restated here. The subset of MobileApiErrorCode a voice_error frame can actually carry.",
+      "enum": [
+        "unauthorized",
+        "unavailable",
+        "too_long",
+        "too_large",
+        "invalid",
+        "provider",
+        "network"
       ]
     },
     "ChatSend": {
@@ -96,31 +119,14 @@
       "additionalProperties": false,
       "required": ["type", "id", "agentId", "channelId", "conversationId", "text", "resumable"],
       "properties": {
-        "type": {
-          "const": "message"
-        },
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "agentId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "channelId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "conversationId": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "text": {
-          "type": "string"
-        },
-        "location": {
-          "$ref": "#/$defs/MobileClientLocation"
-        },
+        "type": { "const": "message" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "channelId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "text": { "type": "string" },
+        "location": { "$ref": "#/$defs/MobileClientLocation" },
+        "modality": { "enum": ["text", "voice"] },
         "images": {
           "type": "array",
           "items": {
@@ -140,25 +146,11 @@
       "additionalProperties": false,
       "required": ["type", "id", "agentId", "conversationId", "sinceSeq"],
       "properties": {
-        "type": {
-          "const": "resume"
-        },
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "agentId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "conversationId": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "sinceSeq": {
-          "type": "integer",
-          "minimum": 0
-        }
+        "type": { "const": "resume" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "sinceSeq": { "type": "integer", "minimum": 0 }
       }
     },
     "ChatAnswer": {
@@ -196,7 +188,182 @@
         }
       }
     },
+    "ChatSubscribe": {
+      "$comment": "Watch a conversation this socket did not start a turn on (design 2026-09-04 sub-agents, 7.6). `message` and `resume` subscribe implicitly.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "agentId", "conversationId"],
+      "properties": {
+        "type": { "const": "subscribe" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" }
+      }
+    },
+    "ChatUnsubscribe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "agentId", "conversationId"],
+      "properties": {
+        "type": { "const": "unsubscribe" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" }
+      }
+    },
+    "PendingConversationInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "commandId",
+        "conversationId",
+        "kind",
+        "version",
+        "text",
+        "state",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "commandId": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "kind": { "enum": ["priority", "follow_up"] },
+        "version": { "type": "integer", "minimum": 1 },
+        "text": { "type": "string" },
+        "images": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/MobileImage" }
+        },
+        "state": { "enum": ["pending", "claimed"] },
+        "claimedTurnId": { "type": "string", "format": "uuid" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ConversationQueueSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "scheduling", "pendingCount", "items"],
+      "properties": {
+        "revision": { "type": "integer", "minimum": 0 },
+        "scheduling": { "enum": ["running", "paused"] },
+        "pendingCount": { "type": "integer", "minimum": 0 },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PendingConversationInput" }
+        }
+      }
+    },
+    "ChatWatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "agentId", "conversationId", "sinceSeq"],
+      "properties": {
+        "type": { "const": "watch" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "sinceSeq": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "ChatFollowUp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "agentId", "conversationId", "text"],
+      "properties": {
+        "type": { "const": "follow_up" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "text": { "type": "string" },
+        "images": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/MobileImage" }
+        }
+      }
+    },
+    "ChatInterruptAndSend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "agentId", "conversationId", "expectedActiveTurnId", "text"],
+      "properties": {
+        "type": { "const": "interrupt_and_send" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "expectedActiveTurnId": { "type": "string", "format": "uuid" },
+        "text": { "type": "string" },
+        "images": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/MobileImage" }
+        }
+      }
+    },
+    "ChatStopConversation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "agentId", "conversationId"],
+      "properties": {
+        "type": { "const": "stop_conversation" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" }
+      }
+    },
+    "ChatResumePending": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "agentId", "conversationId"],
+      "properties": {
+        "type": { "const": "resume_pending" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" }
+      }
+    },
+    "ChatEditPending": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "agentId",
+        "conversationId",
+        "pendingId",
+        "expectedVersion",
+        "text"
+      ],
+      "properties": {
+        "type": { "const": "edit_pending" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "pendingId": { "type": "string", "format": "uuid" },
+        "expectedVersion": { "type": "integer", "minimum": 1 },
+        "text": { "type": "string" },
+        "images": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/MobileImage" }
+        }
+      }
+    },
+    "ChatRemovePending": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "agentId", "conversationId", "pendingId", "expectedVersion"],
+      "properties": {
+        "type": { "const": "remove_pending" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "pendingId": { "type": "string", "format": "uuid" },
+        "expectedVersion": { "type": "integer", "minimum": 1 }
+      }
+    },
     "ChatAccepted": {
+      "$comment": "`requestId` echoes SubagentResumeRequest.requestId on the turn that request became; it is LIVE-ONLY and never replayed, since the durable event log stores no client correlation id. `origin` and `kind` are optional. On a live frame they are emitted only when the turn is not an ordinary user turn on a user conversation, so pre-subscription clients see unchanged bytes, and absent means 'user'. On the replay path they are never emitted (the durable event-log payload does not carry them yet), so absent there means unknown -- read ConversationMessage.origin and ConversationSummary.kind instead.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -209,33 +376,74 @@
         "seq"
       ],
       "properties": {
-        "type": {
-          "const": "accepted"
+        "type": { "const": "accepted" },
+        "id": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "userMessageId": { "type": "string", "format": "uuid" },
+        "assistantMessageId": { "type": "string", "format": "uuid" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "seq": { "type": "integer", "minimum": 1 },
+        "origin": { "enum": ["user", "notification", "parent"] },
+        "kind": { "enum": ["user", "subagent"] },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "pendingItemId": { "type": "string", "format": "uuid" }
+      }
+    },
+    "ChatWatched": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "conversationId", "throughSeq", "queue"],
+      "properties": {
+        "type": { "const": "watched" },
+        "id": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "throughSeq": { "type": "integer", "minimum": 0 },
+        "queue": { "$ref": "#/$defs/ConversationQueueSnapshot" }
+      }
+    },
+    "ChatCommandReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "conversationId", "command", "status", "queue"],
+      "properties": {
+        "type": { "const": "command_receipt" },
+        "id": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "command": {
+          "enum": [
+            "follow_up",
+            "interrupt_and_send",
+            "stop_conversation",
+            "resume_pending",
+            "edit_pending",
+            "remove_pending"
+          ]
         },
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "conversationId": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "userMessageId": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "assistantMessageId": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "revision": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "seq": {
-          "type": "integer",
-          "minimum": 1
+        "status": { "enum": ["accepted", "rejected", "already_applied"] },
+        "queue": { "$ref": "#/$defs/ConversationQueueSnapshot" },
+        "affectedTurnId": { "type": "string", "format": "uuid" },
+        "pendingItem": { "$ref": "#/$defs/PendingConversationInput" },
+        "reason": {
+          "enum": [
+            "stale_execution",
+            "version_conflict",
+            "already_claimed",
+            "not_found",
+            "queue_empty",
+            "invalid_state"
+          ]
         }
+      }
+    },
+    "ChatQueueChanged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "conversationId", "queue"],
+      "properties": {
+        "type": { "const": "queue_changed" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "queue": { "$ref": "#/$defs/ConversationQueueSnapshot" },
+        "commandId": { "type": "string", "format": "uuid" }
       }
     },
     "ChatEvent": {
@@ -243,21 +451,10 @@
       "additionalProperties": false,
       "required": ["type", "id", "conversationId", "seq", "event"],
       "properties": {
-        "type": {
-          "const": "event"
-        },
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "conversationId": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "seq": {
-          "type": "integer",
-          "minimum": 1
-        },
+        "type": { "const": "event" },
+        "id": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "seq": { "type": "integer", "minimum": 1 },
         "event": {
           "type": "object",
           "required": ["type"],
@@ -276,24 +473,11 @@
       "additionalProperties": false,
       "required": ["type", "id", "conversationId", "seq", "outcome"],
       "properties": {
-        "type": {
-          "const": "done"
-        },
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "conversationId": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "seq": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "outcome": {
-          "enum": ["completed", "cancelled"]
-        }
+        "type": { "const": "done" },
+        "id": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "outcome": { "enum": ["completed", "cancelled"] }
       }
     },
     "ChatError": {
@@ -301,35 +485,14 @@
       "additionalProperties": false,
       "required": ["type", "id", "conversationId", "seq", "error"],
       "properties": {
-        "type": {
-          "const": "error"
-        },
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "conversationId": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "seq": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "error": {
-          "type": "string",
-          "minLength": 1
-        },
-        "code": {
-          "$ref": "#/$defs/MobileApiErrorCode"
-        },
-        "retryable": {
-          "type": "boolean"
-        },
-        "activeTurnId": {
-          "type": "string",
-          "minLength": 1
-        }
+        "type": { "const": "error" },
+        "id": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "error": { "type": "string", "minLength": 1 },
+        "code": { "$ref": "#/$defs/MobileApiErrorCode" },
+        "retryable": { "type": "boolean" },
+        "activeTurnId": { "type": "string", "minLength": 1 }
       }
     },
     "MobileWsMessageFrame": {
@@ -337,31 +500,14 @@
       "additionalProperties": false,
       "required": ["type", "id", "agentId", "channelId", "conversationId", "text"],
       "properties": {
-        "type": {
-          "const": "message"
-        },
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "agentId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "channelId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "conversationId": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "text": {
-          "type": "string"
-        },
-        "location": {
-          "$ref": "#/$defs/MobileClientLocation"
-        },
+        "type": { "const": "message" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "channelId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "text": { "type": "string" },
+        "location": { "$ref": "#/$defs/MobileClientLocation" },
+        "modality": { "enum": ["text", "voice"] },
         "images": {
           "type": "array",
           "items": {
@@ -381,21 +527,10 @@
       "additionalProperties": false,
       "required": ["type", "id", "event"],
       "properties": {
-        "type": {
-          "const": "event"
-        },
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "conversationId": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "seq": {
-          "type": "integer",
-          "minimum": 1
-        },
+        "type": { "const": "event" },
+        "id": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "seq": { "type": "integer", "minimum": 1 },
         "event": {
           "type": "object",
           "required": ["type"],
@@ -414,24 +549,11 @@
       "additionalProperties": false,
       "required": ["type", "id"],
       "properties": {
-        "type": {
-          "const": "done"
-        },
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "conversationId": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "seq": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "outcome": {
-          "enum": ["completed", "cancelled"]
-        }
+        "type": { "const": "done" },
+        "id": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "outcome": { "enum": ["completed", "cancelled"] }
       }
     },
     "MobileWsErrorFrame": {
@@ -439,51 +561,163 @@
       "additionalProperties": false,
       "required": ["type", "id", "error"],
       "properties": {
-        "type": {
-          "const": "error"
-        },
-        "id": {
+        "type": { "const": "error" },
+        "id": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "error": { "type": "string", "minLength": 1 },
+        "code": { "$ref": "#/$defs/MobileApiErrorCode" },
+        "retryable": { "type": "boolean" },
+        "activeTurnId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "VoiceStart": {
+      "$comment": "Starts the hands-free voice session on conversationId. id is the client-generated session id carried by every voice_* frame in both directions; a second voice_start on the same socket replaces the first session.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "agentId", "conversationId"],
+      "properties": {
+        "type": { "const": "voice_start" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" }
+      }
+    },
+    "VoiceAudio": {
+      "$comment": "One capture chunk from the phone's microphone. The gateway caps the DECODED size of pcm at 16384 bytes (~512ms of 16 kHz mono PCM16). seq is advisory only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "seq", "pcm"],
+      "properties": {
+        "type": { "const": "voice_audio" },
+        "id": { "type": "string", "format": "uuid" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "pcm": {
+          "description": "Standard base64 PCM16 at 16 kHz mono.",
           "type": "string",
-          "format": "uuid"
-        },
-        "conversationId": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "seq": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "error": {
-          "type": "string",
-          "minLength": 1
-        },
-        "code": {
-          "$ref": "#/$defs/MobileApiErrorCode"
-        },
-        "retryable": {
-          "type": "boolean"
-        },
-        "activeTurnId": {
-          "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "contentEncoding": "base64"
         }
+      }
+    },
+    "VoiceMute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "muted"],
+      "properties": {
+        "type": { "const": "voice_mute" },
+        "id": { "type": "string", "format": "uuid" },
+        "muted": { "type": "boolean" }
+      }
+    },
+    "VoiceStop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "const": "voice_stop" },
+        "id": { "type": "string", "format": "uuid" }
+      }
+    },
+    "VoicePlayed": {
+      "$comment": "The phone has finished PLAYING every voice_speech up to and including seq. The gateway holds the session in speaking until it arrives, or until an 8s safety timer fires.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "seq"],
+      "properties": {
+        "type": { "const": "voice_played" },
+        "id": { "type": "string", "format": "uuid" },
+        "seq": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "VoiceState": {
+      "$comment": "turnId is set once a turn is running and cleared once it settles back to listening.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "state"],
+      "properties": {
+        "type": { "const": "voice_state" },
+        "id": { "type": "string", "format": "uuid" },
+        "state": {
+          "enum": ["listening", "transcribing", "thinking", "speaking", "muted", "stopped"]
+        },
+        "turnId": { "type": "string", "format": "uuid" }
+      }
+    },
+    "VoiceTranscript": {
+      "$comment": "turnId is set on the transcript that STARTS a turn, always emitted before that turn's ChatAccepted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "text", "final"],
+      "properties": {
+        "type": { "const": "voice_transcript" },
+        "id": { "type": "string", "format": "uuid" },
+        "text": { "type": "string" },
+        "final": { "type": "boolean" },
+        "turnId": { "type": "string", "format": "uuid" }
+      }
+    },
+    "VoiceSpeech": {
+      "$comment": "seq is a per-chunk counter, independent of the resumable chat hub's seq.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "seq", "audio", "format", "text"],
+      "properties": {
+        "type": { "const": "voice_speech" },
+        "id": { "type": "string", "format": "uuid" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "audio": {
+          "description": "base64 of the chunk's raw bytes.",
+          "type": "string",
+          "minLength": 1,
+          "contentEncoding": "base64"
+        },
+        "format": { "enum": ["pcm16", "mp3"] },
+        "sampleRate": { "type": "integer", "minimum": 1 },
+        "text": { "type": "string" }
+      }
+    },
+    "VoiceError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "code", "error"],
+      "properties": {
+        "type": { "const": "voice_error" },
+        "id": { "type": "string", "format": "uuid" },
+        "code": { "$ref": "#/$defs/SpeechErrorCode" },
+        "error": { "type": "string", "minLength": 1 }
+      }
+    },
+    "VoiceStopped": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "reason"],
+      "properties": {
+        "type": { "const": "voice_stopped" },
+        "id": { "type": "string", "format": "uuid" },
+        "reason": { "enum": ["client", "socket", "provider", "replaced"] }
       }
     },
     "MobileWsClientFrame": {
       "oneOf": [
-        {
-          "$ref": "#/$defs/MobileWsMessageFrame"
-        },
-        {
-          "$ref": "#/$defs/ChatResume"
-        },
-        {
-          "$ref": "#/$defs/ChatAnswer"
-        },
-        {
-          "$ref": "#/$defs/ChatCancel"
-        }
+        { "$ref": "#/$defs/MobileWsMessageFrame" },
+        { "$ref": "#/$defs/ChatResume" },
+        { "$ref": "#/$defs/ChatAnswer" },
+        { "$ref": "#/$defs/ChatCancel" },
+        { "$ref": "#/$defs/ChatSubscribe" },
+        { "$ref": "#/$defs/ChatUnsubscribe" },
+        { "$ref": "#/$defs/ChatWatch" },
+        { "$ref": "#/$defs/ChatFollowUp" },
+        { "$ref": "#/$defs/ChatInterruptAndSend" },
+        { "$ref": "#/$defs/ChatStopConversation" },
+        { "$ref": "#/$defs/ChatResumePending" },
+        { "$ref": "#/$defs/ChatEditPending" },
+        { "$ref": "#/$defs/ChatRemovePending" },
+        { "$ref": "#/$defs/VoiceStart" },
+        { "$ref": "#/$defs/VoiceAudio" },
+        { "$ref": "#/$defs/VoiceMute" },
+        { "$ref": "#/$defs/VoiceStop" },
+        { "$ref": "#/$defs/VoicePlayed" }
       ]
     },
     "MobileWsServerFrame": {
@@ -499,6 +733,30 @@
         },
         {
           "$ref": "#/$defs/MobileWsErrorFrame"
+        },
+        {
+          "$ref": "#/$defs/ChatWatched"
+        },
+        {
+          "$ref": "#/$defs/ChatCommandReceipt"
+        },
+        {
+          "$ref": "#/$defs/ChatQueueChanged"
+        },
+        {
+          "$ref": "#/$defs/VoiceState"
+        },
+        {
+          "$ref": "#/$defs/VoiceTranscript"
+        },
+        {
+          "$ref": "#/$defs/VoiceSpeech"
+        },
+        {
+          "$ref": "#/$defs/VoiceError"
+        },
+        {
+          "$ref": "#/$defs/VoiceStopped"
         }
       ]
     },

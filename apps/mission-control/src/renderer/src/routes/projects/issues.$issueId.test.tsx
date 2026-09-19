@@ -81,8 +81,12 @@ const mcConversation: McConversationView = {
   projectId: null,
   lastSeq: 0,
   lastMessagePreview: null,
+  pendingCount: 0,
+  pendingScheduling: 'running',
+  queueRevision: 0,
   createdAt: '2026-06-01T00:00:00Z',
   updatedAt: '2026-06-01T00:00:00Z',
+  kind: 'user',
   origin: 'gateway',
   offline: false,
   readOnly: false,
@@ -505,7 +509,7 @@ describe('TaskDetail delete', () => {
     render(<TaskDetail />);
 
     // The composer shows where the comment will go.
-    expect(await screen.findByText(/Also sent to the agent session/)).toBeInTheDocument();
+    expect(await screen.findByText(/Also sent to the squad member session/)).toBeInTheDocument();
 
     await userEvent.type(screen.getByPlaceholderText('Add a comment…'), 'ship it');
     await userEvent.click(screen.getByText('Comment'));
@@ -538,7 +542,7 @@ describe('TaskDetail delete', () => {
       expect(mockApi.projectsAddComment).toHaveBeenCalledWith('issue_1', 'just a note'),
     );
     expect(mockApi.chatSend).not.toHaveBeenCalled();
-    expect(screen.queryByText(/Also sent to the agent session/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Also sent to the squad member session/)).not.toBeInTheDocument();
   });
 
   it('skips the session feed while the agent is mid-run and says so', async () => {
@@ -550,7 +554,7 @@ describe('TaskDetail delete', () => {
     mockApi.chatGetMessages.mockResolvedValue(messagePage([]));
     render(<TaskDetail />);
 
-    expect(await screen.findByText(/Agent is mid-run/)).toBeInTheDocument();
+    expect(await screen.findByText(/Squad member is mid-run/)).toBeInTheDocument();
 
     await userEvent.type(screen.getByPlaceholderText('Add a comment…'), 'while busy');
     await userEvent.click(screen.getByText('Comment'));

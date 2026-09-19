@@ -101,6 +101,238 @@ struct PersistenceStoreTests {
     #expect(values.map(\.ordinal) == [1, 2, 3])
   }
 
+  @Test("long conversations load a bounded newest window and prune the local cache")
+  func longConversationCacheIsBounded() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [summary(id: "c", title: "Long conversation")],
+      gatewayID: "gw"
+    )
+    let count = ChatCachePolicy.storedMessageLimitPerConversation + 25
+    try await store.mergeMessages(
+      (1...count).map { message(id: "m-\($0)", ordinal: $0) },
+      gatewayID: "gw",
+      conversationID: "c"
+    )
+
+    let values = try await store.messages(gatewayID: "gw", conversationID: "c")
+
+    #expect(values.count == ChatCachePolicy.initialMessageLimit)
+    #expect(values.first?.ordinal == count - ChatCachePolicy.initialMessageLimit + 1)
+    #expect(values.last?.ordinal == count)
+    #expect(
+      try await store.cachedMessageCount(gatewayID: "gw", conversationID: "c")
+        == ChatCachePolicy.storedMessageLimitPerConversation
+    )
+  }
+
+  @Test("window drafts stay independent and clear only the submitted revision")
+  func windowDraftsAreRevisionSafe() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [summary(id: "c", title: "Conversation")],
+      gatewayID: "gw"
+    )
+
+    try await store.saveWindowDraft(
+      WindowConversationDraft(text: "Window A", revision: 1, updatedAt: instant(10)),
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-a"
+    )
+    try await store.saveWindowDraft(
+      WindowConversationDraft(text: "Window B", revision: 4, updatedAt: instant(11)),
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-b"
+    )
+    try await store.saveWindowDraft(
+      WindowConversationDraft(text: "Typed after Send", revision: 2, updatedAt: instant(12)),
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-a"
+    )
+    try await store.saveWindowDraft(
+      WindowConversationDraft(text: "Delayed old write", revision: 1, updatedAt: instant(13)),
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-a"
+    )
+
+    try await store.clearWindowDraft(
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-a",
+      submittedRevision: 1
+    )
+    #expect(
+      try await store.windowDraft(
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: "window-a"
+      )?.text == "Typed after Send"
+    )
+    #expect(
+      try await store.windowDraft(
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: "window-b"
+      )?.text == "Window B"
+    )
+
+    try await store.clearWindowDraft(
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-a",
+      submittedRevision: 2
+    )
+    #expect(
+      try await store.windowDraft(
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: "window-a"
+      ) == nil
+    )
+  }
+
+  @Test("window drafts keep images isolated and are never quota evicted")
+  func windowDraftsPreserveUnsentWork() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [summary(id: "c", title: "Conversation")],
+      gatewayID: "gw"
+    )
+    let attachment = PreparedAttachment(id: UUID(), mediaType: "image/png", data: Data([1, 2]))
+    for index in 0..<101 {
+      try await store.saveWindowDraft(
+        WindowConversationDraft(
+          text: "Draft \(index)",
+          attachments: index == 100 ? [attachment] : [],
+          revision: 1,
+          updatedAt: instant(index)
+        ),
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: "window-\(index)"
+      )
+    }
+
+    #expect(try await store.cachedWindowDraftCount() == 101)
+    let last = try #require(
+      try await store.windowDraft(
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: "window-100"
+      )
+    )
+    #expect(last.attachments == [attachment])
+  }
+
+  @Test("a legacy draft is moved into exactly one window")
+  func legacyDraftIsClaimedOnce() async throws {
+    let store = try PersistenceStore.inMemory()
+    try await store.upsertConversations(
+      [summary(id: "c", title: "Conversation")],
+      gatewayID: "gw"
+    )
+    let attachment = PreparedAttachment(id: UUID(), mediaType: "image/png", data: Data([3]))
+    try await store.saveDraft(
+      ConversationDraft(text: "Legacy", attachments: [attachment], updatedAt: instant(1)),
+      gatewayID: "gw",
+      conversationID: "c"
+    )
+
+    let first = try await store.claimWindowDraft(
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-a"
+    )
+    let second = try await store.claimWindowDraft(
+      gatewayID: "gw",
+      conversationID: "c",
+      windowID: "window-b"
+    )
+
+    #expect(first?.text == "Legacy")
+    #expect(first?.attachments == [attachment])
+    #expect(second == nil)
+    #expect(try await store.draft(gatewayID: "gw", conversationID: "c") == nil)
+  }
+
+  @Test("a queued window command survives reopening and resolves by the same id")
+  func pendingWindowCommandIsDurable() async throws {
+    let directory = FileManager.default.temporaryDirectory.appending(
+      path: "dash-window-command-\(UUID().uuidString)",
+      directoryHint: .isDirectory
+    )
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let storeURL = directory.appending(path: "dash.store")
+    let attachment = PreparedAttachment(id: UUID(), mediaType: "image/png", data: Data([4]))
+    let command = PendingWindowCommand(
+      id: "command-1",
+      command: .followUp,
+      expectedActiveTurnID: nil,
+      text: "Run this next",
+      attachments: [attachment],
+      sourceWindowID: "window-a",
+      submittedRevision: 7,
+      createdAt: instant(7)
+    )
+
+    do {
+      let store = try PersistenceStore.stored(at: storeURL)
+      try await store.upsertConversations(
+        [summary(id: "c", title: "Conversation")],
+        gatewayID: "gw"
+      )
+      try await store.saveWindowDraft(
+        WindowConversationDraft(
+          text: command.text,
+          attachments: command.attachments,
+          revision: command.submittedRevision,
+          updatedAt: command.createdAt
+        ),
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: command.sourceWindowID
+      )
+      #expect(
+        try await store.stageWindowCommand(
+          command,
+          gatewayID: "gw",
+          conversationID: "c"
+        )
+      )
+    }
+
+    do {
+      let reopened = try PersistenceStore.stored(at: storeURL)
+      let restored = try #require(
+        try await reopened.windowDraft(
+          gatewayID: "gw",
+          conversationID: "c",
+          windowID: "window-a"
+        )
+      )
+      #expect(restored.pendingCommand == command)
+      _ = try await reopened.resolveWindowCommand(
+        id: command.id,
+        accepted: true,
+        gatewayID: "gw",
+        conversationID: "c",
+        windowID: "window-a"
+      )
+      #expect(
+        try await reopened.windowDraft(
+          gatewayID: "gw",
+          conversationID: "c",
+          windowID: "window-a"
+        ) == nil
+      )
+    }
+  }
+
   @Test("newest and backward message pages merge without regressing an updated row")
   func backwardPageMerge() async throws {
     let store = try PersistenceStore.inMemory()
@@ -1971,6 +2203,136 @@ struct PersistenceStoreTests {
       )
     )
     try context.save()
+  }
+
+  @Test("a child conversation round-trips its kind, parent and sub-agent block")
+  func childConversationFieldsSurviveTheStore() async throws {
+    let store = try PersistenceStore.inMemory()
+    let child = childSummary()
+
+    let canonical = try await store.persistConversationAndReturnCanonical(child, gatewayID: "gw-a")
+
+    // Byte-for-byte, because `LiveChatSynchronizer.refresh` guards on exactly
+    // this equality (`persisted.summary == summary`) before it will fetch the
+    // message page. `ConversationSummaryDTO` is `Hashable`, so a dropped field
+    // makes that guard unsatisfiable for every child forever: no transcript,
+    // no error, no Retry.
+    #expect(canonical.summary == child)
+    #expect(canonical.summary.conversationKind == .subagent)
+    #expect(canonical.summary.parentConversationId == "parent-1")
+    #expect(canonical.summary.subagent?.report == "All clear.")
+
+    // And an UPDATE, not just an insert: `apply(_:to:)` is the other write.
+    let finished = childSummary(revision: 2, status: "done")
+    let updated = try await store.persistConversationAndReturnCanonical(finished, gatewayID: "gw-a")
+    #expect(updated.summary == finished)
+    #expect(updated.summary.subagent?.status == "done")
+  }
+
+  @Test("a same-revision refresh backfills fields a pre-fix cache stored as nil")
+  func sameRevisionRefreshReconcilesDriftedFields() async throws {
+    let store = try PersistenceStore.inMemory()
+
+    // A record written by a build BEFORE #158: same shape the server sends,
+    // but `kind` was dropped on the way into the store, so it reads back nil.
+    // This is exactly the state every device already had on disk.
+    let stale = ConversationSummaryDTO(
+      id: "conv-1",
+      agentId: "agent-1",
+      agentName: "Agent One",
+      title: "Hello",
+      revision: 5,
+      status: .idle,
+      activeTurnId: nil,
+      owningIssueId: nil,
+      projectId: nil,
+      lastSeq: 5,
+      lastMessagePreview: "Preview",
+      createdAt: instant(0),
+      updatedAt: instant(5),
+      deletedAt: nil,
+      kind: nil,
+      parentConversationId: nil,
+      parentTurnId: nil,
+      subagent: nil
+    )
+    _ = try await store.persistConversationAndReturnCanonical(stale, gatewayID: "gw-a")
+
+    // The server truth for the SAME revision — nothing changed server-side, it
+    // just always sends `kind`. `LiveChatSynchronizer.refresh` compares this to
+    // the persisted copy and only fetches messages when they are equal.
+    let fromServer = ConversationSummaryDTO(
+      id: "conv-1",
+      agentId: "agent-1",
+      agentName: "Agent One",
+      title: "Hello",
+      revision: 5,
+      status: .idle,
+      activeTurnId: nil,
+      owningIssueId: nil,
+      projectId: nil,
+      lastSeq: 5,
+      lastMessagePreview: "Preview",
+      createdAt: instant(0),
+      updatedAt: instant(5),
+      deletedAt: nil,
+      kind: ConversationKind.user.rawValue,
+      parentConversationId: nil,
+      parentTurnId: nil,
+      subagent: nil
+    )
+    let canonical = try await store.persistConversationAndReturnCanonical(
+      fromServer,
+      gatewayID: "gw-a"
+    )
+
+    // Must equal byte-for-byte, or the refresh guard never fetches the page and
+    // the screen stays empty — the very symptom, on a cache that predates #158.
+    #expect(canonical.summary == fromServer)
+    #expect(canonical.summary.kind == ConversationKind.user.rawValue)
+  }
+
+  private func childSummary(
+    revision: Int = 1,
+    status: String = "running"
+  ) -> ConversationSummaryDTO {
+    ConversationSummaryDTO(
+      id: "child-1",
+      agentId: "agent-1",
+      agentName: "Agent One",
+      title: "Check launch readiness",
+      revision: revision,
+      status: .idle,
+      activeTurnId: nil,
+      owningIssueId: nil,
+      projectId: nil,
+      lastSeq: revision,
+      lastMessagePreview: nil,
+      createdAt: instant(0),
+      updatedAt: instant(revision),
+      deletedAt: nil,
+      kind: ConversationKind.subagent.rawValue,
+      parentConversationId: "parent-1",
+      parentTurnId: "turn-9",
+      subagent: SubagentInfoDTO(
+        type: "researcher",
+        name: "scout",
+        status: status,
+        description: "Check launch readiness",
+        prompt: "Check whether the launch checklist is complete",
+        model: "openai/gpt-5",
+        background: true,
+        isolation: nil,
+        depth: 1,
+        startedAt: instant(1),
+        endedAt: status == "running" ? nil : instant(9),
+        usage: SubagentUsageDTO(inputTokens: 3, outputTokens: 5),
+        toolCallCount: 2,
+        report: "All clear.",
+        oneShot: false,
+        workspace: nil
+      )
+    )
   }
 
   private func summary(

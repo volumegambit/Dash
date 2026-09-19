@@ -39,6 +39,7 @@ export type EventLogPayload =
       userMessageId: string;
       assistantMessageId: string;
       revision: number;
+      pendingItemId?: string;
     }
   | { type: 'event'; event: MobileAgentEvent }
   | { type: 'done'; outcome?: 'completed' | 'cancelled' }
@@ -80,6 +81,12 @@ export interface EventLogStore {
    * Callers pass `sinceSeq = 0` to read from the beginning.
    */
   readSince(agentId: string, conversationId: string, sinceSeq: number): EventLogEntry[];
+
+  /**
+   * Read events for a bounded set of turn IDs without scanning unrelated
+   * conversation history. Implementations must batch large ID sets.
+   */
+  readForTurns(agentId: string, conversationId: string, turnIds: string[]): EventLogEntry[];
 
   /**
    * Every conversation whose newest entry is a non-terminal payload,

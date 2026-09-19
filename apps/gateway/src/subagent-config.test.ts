@@ -1,0 +1,109 @@
+import { builtinSubagentTypes, createStaticResolver } from '@dash/swarm';
+import { describe, expect, it } from 'vitest';
+import type { GatewayAgentConfig } from './agent-registry.js';
+import {
+  buildChildDelegationSection,
+  buildDelegationSection,
+  effectiveDelegation,
+  isSubagentsEnabled,
+  subagentCapsFromConfig,
+  subagentTypesFor,
+} from './subagent-config.js';
+
+const base: GatewayAgentConfig = {
+  name: 'a',
+  model: 'anthropic/claude-opus-5',
+  systemPrompt: 's',
+};
+
+describe('subagent config', () => {
+  it('is enabled by default, honours subagents.enabled, then legacy swarm.enabled', () => {
+    expect(isSubagentsEnabled(base)).toBe(true);
+    expect(isSubagentsEnabled({ ...base, subagents: { enabled: false } })).toBe(false);
+    expect(isSubagentsEnabled({ ...base, swarm: { enabled: false } })).toBe(false);
+    expect(
+      isSubagentsEnabled({ ...base, swarm: { enabled: false }, subagents: { enabled: true } }),
+    ).toBe(true);
+  });
+
+  it('delegation defaults to auto for tier 0 models, explicit otherwise, config wins', () => {
+    expect(effectiveDelegation(base, 0)).toBe('auto');
+    expect(effectiveDelegation(base, 1)).toBe('explicit');
+    expect(effectiveDelegation(base, undefined)).toBe('explicit');
+    expect(effectiveDelegation({ ...base, subagents: { delegation: 'auto' } }, 2)).toBe('auto');
+    expect(effectiveDelegation({ ...base, subagents: { delegation: 'explicit' } }, 0)).toBe(
+      'explicit',
+    );
+  });
+
+  it('renders the delegation section with the roster', () => {
+    const s = buildDelegationSection('explicit', [
+      { id: 'w1', name: 'mapper', type: 'Explore', status: 'done' },
+    ]);
+    expect(s).toContain('# Delegation');
+    expect(s).toContain('only when the user asks');
+    expect(s).toContain('- mapper (Explore, done)');
+    // The heading must not claim every listed child is addressable: rosterFor
+    // can still list the previous turn's terminal children.
+    expect(s).toContain('running ones are `send_message` targets');
+    expect(s).not.toContain('valid send_message targets');
+    expect(buildDelegationSection('auto', [])).toContain('Delegate proactively');
+  });
+
+  it('falls back to the worker id when a child has no name, and to "none yet" when empty', () => {
+    const unnamed = buildDelegationSection('auto', [{ id: 'w9', type: 'Plan', status: 'running' }]);
+    expect(unnamed).toContain('- w9 (Plan, running)');
+    expect(buildDelegationSection('explicit', [])).toContain('- none yet');
+  });
+
+  it('narrows the spawnable types to subagents.allowedTypes when set', () => {
+    const all = builtinSubagentTypes();
+    // Unset → every built-in, same array contents (never "none").
+    expect(subagentTypesFor(base, all).map((t) => t.name)).toEqual(all.map((t) => t.name));
+
+    const narrowed = subagentTypesFor({ ...base, subagents: { allowedTypes: ['Explore'] } }, all);
+    expect(narrowed.map((t) => t.name)).toEqual(['Explore']);
+
+    // What the resolver built from it can actually launch: Explore yes,
+    // general-purpose no — the roster and the resolvable set are one list.
+    const resolver = createStaticResolver(narrowed);
+    expect(resolver.resolve('Explore')?.name).toBe('Explore');
+    expect(resolver.resolve('general-purpose')).toBeUndefined();
+    expect(resolver.list().map((t) => t.name)).toEqual(['Explore']);
+
+    // An explicit [] means none.
+    expect(subagentTypesFor({ ...base, subagents: { allowedTypes: [] } }, all)).toEqual([]);
+  });
+
+  it('maps caps from subagents then swarm', () => {
+    expect(subagentCapsFromConfig({ ...base, swarm: { maxConcurrentWorkers: 3 } })).toEqual({
+      maxConcurrentWorkers: 3,
+    });
+    expect(
+      subagentCapsFromConfig({
+        ...base,
+        subagents: { maxConcurrent: 2, maxPerTurn: 5 },
+        swarm: { maxConcurrentWorkers: 3 },
+      }),
+    ).toEqual({ maxConcurrentWorkers: 2, maxWorkersPerRun: 5 });
+    expect(subagentCapsFromConfig(base)).toEqual({});
+  });
+});
+
+describe('buildChildDelegationSection', () => {
+  it("names the child's OWN children, so send_message has a target to name", () => {
+    const section = buildChildDelegationSection(1, 3, [
+      { id: 'sub_a', name: 'scout', type: 'Explore', status: 'running' },
+      { id: 'sub_b', type: 'general-purpose', status: 'done' },
+    ]);
+    expect(section).toContain('# Delegation');
+    expect(section).toContain('- scout (Explore, running)');
+    // An unnamed child is addressable by its id, which the roster must print.
+    expect(section).toContain('- sub_b (general-purpose, done)');
+    expect(section).toContain('depth 1 of 3');
+  });
+
+  it('says so when a nesting child has spawned nothing yet', () => {
+    expect(buildChildDelegationSection(2, 3, [])).toContain('- none yet');
+  });
+});

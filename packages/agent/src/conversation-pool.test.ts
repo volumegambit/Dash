@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { DashAgent } from './agent.js';
 import type { ConversationPoolOptions, PoolEntry } from './conversation-pool.js';
 import { ConversationPool } from './conversation-pool.js';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from './types.js';
@@ -302,5 +303,64 @@ describe('ConversationPool', () => {
     pool.pin('b', 'conv-2');
 
     await expect(pool.getOrCreate('c', 'conv-3')).rejects.toThrow(/all pinned/);
+  });
+});
+
+/**
+ * Round 2, item 4: pins are a COUNT. Two turns can overlap on one conversation
+ * (the legacy chat path, the management API and the channel bridge all reach
+ * chat() without the hub's turn lease), and with a boolean the first to finish
+ * unpinned an entry the second was still streaming — after which
+ * `dropConversation` would call stop() on a live backend.
+ */
+describe('ConversationPool pin counting', () => {
+  function poolWith(): { pool: ConversationPool; stops: number[] } {
+    const stops: number[] = [];
+    const pool = new ConversationPool({
+      maxSize: 4,
+      backendFactory: async () => ({
+        backend: {
+          name: 'mock',
+          start: async () => {},
+          stop: async () => {
+            stops.push(1);
+          },
+          abort: () => {},
+          async *run() {},
+        } as unknown as AgentBackend,
+        agent: {} as unknown as DashAgent,
+      }),
+    });
+    return { pool, stops };
+  }
+
+  it('stays pinned while a second overlapping turn is still running', async () => {
+    const { pool, stops } = poolWith();
+    await pool.getOrCreate('a', 'c1');
+    pool.pin('a', 'c1');
+    pool.pin('a', 'c1');
+
+    // Turn one finishes; turn two is still streaming.
+    pool.unpin('a', 'c1');
+
+    expect(pool.dropConversation('a', 'c1')).toBe(false);
+    expect(stops).toHaveLength(0);
+    expect(pool.has('a', 'c1')).toBe(true);
+
+    // Turn two finishes.
+    pool.unpin('a', 'c1');
+    expect(pool.dropConversation('a', 'c1')).toBe(true);
+    expect(pool.has('a', 'c1')).toBe(false);
+  });
+
+  it('never underflows the count', async () => {
+    const { pool } = poolWith();
+    await pool.getOrCreate('a', 'c1');
+    pool.unpin('a', 'c1');
+    pool.unpin('a', 'c1');
+    pool.pin('a', 'c1');
+
+    // One pin means pinned, however many unpins preceded it.
+    expect(pool.dropConversation('a', 'c1')).toBe(false);
   });
 });

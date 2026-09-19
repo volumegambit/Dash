@@ -1,0 +1,1 @@
+Run `npm test` to check everything passes.

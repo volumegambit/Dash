@@ -4,4 +4,4 @@ package app.dash.network
 class GatewayHttpError(
     val status: Int,
     val bodyText: String,
-) : RuntimeException("Gateway HTTP $status: $bodyText")
+) : RuntimeException("HQ HTTP $status: $bodyText")

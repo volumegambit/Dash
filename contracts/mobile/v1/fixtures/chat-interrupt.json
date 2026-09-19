@@ -1,0 +1,8 @@
+{
+  "type": "interrupt_and_send",
+  "id": "318f0f4a-5c42-7a8b-9c01-1234567890ab",
+  "agentId": "agent-01",
+  "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+  "expectedActiveTurnId": "418f0f4a-5c42-7a8b-9c01-1234567890ab",
+  "text": "Pause and check the failing test first."
+}

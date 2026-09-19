@@ -12,7 +12,8 @@
         "text": "Is the mobile connection ready?"
       },
       "createdAt": "2026-07-12T00:00:01.000Z",
-      "updatedAt": "2026-07-12T00:00:01.000Z"
+      "updatedAt": "2026-07-12T00:00:01.000Z",
+      "origin": "user"
     },
     {
       "id": "018f0f4a-5c42-7a8b-9c01-4234567890ab",
@@ -31,7 +32,8 @@
         ]
       },
       "createdAt": "2026-07-12T00:00:02.000Z",
-      "updatedAt": "2026-07-12T00:00:05.000Z"
+      "updatedAt": "2026-07-12T00:00:05.000Z",
+      "origin": "user"
     }
   ],
   "nextCursor": null,

@@ -87,7 +87,7 @@ export function PairDeviceCard({
 
       {info && (
         <p className="mt-4 text-sm text-foreground">
-          Gateway:{' '}
+          HQ:{' '}
           <span className="font-mono">
             {info.mode === 'lan' ? `${info.host}:${info.mgmtPort}` : info.host}
           </span>
@@ -107,9 +107,9 @@ export function PairDeviceCard({
         </p>
       ) : (
         <p className="mt-2 max-w-md text-xs text-muted">
-          Your phone must be on the same Wi-Fi network. The mobile token and pinned gateway identity
-          are embedded in the QR code and are never displayed here. To pair over the internet, set
-          up remote access below.
+          Your phone must be on the same Wi-Fi network. The mobile token and pinned HQ identity are
+          embedded in the QR code and are never displayed here. To pair over the internet, set up
+          remote access below.
         </p>
       )}
     </div>

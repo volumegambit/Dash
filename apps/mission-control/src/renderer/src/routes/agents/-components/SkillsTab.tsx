@@ -4,7 +4,7 @@ import { useAgentSkillsStore } from '../../../stores/agent-skills.js';
 
 const SOURCE_LABEL: Record<SkillInfo['source'], string> = {
   managed: 'Managed',
-  agent: 'Agent',
+  agent: 'Squad member',
   remote: 'Remote',
   plugin: 'Plugin',
 };
@@ -17,12 +17,22 @@ export function SkillsTab({ agentId }: { agentId: string }): JSX.Element {
     useAgentSkillsStore();
   const [showCreate, setShowCreate] = useState(false);
   const [showInstall, setShowInstall] = useState(false);
+  const [showConfig, setShowConfig] = useState(false);
+  const [query, setQuery] = useState('');
 
   useEffect(() => {
     void load(agentId);
   }, [agentId, load]);
 
   const sorted = useMemo(() => [...skills].sort((a, b) => a.name.localeCompare(b.name)), [skills]);
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return sorted;
+    const q = query.toLowerCase();
+    return sorted.filter(
+      (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q),
+    );
+  }, [sorted, query]);
 
   return (
     <div className="space-y-4">
@@ -78,15 +88,50 @@ export function SkillsTab({ agentId }: { agentId: string }): JSX.Element {
         />
       )}
 
-      <SkillsConfigStrip config={config} onSave={(c) => saveConfig(agentId, c)} />
+      {/* Collapsible config strip — hidden by default so it doesn't add
+          height when the user just wants to browse skills. */}
+      <div>
+        <button
+          type="button"
+          className="text-xs text-muted hover:text-foreground"
+          onClick={() => setShowConfig((v) => !v)}
+        >
+          {showConfig ? '▼ Skill directories' : '▶ Skill directories'}
+        </button>
+        {showConfig && (
+          <div className="mt-2">
+            <SkillsConfigStrip config={config} onSave={(c) => saveConfig(agentId, c)} />
+          </div>
+        )}
+      </div>
+
+      {/* Search filter — only when there are enough skills to warrant it */}
+      {skills.length > 5 && (
+        <input
+          type="search"
+          placeholder="Filter skills…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="w-full border border-border bg-sidebar-hover px-3 py-2 text-sm"
+        />
+      )}
+
+      {/* Result count when filtering */}
+      {query && (
+        <p className="text-xs text-muted">
+          {filtered.length} of {skills.length} skills match
+        </p>
+      )}
 
       {loading ? (
         <div className="text-sm text-muted">Loading…</div>
-      ) : sorted.length === 0 ? (
-        <div className="text-sm text-muted">No skills yet.</div>
+      ) : filtered.length === 0 ? (
+        <div className="text-sm text-muted">
+          {query ? `No skills match “${query}”.` : 'No skills yet.'}
+        </div>
       ) : (
-        <div className="space-y-3">
-          {sorted.map((s) => (
+        <div className="space-y-2">
+          {filtered.map((s) => (
             <SkillCard
               key={`${s.source}:${s.name}`}
               agentId={agentId}
@@ -133,20 +178,22 @@ function SkillCard({
   }, [open, agentId, skill.name, skill.source]);
 
   return (
-    <div className="border border-border bg-card-bg p-4">
-      <div className="flex items-center justify-between">
+    <div className="border border-border bg-card-bg px-4 py-3">
+      {/* Compact header row — collapsed shows just name + source + description (1 line) */}
+      <div className="flex items-center justify-between gap-3">
         <button
           type="button"
-          className="flex items-center gap-2 text-left"
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
           onClick={() => setOpen((v) => !v)}
         >
-          <span className="font-medium">{skill.name}</span>
-          <span className="bg-sidebar-hover px-1.5 py-0.5 text-xs text-muted">
+          <span className="text-muted text-xs">{open ? '▼' : '▶'}</span>
+          <span className="font-medium truncate">{skill.name}</span>
+          <span className="bg-sidebar-hover px-1.5 py-0.5 text-xs text-muted whitespace-nowrap">
             {SOURCE_LABEL[skill.source]}
           </span>
         </button>
         {editable && (
-          <div className="flex gap-3">
+          <div className="flex shrink-0 gap-3">
             <button
               type="button"
               className="text-xs text-muted hover:text-foreground"
@@ -168,7 +215,10 @@ function SkillCard({
           </div>
         )}
       </div>
-      <p className="mt-1 text-sm text-muted">{skill.description}</p>
+      {/* Description: 1 line when collapsed, full when open */}
+      <p className={open ? 'mt-1 text-sm text-muted' : 'mt-1 text-sm text-muted truncate'}>
+        {skill.description}
+      </p>
       {open && !editing && lessons && lessons.bullets.length > 0 && (
         <ul className="mt-2 space-y-1" data-testid="skill-lessons">
           {lessons.bullets.map((lesson) => (

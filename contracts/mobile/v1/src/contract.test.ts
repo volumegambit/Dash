@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import addFormats from 'ajv-formats';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { parse } from 'yaml';
+import { MOBILE_API_ERROR_CODES } from './types.js';
 
 interface FixtureCase {
   file: string;
@@ -55,9 +56,89 @@ function parseSse(raw: string): unknown[] {
     });
 }
 
+/**
+ * Assert an event carries exactly `required`, plus any subset of `optional`.
+ * Sub-agent events (design 2026-09-04 sub-agents, 7.2) have optional members
+ * (`name`, `isolation`, `usage`, `detail`, `question`), so an exact `toEqual`
+ * cannot express them — but an unlisted key is still a contract drift.
+ */
+function assertEventShape(
+  event: Record<string, unknown>,
+  required: Record<string, unknown>,
+  optional: readonly string[],
+): void {
+  expect(event).toMatchObject(required);
+  const allowed = new Set([...Object.keys(required), ...optional]);
+  expect(Object.keys(event).filter((key) => !allowed.has(key))).toEqual([]);
+}
+
+/**
+ * The `worker_*` mirrors D8 retired. No producer emits one, and no VALID
+ * fixture may carry one — a fixture is what a client is written against, so a
+ * retired event in one is how a client re-grows a fold for something the
+ * gateway will never send again. Persisted pre-D8 transcripts still contain
+ * them; that is a client DECODE concern, not a contract-fixture one.
+ */
+const RETIRED_EVENT_TYPES = new Set(['worker_spawned', 'worker_status', 'worker_done']);
+
 function assertCanonicalAgentEvent(value: unknown): void {
   if (typeof value !== 'object' || value === null) return;
   const event = value as Record<string, unknown>;
+  if (typeof event.type === 'string' && RETIRED_EVENT_TYPES.has(event.type)) {
+    throw new Error(
+      `retired event type "${event.type}" in a valid fixture: the worker_* mirrors were removed in D8`,
+    );
+  }
+  if (event.type === 'subagent_started') {
+    assertEventShape(
+      event,
+      {
+        type: 'subagent_started',
+        subagentId: expect.any(String),
+        subagentType: expect.any(String),
+        description: expect.any(String),
+        prompt: expect.any(String),
+        model: expect.any(String),
+        background: expect.any(Boolean),
+        depth: expect.any(Number),
+        startedAt: expect.any(String),
+      },
+      ['name', 'isolation'],
+    );
+    return;
+  }
+  if (event.type === 'subagent_progress') {
+    assertEventShape(
+      event,
+      {
+        type: 'subagent_progress',
+        subagentId: expect.any(String),
+        status: expect.stringMatching(/^(running|waiting_input)$/),
+        toolCallCount: expect.any(Number),
+        elapsedMs: expect.any(Number),
+      },
+      ['detail', 'question'],
+    );
+    return;
+  }
+  if (event.type === 'subagent_finished') {
+    assertEventShape(
+      event,
+      {
+        type: 'subagent_finished',
+        subagentId: expect.any(String),
+        subagentType: expect.any(String),
+        description: expect.any(String),
+        status: expect.stringMatching(/^(done|failed|cancelled|interrupted|max_turns)$/),
+        report: expect.any(String),
+        toolCallCount: expect.any(Number),
+        startedAt: expect.any(String),
+        endedAt: expect.any(String),
+      },
+      ['name', 'usage'],
+    );
+    return;
+  }
   if (event.type === 'text_delta') {
     expect(event).toEqual({ type: 'text_delta', text: expect.any(String) });
   } else if (event.type === 'question') {
@@ -68,7 +149,7 @@ function assertCanonicalAgentEvent(value: unknown): void {
       options: expect.any(Array),
     });
   } else if (event.type === 'response') {
-    expect(event).toEqual({
+    expect(event).toMatchObject({
       type: 'response',
       content: expect.any(String),
       usage: {
@@ -76,6 +157,17 @@ function assertCanonicalAgentEvent(value: unknown): void {
         outputTokens: expect.any(Number),
       },
     });
+    // The two cache counters are optional and REAL: `piagent.ts:1246` fills
+    // them from the provider, every client models them (`AgentEvent.swift:7`,
+    // `AgentEvent.kt:111`, `chat.context.tsx:32`) and a captured gateway
+    // stream carries them. Only this helper had never seen one, because every
+    // fixture before the E3-x1 captures was hand-written.
+    const usage = event.usage as Record<string, unknown>;
+    const allowed = new Set(['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens']);
+    expect(Object.keys(usage).filter((key) => !allowed.has(key))).toEqual([]);
+    expect(Object.keys(event).filter((key) => !['type', 'content', 'usage'].includes(key))).toEqual(
+      [],
+    );
   }
 }
 
@@ -107,6 +199,46 @@ async function listFixtureFiles(dir: string, prefix = ''): Promise<string[]> {
 }
 
 describe('mobile v1 contract fixtures', () => {
+  /**
+   * D8 retired the `worker_*` mirrors. Two halves, and the second is what makes
+   * the first mean anything: no fixture carries one, AND the assertion every
+   * valid fixture is put through actually REJECTS one. Without the second, the
+   * corpus scan is satisfied by an assertion that ignores unknown types — which
+   * is exactly what `assertCanonicalAgentEvent` did before D8.
+   */
+  it('rejects a retired worker_* event, and no fixture file contains one', async () => {
+    for (const type of ['worker_spawned', 'worker_status', 'worker_done']) {
+      expect(() => assertCanonicalAgentEvent({ type, workerId: 'w1', runId: 'r1' })).toThrow(
+        /retired event type/,
+      );
+      // …and through the walker every fixture is actually put through.
+      expect(() => assertCanonicalAgentEvents({ type: 'event', event: { type } })).toThrow(
+        /retired event type/,
+      );
+    }
+    // The canonical family still passes the same walker.
+    expect(() =>
+      assertCanonicalAgentEvents({
+        type: 'event',
+        event: {
+          type: 'subagent_progress',
+          subagentId: 'sub_a',
+          status: 'running',
+          toolCallCount: 1,
+          elapsedMs: 2,
+        },
+      }),
+    ).not.toThrow();
+
+    const files = await listFixtureFiles(join(root, 'fixtures'));
+    const offenders: string[] = [];
+    for (const file of files) {
+      const raw = await readFile(join(root, 'fixtures', file), 'utf8');
+      if (/"worker_(spawned|status|done)"/.test(raw)) offenders.push(file);
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('publishes only TLS pairing versions with one phone capability per fixture', async () => {
     const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
       components?: {
@@ -425,6 +557,351 @@ describe('mobile v1 contract fixtures', () => {
         fixture.valid,
       );
     }
+  });
+
+  it('carries turn origin and conversation kind as optional accepted-frame fields', async () => {
+    const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs?: Record<string, { required?: string[]; properties?: Record<string, unknown> }>;
+    };
+    const accepted = ws.$defs?.ChatAccepted;
+    // Optional on the wire: a pre-C2 client never sends or sees them.
+    expect(accepted?.required).not.toContain('origin');
+    expect(accepted?.required).not.toContain('kind');
+    expect(accepted?.properties?.origin).toEqual({ enum: ['user', 'notification', 'parent'] });
+    expect(accepted?.properties?.kind).toEqual({ enum: ['user', 'subagent'] });
+
+    for (const name of ['ChatSubscribe', 'ChatUnsubscribe'] as const) {
+      expect(ws.$defs?.[name]?.required).toEqual(['type', 'id', 'agentId', 'conversationId']);
+    }
+    const clientFrame = ws.$defs?.MobileWsClientFrame as { oneOf?: Array<{ $ref?: string }> };
+    expect(clientFrame.oneOf?.map((entry) => entry.$ref)).toEqual([
+      '#/$defs/MobileWsMessageFrame',
+      '#/$defs/ChatResume',
+      '#/$defs/ChatAnswer',
+      '#/$defs/ChatCancel',
+      '#/$defs/ChatSubscribe',
+      '#/$defs/ChatUnsubscribe',
+      '#/$defs/ChatWatch',
+      '#/$defs/ChatFollowUp',
+      '#/$defs/ChatInterruptAndSend',
+      '#/$defs/ChatStopConversation',
+      '#/$defs/ChatResumePending',
+      '#/$defs/ChatEditPending',
+      '#/$defs/ChatRemovePending',
+      '#/$defs/VoiceStart',
+      '#/$defs/VoiceAudio',
+      '#/$defs/VoiceMute',
+      '#/$defs/VoiceStop',
+      '#/$defs/VoicePlayed',
+    ]);
+  });
+
+  it('appends the hands-free voice server frames to MobileWsServerFrame in schema order', async () => {
+    const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs?: Record<string, { oneOf?: Array<{ $ref?: string }> }>;
+    };
+    const serverFrame = ws.$defs?.MobileWsServerFrame;
+    expect(serverFrame?.oneOf?.map((entry) => entry.$ref)).toEqual([
+      '#/$defs/ChatAccepted',
+      '#/$defs/MobileWsEventFrame',
+      '#/$defs/MobileWsDoneFrame',
+      '#/$defs/MobileWsErrorFrame',
+      '#/$defs/ChatWatched',
+      '#/$defs/ChatCommandReceipt',
+      '#/$defs/ChatQueueChanged',
+      '#/$defs/VoiceState',
+      '#/$defs/VoiceTranscript',
+      '#/$defs/VoiceSpeech',
+      '#/$defs/VoiceError',
+      '#/$defs/VoiceStopped',
+    ]);
+  });
+
+  it('correlates a sub-agent resume with the accepted frame it produces', async () => {
+    const doc = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components: {
+        schemas: Record<
+          string,
+          {
+            required?: string[];
+            properties?: Record<string, unknown>;
+            additionalProperties?: boolean;
+          }
+        >;
+      };
+    };
+    const request = doc.components.schemas.SubagentResumeRequest;
+    // Optional on BOTH sides: an older client omits it and an older gateway
+    // never echoes it, so neither end breaks on the other.
+    expect(request.required).toEqual(['message']);
+    expect(request.properties?.requestId).toMatchObject({
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+    });
+    expect(request.additionalProperties).toBe(false);
+
+    const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs?: Record<string, { required?: string[]; properties?: Record<string, unknown> }>;
+    };
+    const accepted = ws.$defs?.ChatAccepted;
+    expect(accepted?.required).not.toContain('requestId');
+    expect(accepted?.properties?.requestId).toEqual({
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+    });
+  });
+
+  it('advertises chat control and speech as mobile capabilities in both documents', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components?: { schemas?: Record<string, Record<string, unknown>> };
+    };
+    const capabilities = openapi.components?.schemas?.MobileHealth?.properties as Record<
+      string,
+      { items?: { enum?: string[] } }
+    >;
+    // Pinned as an exact list, not a `toContain`: `/health`'s capability array
+    // is what every client feature-gates on, so a capability added to one
+    // document and forgotten in the other is exactly the drift this catches.
+    expect(capabilities.capabilities.items?.enum).toEqual([
+      'conversation-sync-v1',
+      'chat-resume-v1',
+      'conversation-control-v2',
+      'speech-v1',
+    ]);
+
+    const health = JSON.parse(
+      await readFile(join(root, 'fixtures', 'health-capabilities.json'), 'utf8'),
+    ) as { capabilities: string[] };
+    expect(health.capabilities).toEqual([
+      'conversation-sync-v1',
+      'chat-resume-v1',
+      'conversation-control-v2',
+      'speech-v1',
+    ]);
+  });
+
+  it('defines the durable conversation-control v2 protocol as closed schemas', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      paths?: Record<string, Record<string, { operationId?: string }>>;
+      components?: {
+        schemas?: Record<
+          string,
+          {
+            additionalProperties?: boolean;
+            required?: string[];
+            properties?: Record<string, unknown>;
+          }
+        >;
+      };
+    };
+    const schemas = openapi.components?.schemas ?? {};
+    const summary = schemas.ConversationSummary;
+    expect(summary?.required).toEqual(
+      expect.arrayContaining(['pendingCount', 'pendingScheduling', 'queueRevision']),
+    );
+    expect(summary?.properties?.pendingScheduling).toEqual({ enum: ['running', 'paused'] });
+    expect(summary?.properties?.pendingCount).toEqual({ type: 'integer', minimum: 0 });
+    expect(summary?.properties?.queueRevision).toEqual({ type: 'integer', minimum: 0 });
+
+    for (const name of [
+      'PendingConversationInput',
+      'ConversationPendingPage',
+      'ConversationQueueSnapshot',
+    ]) {
+      expect(schemas[name]?.additionalProperties, name).toBe(false);
+    }
+    expect(schemas.PendingConversationInput?.required).toEqual([
+      'id',
+      'commandId',
+      'conversationId',
+      'kind',
+      'version',
+      'text',
+      'state',
+      'createdAt',
+      'updatedAt',
+    ]);
+    expect(openapi.paths?.['/conversations/{id}/pending']?.get?.operationId).toBe(
+      'listConversationPending',
+    );
+
+    const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs?: Record<
+        string,
+        {
+          additionalProperties?: boolean;
+          required?: string[];
+          properties?: Record<string, unknown>;
+          oneOf?: Array<{ $ref?: string }>;
+        }
+      >;
+    };
+    const defs = ws.$defs ?? {};
+    const expectedClient = [
+      'ChatWatch',
+      'ChatFollowUp',
+      'ChatInterruptAndSend',
+      'ChatStopConversation',
+      'ChatResumePending',
+      'ChatEditPending',
+      'ChatRemovePending',
+    ];
+    const expectedServer = ['ChatWatched', 'ChatCommandReceipt', 'ChatQueueChanged'];
+    for (const name of [...expectedClient, ...expectedServer]) {
+      expect(defs[name]?.additionalProperties, name).toBe(false);
+    }
+    expect(defs.ChatWatch?.required).toEqual([
+      'type',
+      'id',
+      'agentId',
+      'conversationId',
+      'sinceSeq',
+    ]);
+    expect(defs.ChatInterruptAndSend?.required).toContain('expectedActiveTurnId');
+    expect(defs.ChatEditPending?.required).toContain('expectedVersion');
+    expect(defs.ChatRemovePending?.required).toContain('expectedVersion');
+
+    const clientRefs = defs.MobileWsClientFrame?.oneOf?.map((entry) => entry.$ref) ?? [];
+    for (const name of expectedClient) expect(clientRefs).toContain(`#/$defs/${name}`);
+    const serverRefs = defs.MobileWsServerFrame?.oneOf?.map((entry) => entry.$ref) ?? [];
+    for (const name of expectedServer) expect(serverRefs).toContain(`#/$defs/${name}`);
+  });
+
+  it('carries the speech error codes the /speech routes really emit', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components?: { schemas?: Record<string, { properties?: Record<string, unknown> }> };
+    };
+    const code = openapi.components?.schemas?.MobileApiError?.properties?.code as {
+      enum?: string[];
+    };
+    // The `/speech/*` handlers answer with the SHARED `{ code, error, retryable }`
+    // envelope and pass `SpeechErrorCode` through untranslated
+    // (`apps/gateway/src/speech-routes.ts`'s `speechErrorResponse`), so these six
+    // are reachable on this namespace and a client must be able to decode them.
+    expect(code.enum).toEqual([
+      'unauthorized',
+      'not_found',
+      'validation_failed',
+      'revision_conflict',
+      'conversation_busy',
+      'rate_limited',
+      'gateway_offline',
+      'capability_required',
+      'too_large',
+      'too_long',
+      'provider',
+      'network',
+      'unavailable',
+      'invalid',
+    ]);
+  });
+
+  it('keeps MobileApiErrorCode identical across the TS union, the WS schema, and the OpenAPI enums', async () => {
+    const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs?: Record<string, { enum?: string[] }>;
+    };
+    const wsEnum = ws.$defs?.MobileApiErrorCode?.enum ?? [];
+
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components?: {
+        schemas?: {
+          MobileApiError?: { properties?: { code?: { enum?: string[] } } };
+          ReplayPayload?: { oneOf?: Array<{ properties?: { code?: { enum?: string[] } } }> };
+        };
+      };
+    };
+    const topLevelEnum = openapi.components?.schemas?.MobileApiError?.properties?.code?.enum ?? [];
+    const replayVariant = openapi.components?.schemas?.ReplayPayload?.oneOf?.find(
+      (variant) => variant.properties?.code?.enum,
+    );
+    const replayEnum = replayVariant?.properties?.code?.enum ?? [];
+
+    const expected = new Set<string>(MOBILE_API_ERROR_CODES);
+    expect(new Set(wsEnum)).toEqual(expected);
+    expect(new Set(topLevelEnum)).toEqual(expected);
+    expect(new Set(replayEnum)).toEqual(expected);
+  });
+
+  it('documents the five speech operations with closed schemas', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      paths?: Record<string, Record<string, { operationId?: string; parameters?: unknown }>>;
+      components?: {
+        parameters?: Record<string, Record<string, unknown>>;
+        schemas?: Record<string, { additionalProperties?: boolean }>;
+      };
+    };
+
+    expect(openapi.paths?.['/speech/config']?.get?.operationId).toBe('getSpeechConfig');
+    expect(openapi.paths?.['/speech/config']?.patch?.operationId).toBe('patchSpeechConfig');
+    expect(openapi.paths?.['/speech/models']?.get?.operationId).toBe('listSpeechModels');
+    expect(openapi.paths?.['/speech/transcriptions']?.post?.operationId).toBe(
+      'createSpeechTranscription',
+    );
+    expect(openapi.paths?.['/speech/speech']?.post?.operationId).toBe('createSpeechSynthesis');
+
+    // `kind` is REQUIRED: the route 400s without it rather than defaulting.
+    expect(openapi.paths?.['/speech/models']?.get?.parameters).toEqual([
+      { $ref: '#/components/parameters/SpeechModelKind' },
+    ]);
+    expect(openapi.components?.parameters?.SpeechModelKind).toMatchObject({
+      name: 'kind',
+      in: 'query',
+      required: true,
+      schema: { enum: ['transcription', 'speech'] },
+    });
+
+    for (const name of [
+      'SpeechConfig',
+      'SpeechCapabilities',
+      'SpeechProviderStatus',
+      'SpeechConfigResponse',
+      'SpeechConfigPatch',
+      'SpeechModel',
+      'SpeechModelList',
+      'TranscriptionRequest',
+      'TranscriptionResponse',
+      'SynthesisRequest',
+    ]) {
+      expect(openapi.components?.schemas?.[name], name).toBeDefined();
+      expect(openapi.components?.schemas?.[name]?.additionalProperties, name).toBe(false);
+    }
+  });
+
+  it('answers synthesis with audio bytes, never JSON', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      paths?: Record<
+        string,
+        Record<string, { responses?: Record<string, { content?: Record<string, unknown> }> }>
+      >;
+    };
+    const ok = openapi.paths?.['/speech/speech']?.post?.responses?.['200'];
+    // A streamed body: `audio/mpeg` normally, or `audio/wav` for a PCM-only
+    // model. A client that sent `Accept: application/json` here (iOS
+    // `HTTPTransport.perform`'s default) would be asking for a representation
+    // this route never produces.
+    expect(Object.keys(ok?.content ?? {})).toEqual(['audio/mpeg', 'audio/wav']);
+  });
+
+  it('bounds transcription and synthesis at the upstream limits', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components?: {
+        schemas?: Record<string, { properties?: Record<string, Record<string, unknown>> }>;
+      };
+    };
+    // 4 000 characters — `MAX_TTS_CHARS` in `apps/gateway/src/speech-routes.ts`
+    // and `MAX_SYNTHESIZE_CHARS` in `@dash/speech`'s service.
+    expect(openapi.components?.schemas?.SynthesisRequest?.properties?.text?.maxLength).toBe(4000);
+    expect(openapi.components?.schemas?.TranscriptionRequest?.properties?.format?.enum).toEqual([
+      'wav',
+      'm4a',
+      'mp3',
+      'flac',
+      'ogg',
+      'webm',
+      'aac',
+    ]);
   });
 
   it('has no duplicate or unlisted fixture files', async () => {

@@ -1,6 +1,7 @@
 import type { ConversationMessage } from '@dash/mobile-contract';
-import { type ReactNode, memo, useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Transcript } from '../state/assemble.js';
+import { isReturnKeySendsEnabled } from '../state/composer.js';
 import { useWebAppStore } from './Shell.js';
 import {
   IMAGE_MEDIA_TYPES,
@@ -11,6 +12,13 @@ import {
   validateImageFiles,
 } from './attachments.js';
 import { ContentBlocks, getMessageCopyText } from './blocks/ContentBlocks.js';
+import {
+  NotificationRow,
+  OrchestratorRow,
+  isNotificationRow,
+  isOrchestratorRow,
+} from './blocks/OriginRows.js';
+import { mergeSubagentEventLists } from './blocks/subagents.js';
 import { insertNewlineAtSelection } from './composer.js';
 import { usePinnedScroll } from './hooks/usePinnedScroll.js';
 
@@ -33,7 +41,7 @@ export const RECONNECTING_COPY = 'Reconnecting…';
 export const RESEND_BLOCKED_COPY = 'Wait for the current response to finish.';
 
 function unreachableCopy(gatewayLabel: string): string {
-  return `Your gateway '${gatewayLabel}' is unreachable.`;
+  return `Your HQ '${gatewayLabel}' is unreachable.`;
 }
 
 function CopyIcon(): ReactNode {
@@ -399,6 +407,17 @@ const MessageRow = memo(function MessageRow({
   // blocked attempt clears the stale note rather than stacking a second one.
   const [blockedNote, setBlockedNote] = useState<string | null>(null);
 
+  // Checked after the hooks above so hook order stays unconditional. Both
+  // rows are `role: 'user'` turns the user did not write (sub-agents design
+  // 8.5) — never a bubble, never editable, never resendable
+  // (`resendFromMessage` refuses them independently).
+  if (isNotificationRow(message)) {
+    return <NotificationRow message={message} />;
+  }
+  if (isOrchestratorRow(message)) {
+    return <OrchestratorRow message={message} />;
+  }
+
   if (isEditing) {
     return (
       <div data-testid="chat-message" data-role={message.role} className="chat-message">
@@ -706,6 +725,9 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   const [draft, setDraftState] = useState('');
   const [sendError, setSendError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // "What does Return do" — read once on mount; the Settings control lives
+  // elsewhere and this value is stable for the lifetime of a composer render.
+  const returnKeySends = useMemo(() => isReturnKeySendsEnabled(), []);
 
   const updateDraft = useCallback(
     (text: string) => {
@@ -790,6 +812,31 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
     });
   }, [conversationId, openConversation]);
 
+  // D2: a background child's completion wakes the conversation with a
+  // server-initiated turn that REPLAYS its `subagent_finished`, and the rule
+  // that an orphan terminal anchors its own card (§31.4, §32.8.4) then draws a
+  // SECOND card for a child that already has one. The fold in
+  // `blocks/subagents.ts` is per message and must stay that way; the
+  // conversation is what knows better, so the reconciliation happens here,
+  // once, before any row renders. The MC port of `01eae2ed`.
+  //
+  // Memoized on the store's own messages array — `MessageRow` is `memo`'d on
+  // its `message` reference (see its doc comment), so rebuilding these objects
+  // on every streaming token would defeat that memo for every assistant row.
+  const rawMessages = transcript?.messages;
+  const mergedMessages = useMemo(() => {
+    const list = rawMessages ?? [];
+    const merged = mergeSubagentEventLists(
+      list.map((m) => (m.content.type === 'assistant' ? m.content.events : null)),
+    );
+    return list.map((m, index) => {
+      const events = merged[index];
+      if (!events || m.content.type !== 'assistant') return m;
+      if (events === m.content.events) return m;
+      return { ...m, content: { ...m.content, events } };
+    });
+  }, [rawMessages]);
+
   // 'unauthorized' is Shell's cue to clear the dead credential and route
   // back to 'pick-gateway' (see Shell's store-subscription effect) — by the
   // time that happens this component unmounts anyway, but guard explicitly
@@ -822,7 +869,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
     );
   }
 
-  const messages = transcript?.messages ?? [];
+  const messages = mergedMessages;
   const streaming = transcript?.streaming ?? null;
   const liveMessageIds = markLiveMessages(entranceLedgersRef.current, conversationId, transcript);
   const canSend = connection === 'connected';
@@ -942,7 +989,10 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
                 className="chat-message-streaming"
               >
                 {!streamingHasVisibleContent && <ThinkingIndicator />}
-                <ContentBlocks content={streaming} />
+                {/* The only message whose turn is still in flight — sub-agent
+                 * rows inside it read `running`, not end-of-stream
+                 * `cancelled` (design §8.1, `blocks/subagents.ts`). */}
+                <ContentBlocks content={streaming} streaming />
                 {/* Streaming caret (audit #13): only once there's actual
                  * content to trail — while `ThinkingIndicator` above is
                  * showing (no visible event yet) there's nothing for a
@@ -1073,7 +1123,17 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
                 });
                 return;
               }
+              // Cmd/Ctrl+Return always sends, regardless of the setting.
+              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                void handleSend();
+                return;
+              }
               if (event.key !== 'Enter' || event.shiftKey) return;
+              // Plain Enter only sends when the user has opted in via Settings
+              // (returnKeySends). Otherwise the textarea inserts the newline
+              // natively — the handler declines, exactly like Shift+Enter.
+              if (!returnKeySends) return;
               // IME composition (e.g. typing Japanese/Chinese/Korean via a
               // candidate window) fires `Enter` to confirm a candidate, not
               // to submit — `isComposing` is the modern signal; `keyCode ===

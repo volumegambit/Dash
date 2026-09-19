@@ -22,7 +22,21 @@ import { createPluginModelCatalog, excludeCoreProviderCollisions } from './plugi
  */
 export interface PluginWiringState {
   skillDirs: string[];
+  /**
+   * Plugin `commands/*.md`, namespaced by plugin — flat `load_skill`-able
+   * skills named `<plugin>:<command>`. Commands ONLY: a plugin's `agents/*.md`
+   * lives in `agentDefFiles` below and is deliberately NOT loadable as a skill.
+   */
   commandFiles: Array<{ file: string; namespace: string }>;
+  /**
+   * Plugin `agents/*.md` SUB-AGENT DEFINITIONS, namespaced by plugin (spec
+   * §6.2). Same `{ file, namespace }` shape as `commandFiles` but a separate
+   * channel: these describe a delegatable sub-agent, they are not skills the
+   * orchestrator can `load_skill`. Kept apart so the sub-agent definition
+   * registry can consume them without the gateway also exposing them as
+   * commands (no dual registration).
+   */
+  agentDefFiles: Array<{ file: string; namespace: string }>;
   hookEngine: HookEngine;
   pluginModelCatalog: PluginModelCatalog;
   mcpConfigs: Array<{ pluginName: string; config: McpServerConfig }>;
@@ -145,11 +159,12 @@ function toStatusRecord(
 
 /**
  * Rebuild the entire PluginWiringState from a `loadPlugins()` result: derive
- * skill dirs, namespaced command/agent files, the hook engine, the plugin model
- * catalog, MCP configs, provider configs (with core-collision exclusion), and
- * the per-plugin status record map. Called on boot and on every reload. The
- * models route derives its dropdown list itself from `pluginProviderConfigs`
- * (via a live getter), so no flattened model list is cached in this snapshot.
+ * skill dirs, namespaced command files, namespaced sub-agent definition files,
+ * the hook engine, the plugin model catalog, MCP configs, provider configs
+ * (with core-collision exclusion), and the per-plugin status record map. Called
+ * on boot and on every reload. The models route derives its dropdown list
+ * itself from `pluginProviderConfigs` (via a live getter), so no flattened
+ * model list is cached in this snapshot.
  *
  * Side-effect-free state CONSTRUCTION only: it builds and returns the wiring
  * (including `mcpConfigs` in the state) but performs NO I/O. In particular it
@@ -179,12 +194,21 @@ export async function rebuildWiringState(
   // Skill dirs flatten straight through (markdown — no trust needed).
   const skillDirs = loadedPlugins.skillDirs;
 
-  // Commands (commands/*.md) and agents (agents/*.md) are flat single-file
-  // skills, namespaced by plugin so the derived skill name is `<plugin>:<name>`.
-  // Commands precede agents (first-wins on a `<plugin>:<name>` collision).
-  const commandFiles = [...loadedPlugins.commandFiles, ...loadedPlugins.agentFiles].map(
-    ({ pluginName, file }) => ({ file, namespace: pluginName }),
-  );
+  // Commands (commands/*.md) are flat single-file skills, namespaced by plugin
+  // so the derived skill name is `<plugin>:<command>`.
+  const commandFiles = loadedPlugins.commandFiles.map(({ pluginName, file }) => ({
+    file,
+    namespace: pluginName,
+  }));
+
+  // Agents (agents/*.md) are SUB-AGENT DEFINITIONS, namespaced the same way but
+  // kept in their own channel: per spec §6.2 they describe a delegatable
+  // sub-agent rather than a skill the orchestrator can load, so they are NOT
+  // merged into `commandFiles` (no dual registration).
+  const agentDefFiles = loadedPlugins.agentFiles.map(({ pluginName, file }) => ({
+    file,
+    namespace: pluginName,
+  }));
 
   // Hook engine — runs trusted plugins' Claude-Code-format hooks. Always built
   // (its `hasHooks` is false when no trusted plugin declares any hook). The
@@ -229,6 +253,7 @@ export async function rebuildWiringState(
   return {
     skillDirs,
     commandFiles,
+    agentDefFiles,
     hookEngine,
     pluginModelCatalog,
     mcpConfigs: loadedPlugins.mcpConfigs,

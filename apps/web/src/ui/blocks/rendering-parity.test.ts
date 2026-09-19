@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { formatElapsed, formatToolCount } from './subagents.js';
 import {
   formatVisibleDetails,
   middleTruncate,
@@ -73,7 +74,28 @@ interface ResultSummaryCase {
   expectedResultSummary: string | null;
 }
 
-type FixtureCase = LabelCase | SummarizeCase | TruncateCase | DetailsCase | ResultSummaryCase;
+interface ElapsedCase {
+  name: string;
+  kind: 'elapsed';
+  inputMs: number;
+  expectedText: string;
+}
+
+interface ToolCountCase {
+  name: string;
+  kind: 'toolCount';
+  inputCount: number;
+  expectedText: string;
+}
+
+type FixtureCase =
+  | LabelCase
+  | SummarizeCase
+  | TruncateCase
+  | DetailsCase
+  | ResultSummaryCase
+  | ElapsedCase
+  | ToolCountCase;
 
 interface Fixture {
   cases: FixtureCase[];
@@ -97,15 +119,19 @@ const detailsCases = fixture.cases.filter((c): c is DetailsCase => c.kind === 'd
 const resultSummaryCases = fixture.cases.filter(
   (c): c is ResultSummaryCase => c.kind === 'resultSummary',
 );
+const elapsedCases = fixture.cases.filter((c): c is ElapsedCase => c.kind === 'elapsed');
+const toolCountCases = fixture.cases.filter((c): c is ToolCountCase => c.kind === 'toolCount');
 
 describe('rendering parity fixtures', () => {
-  it('loads a non-empty fixture with all five case kinds', () => {
+  it('loads a non-empty fixture with all seven case kinds', () => {
     expect(fixture.cases.length).toBeGreaterThan(0);
     expect(labelCases.length).toBeGreaterThan(0);
     expect(summarizeCases.length).toBeGreaterThan(0);
     expect(truncateCases.length).toBeGreaterThan(0);
     expect(detailsCases.length).toBeGreaterThan(0);
     expect(resultSummaryCases.length).toBeGreaterThan(0);
+    expect(elapsedCases.length).toBeGreaterThan(0);
+    expect(toolCountCases.length).toBeGreaterThan(0);
   });
 
   describe.each(labelCases)('label: $name', (c) => {
@@ -148,6 +174,20 @@ describe('rendering parity fixtures', () => {
       expect(sortedByKey(formatVisibleDetails(c.toolName, c.input))).toEqual(
         sortedByKey(c.expectedDetails),
       );
+    });
+  });
+
+  // Sub-agent row meta formatting (design §8.1). The iOS twin is
+  // `SubagentFormat.elapsed(_:)` / `.toolCount(_:)`; both read these cases.
+  describe.each(elapsedCases)('elapsed: $name', (c) => {
+    it('matches formatElapsed', () => {
+      expect(formatElapsed(c.inputMs)).toBe(c.expectedText);
+    });
+  });
+
+  describe.each(toolCountCases)('toolCount: $name', (c) => {
+    it('matches formatToolCount', () => {
+      expect(formatToolCount(c.inputCount)).toBe(c.expectedText);
     });
   });
 });
