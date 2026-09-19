@@ -148,7 +148,7 @@ end-to-end test.
 
 ## Documentation
 
-- **User guide** — [dash-aa8db5b5.mintlify.app/introduction](https://dash-aa8db5b5.mintlify.app/introduction)
+- **User guide** — [docs.dashsquad.ai](https://docs.dashsquad.ai)
 - **In-repo docs** — [`docs/`](docs/)
 - **Developer guide** — [`CLAUDE.md`](CLAUDE.md)
 

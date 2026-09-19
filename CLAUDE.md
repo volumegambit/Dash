@@ -1,6 +1,6 @@
 # Dash — Development Guide
 
-Read [README.md](README.md) for project overview, architecture, package descriptions, configuration, project structure, and setup instructions. Read [`docs/`](docs/) or [dash-aa8db5b5.mintlify.app](https://dash-aa8db5b5.mintlify.app/introduction) for user-facing documentation.
+Read [README.md](README.md) for project overview, architecture, package descriptions, configuration, project structure, and setup instructions. Read [`docs/`](docs/) or [docs.dashsquad.ai](https://docs.dashsquad.ai) for user-facing documentation.
 
 ## Quick Reference
 
@@ -257,7 +257,7 @@ cd docs/plans && git add . && git commit -m "add <feature> plan" && git push
 
 ## Documentation Maintenance
 
-`docs/` is a git submodule pointing at **https://github.com/volumegambit/mintlify-docs** (the Mintlify site source). Run `git submodule update --init` after cloning. To change docs, commit and push inside `docs/` first, then commit the updated `docs` pointer in this repo. `docs/plans/` sits inside that checkout but is ignored by it.
+`docs/` is a git submodule pointing at **https://github.com/volumegambit/mintlify-docs** (the Mintlify source for [docs.dashsquad.ai](https://docs.dashsquad.ai)). Run `git submodule update --init` after cloning. To change docs, commit and push inside `docs/` first, then commit the updated `docs` pointer in this repo. `docs/plans/` sits inside that checkout but is ignored by it.
 
 Docs in `docs/` are **user-facing only**. They help users set up, configure, and use Dash. Do not add developer-facing details (CI, internal tooling, contribution workflows, linter configs).
 
