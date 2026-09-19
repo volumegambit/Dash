@@ -1,29 +1,32 @@
 import { Logo } from '@/components/Logo';
 import { Button } from '@/components/ui/button';
-import { Apple } from 'lucide-react';
-
-const RELEASES_URL = 'https://github.com/volumegambit/Dash/releases/latest';
+import { DOCS_URL, DOWNLOAD_URL } from '@/lib/site';
 
 export function Nav() {
   return (
-    <nav className="flex flex-row items-center justify-between py-5 px-8 lg:px-20">
-      {/* Left: logo + wordmark */}
-      <a href="/" className="flex items-center gap-3">
-        <span className="shadow-[0_0_16px_rgba(37,99,235,0.25)] rounded-md">
+    <header className="bg-command px-6 sm:px-8">
+      <nav
+        aria-label="Main"
+        className="mx-auto flex max-w-[1120px] items-center justify-between gap-4 py-5"
+      >
+        <a href="/" aria-label="DashSquad home" className="flex shrink-0 items-center gap-2.5">
           <Logo size={28} className="rounded-md" />
-        </span>
-        <span className="font-outfit text-xl font-extrabold text-white tracking-tight">
-          dashsquad
-        </span>
-      </a>
-
-      {/* Right: download CTA */}
-      <Button size="pill" variant="default" asChild>
-        <a href={RELEASES_URL} target="_blank" rel="noreferrer">
-          <Apple size={14} className="mr-1.5" />
-          Download
+          <span className="text-xl font-extrabold tracking-tight text-white">dashsquad</span>
         </a>
-      </Button>
-    </nav>
+        <div className="flex items-center gap-6">
+          <a
+            href={`${DOCS_URL}/introduction`}
+            className="hidden text-sm text-[#b3b3b3] hover:text-white sm:block"
+          >
+            User guide
+          </a>
+          <Button size="sm" asChild>
+            <a href={DOWNLOAD_URL} target="_blank" rel="noreferrer">
+              Download
+            </a>
+          </Button>
+        </div>
+      </nav>
+    </header>
   );
 }

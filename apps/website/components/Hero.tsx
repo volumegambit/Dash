@@ -1,63 +1,48 @@
-import { InstallSnippet } from '@/components/InstallSnippet';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Apple } from 'lucide-react';
+import { DOWNLOAD_URL } from '@/lib/site';
 import Image from 'next/image';
-
-const RELEASES_URL = 'https://github.com/volumegambit/Dash/releases/latest';
 
 export function Hero() {
   return (
-    <section className="bg-command flex flex-col gap-6 pt-20 pb-15 px-8 lg:px-[120px]">
-      {/* Two-column hero */}
-      <div className="flex flex-col lg:flex-row lg:items-center gap-12 lg:gap-16">
-        {/* Left: text content */}
-        <div className="flex flex-col gap-6 w-full min-w-0 lg:flex-1">
-          <Badge variant="default" className="w-fit">
-            <span className="w-2 h-2 rounded-full bg-brand" />
-            Now in Alpha — v0.2.0
-          </Badge>
-
-          <h1 className="font-outfit text-4xl md:text-5xl lg:text-[64px] font-extrabold text-white tracking-tight leading-[1.1]">
-            You bring the ambition.
-            <br />
-            We bring the squad.
-          </h1>
-
-          <p className="text-[19px] text-text-secondary leading-relaxed max-w-[550px]">
-            DashSquad lets you create AI agents — each with its own role. A researcher, a writer, an
-            analyst. They work on their own, around the clock, even when you&apos;re not watching.
-            Just chat with them like you&apos;d message a coworker.
+    <section className="bg-command px-6 pb-20 pt-12 sm:px-8 lg:pb-24 lg:pt-20">
+      <div className="mx-auto grid max-w-[1120px] items-center gap-12 lg:grid-cols-[1.15fr_1fr] lg:gap-10">
+        <div className="min-w-0">
+          <p className="mb-6 font-mono text-[11px] font-semibold uppercase tracking-[2px] text-[#93b4fb]">
+            A personal AI team · Early access for Mac
           </p>
-
-          <div className="flex items-center gap-4 flex-wrap">
+          <h1 className="font-outfit text-[44px] font-extrabold leading-[1.04] tracking-tight text-white sm:text-[56px] lg:text-[64px]">
+            Your AI team.
+            <br />
+            Built around you.
+          </h1>
+          <p className="mt-6 max-w-[520px] text-lg leading-relaxed text-[#b3b3b3]">
+            Research a decision. Shape a first draft. Move a project forward. Give your AI teammates
+            their own roles, models, and tools — and one place to work with you.
+          </p>
+          <div className="mt-8 flex flex-wrap items-center gap-x-7 gap-y-5">
             <Button size="lg" asChild>
-              <a href={RELEASES_URL} target="_blank" rel="noreferrer">
-                <Apple size={18} className="mr-2" />
+              <a href={DOWNLOAD_URL} target="_blank" rel="noreferrer">
                 Download for Mac
               </a>
             </Button>
             <a
-              href={RELEASES_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="text-text-secondary hover:text-white text-sm transition-colors"
+              href="#how-it-works"
+              className="text-sm font-medium text-white underline decoration-white/30 underline-offset-4 hover:decoration-white"
             >
-              or download manually →
+              See how it works
             </a>
           </div>
-
-          <InstallSnippet />
+          <p className="mt-5 text-sm text-[#a3a3a3]">
+            Apple Silicon &amp; Intel. Connect your own AI provider.
+          </p>
         </div>
-
-        {/* Right: hero image */}
-        <div className="overflow-hidden lg:flex-1">
+        <div className="mx-auto w-full max-w-[540px] overflow-hidden">
           <Image
             src="/hero-squad.webp"
-            alt="DashSquad illustration"
+            alt=""
             width={900}
             height={500}
-            className="w-full"
+            className="h-auto w-full"
             priority
           />
         </div>

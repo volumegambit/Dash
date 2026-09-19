@@ -21,7 +21,7 @@ describe('Footer', () => {
 
   it('opens external links in a new tab', () => {
     render(<Footer />);
-    const github = screen.getByRole('link', { name: 'Source on GitHub' });
+    const github = screen.getByRole('link', { name: 'GitHub' });
     expect(github).toHaveAttribute('target', '_blank');
     expect(github).toHaveAttribute('rel', 'noreferrer');
   });
