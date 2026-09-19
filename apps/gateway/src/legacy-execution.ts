@@ -8,6 +8,8 @@ type LegacyRuntime = Pick<
 >;
 
 export interface LegacyExecution extends LegacyRuntime {
+  /** Includes cancelled streams until their provider cleanup has settled. */
+  activeTurnCount(): number;
   hasActiveTurn(agentId: string, conversationId: string): boolean;
   ownsTurn(agentId: string, conversationId: string, signal: AbortSignal): boolean;
   cancelAgent(agentId: string): Promise<void>;
@@ -51,6 +53,7 @@ export function createLegacyExecution(options: LegacyExecutionOptions): LegacyEx
   };
 
   return {
+    activeTurnCount: () => turns.size,
     chat(request: ChatRequest): AsyncGenerator<AgentEvent> {
       const key = keyFor(request.agentId, request.conversationId);
       let turn: LegacyTurn | undefined;

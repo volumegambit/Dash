@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
+import { STOP_ORDER, createGatewayLifecycle } from './app/lifecycle.js';
 import {
   type VoiceClientFrame,
   isValidConversationId,
@@ -1416,22 +1417,64 @@ describe('mountChatWs protocol ownership', () => {
 });
 
 describe('gateway resumable chat composition', () => {
-  it('stops resumable turns and flushes titles before swarm, agents, and conversation storage', () => {
-    const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
-    const orderedShutdownSteps = [
-      "safeStep('execution.stop'",
-      "safeStep('relayClient.stop'",
-      "safeStep('dialTokenManager.stop'",
-      "safeStep('mcpManager.stop'",
-      "safeFlush('conversationAutoTitle.flush'",
-      "safeStep('swarmCoordinator.stop'",
-      "safeStep('agents.stop'",
-      "safeStep('conversationService.close'",
-    ];
-    const positions = orderedShutdownSteps.map((step) => source.indexOf(step));
+  it('keeps dependencies alive until turns settle and maintenance flushes finish', async () => {
+    const lifecycle = createGatewayLifecycle();
+    const order: string[] = [];
+    let settleTurn!: () => void;
+    let finishFlush!: () => void;
+    const turn = new Promise<void>((resolve) => {
+      settleTurn = resolve;
+    });
+    const flush = new Promise<void>((resolve) => {
+      finishFlush = resolve;
+    });
+    // Register in reverse dependency order, as database resources are acquired
+    // before execution at startup. The production priorities must sort them.
+    const dependencies = ['databases', 'runtimes', 'swarm', 'mcp', 'dialTokens', 'relay'] as const;
+    for (const name of dependencies) {
+      lifecycle.add(name, STOP_ORDER[name], () => {
+        order.push(name);
+      });
+    }
+    lifecycle.add('maintenance', STOP_ORDER.maintenance, async () => {
+      order.push('maintenance:start');
+      await flush;
+      order.push('maintenance:done');
+    });
+    lifecycle.add('execution', STOP_ORDER.execution, async () => {
+      order.push('execution:start');
+      await turn;
+      order.push('execution:done');
+    });
 
-    expect(positions.every((position) => position >= 0)).toBe(true);
-    expect(positions).toEqual([...positions].sort((left, right) => left - right));
+    const stopping = lifecycle.stop();
+    expect(lifecycle.stop()).toBe(stopping);
+    expect(order).toEqual(['execution:start']);
+    settleTurn();
+    await vi.waitFor(() => {
+      expect(order).toEqual([
+        'execution:start',
+        'execution:done',
+        'relay',
+        'dialTokens',
+        'mcp',
+        'maintenance:start',
+      ]);
+    });
+    finishFlush();
+    await stopping;
+    expect(order).toEqual([
+      'execution:start',
+      'execution:done',
+      'relay',
+      'dialTokens',
+      'mcp',
+      'maintenance:start',
+      'maintenance:done',
+      'swarm',
+      'runtimes',
+      'databases',
+    ]);
   });
 });
 

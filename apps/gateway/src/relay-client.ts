@@ -48,7 +48,14 @@ export interface RelayClientOptions {
   reconnectResetMs?: number;
 }
 
+export interface RelayClientStatus {
+  connection: 'connected' | 'connecting' | 'disconnected' | 'stopped';
+  activeStreams: number;
+}
+
 export interface RelayClient {
+  /** Snapshot of the current transport state, without connection credentials. */
+  status(): RelayClientStatus;
   stop(): void;
   /** Reset backoff, cancel any pending reconnect, and dial immediately. */
   redialNow(): void;
@@ -399,6 +406,17 @@ export function startRelayClient(opts: RelayClientOptions): RelayClient {
   connect();
 
   return {
+    status(): RelayClientStatus {
+      let connection: RelayClientStatus['connection'] = 'disconnected';
+      if (stopped) {
+        connection = 'stopped';
+      } else if (socket?.readyState === WebSocket.OPEN) {
+        connection = 'connected';
+      } else if (socket?.readyState === WebSocket.CONNECTING) {
+        connection = 'connecting';
+      }
+      return { connection, activeStreams: streams.size };
+    },
     redialNow(): void {
       if (stopped) return;
       // Cancel a pending backoff reconnect and reset the counter so the new

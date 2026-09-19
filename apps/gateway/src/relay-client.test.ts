@@ -49,6 +49,124 @@ describe('relay-client', () => {
     if (lb) await new Promise<void>((r) => lb.close(() => r()));
   });
 
+  it('reports the current connection through initial dial, backoff, redial, and stop', async () => {
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => must(relay).on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+    const connections: WebSocket[] = [];
+    relay.on('connection', (ws) => connections.push(ws));
+
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'private-token',
+      gatewayId: 'private-gateway',
+      managementPort: 9999,
+      channelPort: 9998,
+      reconnectBaseMs: 10000,
+      heartbeatMs: 100000,
+    });
+
+    expect(client.status()).toEqual({ connection: 'connecting', activeStreams: 0 });
+    await waitFor(() => client?.status().connection === 'connected');
+    expect(client.status()).toEqual({ connection: 'connected', activeStreams: 0 });
+
+    connections[0].terminate();
+    await waitFor(() => client?.status().connection === 'disconnected');
+    expect(client.status()).toEqual({ connection: 'disconnected', activeStreams: 0 });
+    expect(connections).toHaveLength(1);
+
+    client.redialNow();
+    expect(client.status()).toEqual({ connection: 'connecting', activeStreams: 0 });
+    await waitFor(() => client?.status().connection === 'connected');
+    expect(connections).toHaveLength(2);
+
+    client.stop();
+    expect(client.status()).toEqual({ connection: 'stopped', activeStreams: 0 });
+    client.redialNow();
+    expect(client.status()).toEqual({ connection: 'stopped', activeStreams: 0 });
+  });
+
+  it('counts live HTTP and WebSocket streams and clears them on completion and shutdown', async () => {
+    const responses: http.ServerResponse[] = [];
+    loopback = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.flushHeaders();
+      responses.push(res);
+    });
+    const managementPort = await listen(loopback);
+    chat = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => must(chat).on('listening', () => r()));
+    const channelPort = (chat.address() as AddressInfo).port;
+    relay = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise<void>((r) => must(relay).on('listening', () => r()));
+    const relayPort = (relay.address() as AddressInfo).port;
+    const received: Frame[] = [];
+    const gwSocket = new Promise<WebSocket>((resolve) => {
+      must(relay).on('connection', (ws) => {
+        ws.on('message', (raw: Buffer) => received.push(decodeFrame(raw.toString())));
+        resolve(ws);
+      });
+    });
+
+    client = startRelayClient({
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: 'rt',
+      gatewayId: 'g1',
+      managementPort,
+      channelPort,
+    });
+    const ws = await gwSocket;
+    ws.send(
+      encodeFrame({
+        t: 'open',
+        streamId: 1,
+        target: 'mgmt',
+        kind: 'http',
+        path: '/events',
+        headers: {},
+      }),
+    );
+    ws.send(encodeFrame({ t: 'end', streamId: 1 }));
+    ws.send(
+      encodeFrame({
+        t: 'open',
+        streamId: 2,
+        target: 'chat',
+        kind: 'ws',
+        path: '/ws/chat',
+        headers: {},
+      }),
+    );
+    await waitFor(() => received.filter((frame) => frame.t === 'head').length === 2);
+    const snapshot = client.status();
+    expect(snapshot).toEqual({ connection: 'connected', activeStreams: 2 });
+
+    responses[0].end();
+    await waitFor(() => received.some((frame) => frame.t === 'end' && frame.streamId === 1));
+    expect(client.status()).toEqual({ connection: 'connected', activeStreams: 1 });
+    expect(snapshot.activeStreams).toBe(2);
+
+    ws.send(encodeFrame({ t: 'close', streamId: 2 }));
+    await waitFor(() => client?.status().activeStreams === 0);
+    expect(client.status()).toEqual({ connection: 'connected', activeStreams: 0 });
+
+    ws.send(
+      encodeFrame({
+        t: 'open',
+        streamId: 3,
+        target: 'mgmt',
+        kind: 'http',
+        path: '/events',
+        headers: {},
+      }),
+    );
+    ws.send(encodeFrame({ t: 'end', streamId: 3 }));
+    await waitFor(() => received.some((frame) => frame.t === 'head' && frame.streamId === 3));
+    expect(client.status()).toEqual({ connection: 'connected', activeStreams: 1 });
+    client.stop();
+    expect(client.status()).toEqual({ connection: 'stopped', activeStreams: 0 });
+  });
+
   it('replays an HTTP open to loopback and pipes the response back, forwarding auth', async () => {
     let seenAuth: string | undefined;
     let seenHost: string | undefined;

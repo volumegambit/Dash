@@ -77,6 +77,34 @@ curl http://localhost:9300/health
 Use `conversation-sync-v1` to enable gateway-authoritative conversation lists and messages. Use
 `chat-resume-v1` to enable durable sequences, replay, and resumable WebSocket turns.
 
+## Runtime status
+
+### GET /runtime/status
+
+Returns a current operational snapshot on the loopback Management API. Requires the management
+Bearer token. This endpoint is unavailable through `/mobile/v1`, the mobile LAN listener, or the
+hosted relay.
+
+```bash
+curl http://localhost:9300/runtime/status \
+  -H "Authorization: Bearer <your-management-token>"
+```
+
+| Field | Description |
+|-------|-------------|
+| `execution.accepting` | Whether execution is accepting new work |
+| `execution.activeCanonicalTurns` | Active conversation turns, including turns still cleaning up after cancellation |
+| `execution.activeLegacyTurns` | Active messaging-channel or legacy turns, including cancellation cleanup |
+| `execution.quiescingAgents` | Number of agents fenced from admitting new turns |
+| `pool` | Current runtime count, capacity, pinned runtime count, and counts by agent ID |
+| `channels` | Running channel names and each adapter's reported connection health |
+| `relay.connection` | `disabled`, `connecting`, `connected`, `disconnected`, or `stopped` |
+| `relay.activeStreams` | Number of streams currently tracked by the relay client |
+
+`GET /health` remains the lightweight liveness check. Runtime status reports process state;
+it does not test provider availability or imply that queued work has finished. It contains no
+credentials, conversation text, or pending-message contents.
+
 ## Identity
 
 ### GET /identity

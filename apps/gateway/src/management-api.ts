@@ -1,9 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { AgentClient, MemoryType } from '@dash/agent';
+import type { MemoryType } from '@dash/agent';
 import { MemoryOpError, readBook } from '@dash/agent';
-import type { ChannelAdapter } from '@dash/channels';
-import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
 import { mountProjectsRoutes } from '@dash/management';
 import type { GatewayIdentity, MobileApiError, MobileCapability } from '@dash/mobile-contract';
@@ -18,7 +16,19 @@ import type { BlankEnv } from 'hono/types';
 
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent-registry.js';
+import {
+  AgentLifecycleError,
+  type AgentLifecycleService,
+  createAgentLifecycleService,
+} from './agents/lifecycle-service.js';
+import type { GatewayRuntimeStatus } from './app/runtime-status.js';
 import type { ChannelRegistry, ChannelRoutingRule } from './channel-registry.js';
+import {
+  type ChannelService,
+  ChannelServiceError,
+  createAgentBridge,
+  createChannelService,
+} from './channels/service.js';
 import { mountConversationRoutes } from './conversation-routes.js';
 import type { ConversationService } from './conversation-service.js';
 import { type CompleteFn, generateConversationTitle } from './conversation-title.js';
@@ -86,7 +96,11 @@ async function resolveMobileCapabilities(
 }
 
 export interface GatewayManagementOptions {
+  /** Administrative diagnostics supplied by the application's live runtime owners. */
+  runtimeStatus?: () => GatewayRuntimeStatus;
   gateway: DynamicGateway;
+  agentLifecycle?: AgentLifecycleService;
+  channels?: ChannelService;
   agents: AgentChatCoordinator;
   agentRegistry: AgentRegistry;
   channelRegistry: ChannelRegistry;
@@ -570,79 +584,54 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     }
   });
 
-  /**
-   * Build the inline `AgentClient` bridge used by channel routing rules.
-   * One place so any future change (e.g., agent lookup, metrics, tracing)
-   * lands in all three call sites: POST /agents, POST /channels, and
-   * startup restore (which lives in index.ts, not here).
-   */
-  function buildBridgeClient(agentId: string): AgentClient {
-    return {
-      chat(channelId, conversationId, text) {
-        return options.execution.legacy.chat({ agentId, conversationId, channelId, text });
-      },
-      listSkills() {
-        return agents.listSkills(agentId);
-      },
-    };
+  const channels =
+    options.channels ??
+    createChannelService({
+      gateway,
+      agentRegistry,
+      channelRegistry,
+      credentialStore,
+      execution: options.execution,
+      agents,
+      dataDir: options.dataDir ?? '.',
+      eventBus,
+      logger,
+    });
+  const agentLifecycle =
+    options.agentLifecycle ??
+    createAgentLifecycleService({
+      gateway,
+      agentRegistry,
+      channelRegistry,
+      agents,
+      execution: options.execution,
+      conversationService: options.conversationService,
+      swarmCoordinator: options.swarmCoordinator,
+      subagentDefinitions: options.subagentDefinitions,
+      eventBus,
+      createBridge: (id) => createAgentBridge(id, { execution: options.execution, agents }),
+    });
+
+  function agentOperationError(c: Context, error: unknown, operation: string, agentId?: string) {
+    if (error instanceof AgentLifecycleError) {
+      if (error.code === 'not_found') return c.json(mobileAgentNotFound(), 404);
+      if (error.code === 'invalid_config') return c.json(mobileValidationError(error.message), 400);
+    }
+    logger.error(
+      `mobile agent ${operation} failed`,
+      undefined,
+      errorLogContext(error, agentId ? { agentId } : {}),
+    );
+    return c.json(mobileGatewayError(), 500);
   }
 
-  /**
-   * Telegram token-rotation helper: when `POST /credentials` sets a key
-   * matching `channel:<name>:token` and the named channel already exists,
-   * stop the old adapter and re-register with a fresh `TelegramAdapter`
-   * that captures the new token. Idempotent: if the channel doesn't
-   * exist yet (initial setup flow), no-op and the credential is simply
-   * staged for when POST /channels runs.
-   *
-   * Errors are logged but not re-raised — the credential itself has been
-   * persisted successfully, which is what the HTTP caller asked for;
-   * adapter restart failures leave the channel in a non-running state
-   * that a subsequent gateway restart (or manual DELETE+POST) will heal.
-   */
-  async function restartChannelForTokenRotation(credentialKey: string): Promise<void> {
-    const match = credentialKey.match(/^channel:(.+):token$/);
-    if (!match) return;
-    const channelName = match[1];
-    const entry = channelRegistry.get(channelName);
-    if (!entry || entry.adapter !== 'telegram') return;
-
-    const newToken = await credentialStore.get(credentialKey);
-    if (!newToken) return;
-
-    try {
-      await gateway.stopChannel(channelName);
-      const adapter = new TelegramAdapter(
-        newToken,
-        () => channelRegistry.get(channelName)?.allowedUsers ?? [],
-      );
-      await gateway.registerChannel(channelName, adapter, {
-        globalDenyList: entry.globalDenyList,
-        routing: entry.routing,
-      });
-      // Re-bridge agents — registerAgent is idempotent (overwrites the
-      // existing bridge client with one closing over the same agentId).
-      for (const rule of entry.routing) {
-        if (agentRegistry.get(rule.agentId)) {
-          gateway.registerAgent(rule.agentId, buildBridgeClient(rule.agentId));
-        }
-      }
-      eventBus?.emit({
-        type: 'channel:restarted',
-        channel: channelName,
-        reason: 'token-rotation',
-      });
-      logger.info('channel restarted after token rotation', {
-        channel: channelName,
-        reason: 'token-rotation',
-      });
-    } catch (err) {
-      logger.error(
-        'channel token-rotation restart failed',
-        undefined,
-        errorLogContext(err, { channel: channelName }),
-      );
+  function channelOperationError(c: Context, error: unknown) {
+    if (error instanceof ChannelServiceError) {
+      const status = error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : 400;
+      return c.json({ error: error.message }, status);
     }
+    logger.error('channel operation failed', undefined, errorLogContext(error));
+    return c.json({ error: 'Internal error' }, 500);
   }
 
   // CORS for the `/mobile/v1` namespace, registered BEFORE the auth middleware
@@ -704,6 +693,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   app.get('/health', healthHandler);
   mobileV1.get('/health', healthHandler);
 
+  if (options.runtimeStatus) {
+    const readStatus = options.runtimeStatus;
+    app.get('/runtime/status', (c) => c.json(readStatus()));
+  }
+
   // --- Lifecycle ---
   // Bearer-authed (the app.use('*') middleware above). MC's GatewaySupervisor
   // POSTs this as its graceful-shutdown attempt before SIGTERM
@@ -750,28 +744,6 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   });
 
   // --- Agent routes ---
-  const agentLifecycleTails = new Map<string, Promise<void>>();
-
-  async function serializeAgentLifecycle<T>(
-    agentId: string,
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    const previous = agentLifecycleTails.get(agentId) ?? Promise.resolve();
-    let release!: () => void;
-    const completed = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const tail = previous.then(() => completed);
-    agentLifecycleTails.set(agentId, tail);
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-      if (agentLifecycleTails.get(agentId) === tail) agentLifecycleTails.delete(agentId);
-    }
-  }
-
   function mountAgentRoutes(
     target: Hono,
     createKeys: ReadonlySet<string>,
@@ -793,23 +765,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
           400,
         );
       }
-      let entry: RegisteredAgent;
       try {
-        entry = agentRegistry.register(body);
-      } catch (error) {
-        return c.json(
-          mobileValidationError(error instanceof Error ? error.message : 'Agent config is invalid'),
-          400,
-        );
-      }
-      try {
-        gateway.registerAgent(entry.id, buildBridgeClient(entry.id));
-        await agentRegistry.save();
-        eventBus?.emit({ type: 'agent:config-changed', agent: entry.name, fields: ['*'] });
+        const entry = await agentLifecycle.create(body);
         return c.json(stripSecrets(entry), 201);
       } catch (error) {
-        logger.error('mobile agent create failed', undefined, errorLogContext(error));
-        return c.json(mobileGatewayError(), 500);
+        return agentOperationError(c, error, 'create');
       }
     });
 
@@ -840,169 +800,35 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
           400,
         );
       }
-      // Snapshot the pre-update swarm AND subagents blocks so we can detect a
-      // sub-agent config change after the update and evict warm backends (a
-      // running orchestrator caches its gate/caps and its injected tools;
-      // eviction forces the next chat to rebuild with the new config). BOTH
-      // blocks must be covered — a `subagents`-only edit (delegation mode,
-      // caps, allowedTypes) would otherwise silently not take effect on a warm
-      // conversation. Deep-compared via JSON.stringify — both are plain data.
-      const oldSubagentBlocks = JSON.stringify([entry.config.swarm, entry.config.subagents]);
-      let updated: RegisteredAgent;
       try {
-        updated = agentRegistry.update(id, body);
-      } catch (error) {
-        return c.json(
-          mobileValidationError(error instanceof Error ? error.message : 'Agent config is invalid'),
-          400,
-        );
-      }
-      try {
-        await agentRegistry.save();
-        // Drop this agent's cached sub-agent roster. Unconditional rather than
-        // diffed: the registry snapshots `workspace`, `plugins`, `name` AND the
-        // `subagents` block, so any narrower condition is one new key away from
-        // silently serving a stale roster until the next restart. A rebuild is
-        // one directory scan, and it only happens on an explicit config write.
-        options.subagentDefinitions?.invalidate(id);
-        eventBus?.emit({
-          type: 'agent:config-changed',
-          agent: entry.name,
-          fields: Object.keys(body),
-        });
-        if (
-          JSON.stringify([updated.config.swarm, updated.config.subagents]) !== oldSubagentBlocks
-        ) {
-          await agents.evict(id);
-        }
+        const updated = await agentLifecycle.update(id, body);
         return c.json(stripSecrets(updated));
       } catch (error) {
-        logger.error(
-          'mobile agent update failed',
-          undefined,
-          errorLogContext(error, { agentId: id }),
-        );
-        return c.json(mobileGatewayError(), 500);
+        return agentOperationError(c, error, 'update', id);
       }
     });
 
-    target.delete('/agents/:id', (c) => {
+    target.delete('/agents/:id', async (c) => {
       const id = c.req.param('id');
-      return serializeAgentLifecycle(id, async () => {
-        const entry = agentRegistry.get(id);
-        if (!entry) return c.json(mobileAgentNotFound(), 404);
-        try {
-          await options.execution.cancelAgent(id);
-          const removedChannels = await gateway.deregisterAgent(id);
-          for (const name of removedChannels) {
-            channelRegistry.remove(name);
-          }
-          channelRegistry.removeRoutesForAgent(id);
-          // Finalize any live swarm runs for this agent before eviction. cancelRunsFor
-          // cancels non-terminal workers + aborts the orchestrator synchronously, so
-          // the subsequent evict() tears down an already-quiesced backend.
-          options.swarmCoordinator?.cancelRunsFor(id);
-          // Evict warm backends before removing the registry entry so any
-          // in-flight streams are aborted and backend.stop() is called. The
-          // pool is keyed independently of the registry, so order doesn't
-          // affect correctness of the eviction itself — but doing it before
-          // the registry remove means races that race a delete with a chat
-          // get aborted rather than serving a deleted agent's state.
-          await agents.evict(id);
-          const archived = options.conversationService.archiveAgentConversations(id);
-          agentRegistry.remove(id);
-          // Drop the deleted agent's cached roster so the entry does not
-          // outlive the agent (and so a re-registered id starts from disk).
-          options.subagentDefinitions?.invalidate(id);
-          await agentRegistry.save();
-          await channelRegistry.save();
-          for (const conversation of archived) {
-            eventBus?.emit({
-              type: 'conversation:changed',
-              conversationId: conversation.id,
-              revision: conversation.revision,
-            });
-          }
-          eventBus?.emit({
-            type: 'agent:config-changed',
-            agent: entry.name,
-            fields: ['removed'],
-          });
-          return c.json({ ok: true });
-        } catch (error) {
-          logger.error(
-            'mobile agent delete failed',
-            undefined,
-            errorLogContext(error, { agentId: id }),
-          );
-          return c.json(mobileGatewayError(), 500);
-        }
-      });
+      try {
+        await agentLifecycle.remove(id);
+        return c.json({ ok: true });
+      } catch (error) {
+        return agentOperationError(c, error, 'delete', id);
+      }
     });
 
-    target.post('/agents/:id/disable', (c) => {
-      const id = c.req.param('id');
-      return serializeAgentLifecycle(id, async () => {
-        const entry = agentRegistry.get(id);
-        if (!entry) return c.json(mobileAgentNotFound(), 404);
+    for (const action of ['disable', 'enable'] as const) {
+      target.post(`/agents/:id/${action}`, async (c) => {
+        const id = c.req.param('id');
         try {
-          agentRegistry.disable(id);
-          // Cancellation closes admission synchronously. Persist the disabled state
-          // while provider cleanup runs, and keep lifecycle serialization until both settle.
-          const results = await Promise.allSettled([
-            options.execution.cancelAgent(id),
-            Promise.resolve().then(() => agentRegistry.save()),
-          ]);
-          const failure = results.find((result) => result.status === 'rejected');
-          if (failure) throw failure.reason;
-          // Disable must actually stop a running orchestrator: cancel its live swarm
-          // runs, then evict the warm backend (which aborts the pinned in-flight
-          // turn — intentional per the design, disable is a hard stop). Ordered so
-          // the swarm runs quiesce before the backend teardown.
-          options.swarmCoordinator?.cancelRunsFor(id);
-          await agents.evict(id);
-          eventBus?.emit({
-            type: 'agent:config-changed',
-            agent: entry.name,
-            fields: ['enabled'],
-          });
+          await agentLifecycle[action](id);
           return c.json({ ok: true });
         } catch (error) {
-          logger.error(
-            'mobile agent disable failed',
-            undefined,
-            errorLogContext(error, { agentId: id }),
-          );
-          return c.json(mobileGatewayError(), 500);
+          return agentOperationError(c, error, action, id);
         }
       });
-    });
-
-    target.post('/agents/:id/enable', (c) => {
-      const id = c.req.param('id');
-      return serializeAgentLifecycle(id, async () => {
-        const entry = agentRegistry.get(id);
-        if (!entry) return c.json(mobileAgentNotFound(), 404);
-        try {
-          agentRegistry.enable(id);
-          await agentRegistry.save();
-          options.execution.allowAgent(id);
-          eventBus?.emit({
-            type: 'agent:config-changed',
-            agent: entry.name,
-            fields: ['enabled'],
-          });
-          return c.json({ ok: true });
-        } catch (error) {
-          logger.error(
-            'mobile agent enable failed',
-            undefined,
-            errorLogContext(error, { agentId: id }),
-          );
-          return c.json(mobileGatewayError(), 500);
-        }
-      });
-    });
+    }
 
     // --- Memory: reads + delete ---
     // Mounted on `target`, so these exist on the loopback administrative API
@@ -1364,101 +1190,17 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       return c.json({ error: 'allowedUsers must be an array of strings' }, 400);
     }
 
-    const routing = body.routing as ChannelRoutingRule[];
-    const globalDenyList = body.globalDenyList ?? [];
-    const allowedUsers = body.allowedUsers ?? [];
-    const channelName = body.name;
-
-    // Referential integrity: reject routing rules that reference agents
-    // that don't exist. This is symmetric with `DELETE /agents/:id`,
-    // which cascades to remove channel rules for the deleted agent.
-    // Without this check, channels.json could accumulate dangling refs.
-    const missingAgents = routing.map((r) => r.agentId).filter((id) => !agentRegistry.get(id));
-    if (missingAgents.length > 0) {
-      return c.json(
-        {
-          error: `routing references unknown agent(s): ${[...new Set(missingAgents)].join(', ')}`,
-        },
-        400,
-      );
-    }
-
-    // Pre-register in the channel registry BEFORE constructing the adapter.
-    // Two reasons:
-    //   1. The TelegramAdapter is constructed with a closure that reads
-    //      `allowedUsers` from the registry on every inbound message. If
-    //      we registered after `adapter.start()`, there's a race where a
-    //      message arriving immediately would see `undefined` and fall
-    //      through as "no filter".
-    //   2. The gateway's `resolveRouting` (wired in `index.ts`) also reads
-    //      from the registry on every message — same race for routing.
-    //
-    // On failure we roll back the in-memory entry below so the registry
-    // stays consistent with the running gateway.
-    if (channelRegistry.has(channelName)) {
-      return c.json({ error: `Channel '${channelName}' already exists` }, 409);
-    }
-    channelRegistry.register({
-      name: channelName,
-      adapter: body.adapter as 'telegram' | 'whatsapp',
-      globalDenyList,
-      allowedUsers,
-      routing,
-    });
-
-    // Create adapter from credentials. Telegram uses a pull-based closure
-    // over the registry so runtime edits to allowedUsers take effect on
-    // the next message without restarting the bot.
-    let adapter: ChannelAdapter;
-    if (body.adapter === 'telegram') {
-      const credKey = `channel:${channelName}:token`;
-      const tok = await credentialStore.get(credKey);
-      if (!tok) {
-        channelRegistry.remove(channelName); // rollback
-        return c.json({ error: `No credential found for key '${credKey}'` }, 400);
-      }
-      adapter = new TelegramAdapter(
-        tok,
-        () => channelRegistry.get(channelName)?.allowedUsers ?? [],
-      );
-    } else if (body.adapter === 'whatsapp') {
-      const credKey = `channel:${channelName}:whatsapp-auth`;
-      const authJson = await credentialStore.get(credKey);
-      if (!authJson) {
-        channelRegistry.remove(channelName); // rollback
-        return c.json({ error: `No credential found for key '${credKey}'` }, 400);
-      }
-      const auth = JSON.parse(authJson) as Record<string, string>;
-      adapter = new WhatsAppAdapter(auth, `data/whatsapp/${channelName}`);
-    } else {
-      channelRegistry.remove(channelName); // rollback
-      return c.json({ error: `Unknown adapter type: ${body.adapter}` }, 400);
-    }
-
     try {
-      await gateway.registerChannel(channelName, adapter, { globalDenyList, routing });
-
-      // Bridge agents for each routing rule. The agentIds were already
-      // validated above, so every `agentRegistry.get()` here is guaranteed
-      // to hit — the re-check stays as defense-in-depth against concurrent
-      // agent removal between validation and registration.
-      for (const rule of routing) {
-        if (agentRegistry.get(rule.agentId)) {
-          gateway.registerAgent(rule.agentId, buildBridgeClient(rule.agentId));
-        }
-      }
-
-      await channelRegistry.save();
-      eventBus?.emit({ type: 'channel:created', channel: channelName });
+      await channels.create({
+        name: body.name,
+        adapter: body.adapter,
+        routing: body.routing as ChannelRoutingRule[],
+        globalDenyList: body.globalDenyList,
+        allowedUsers: body.allowedUsers,
+      });
       return c.json({ ok: true }, 201);
-    } catch (err) {
-      // Registration with the gateway failed — roll back the registry
-      // entry so the persisted state matches the running state. Best-effort
-      // stop the adapter in case it partially started.
-      await gateway.stopChannel(channelName).catch(() => {});
-      channelRegistry.remove(channelName);
-      const message = err instanceof Error ? err.message : 'Internal error';
-      return c.json({ error: message }, 500);
+    } catch (error) {
+      return channelOperationError(c, error);
     }
   });
 
@@ -1494,57 +1236,22 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       return c.json({ error: 'routing must be an array of rules' }, 400);
     }
 
-    // Referential integrity for routing edits: if the caller is replacing
-    // the routing array, every new agentId must resolve. Stale agentIds
-    // would otherwise route to nowhere and get audit-logged as
-    // `agent_not_found` forever.
-    if (patch.routing !== undefined) {
-      const newRouting = patch.routing as ChannelRoutingRule[];
-      const missingAgents = newRouting.map((r) => r.agentId).filter((id) => !agentRegistry.get(id));
-      if (missingAgents.length > 0) {
-        return c.json(
-          {
-            error: `routing references unknown agent(s): ${[...new Set(missingAgents)].join(', ')}`,
-          },
-          400,
-        );
-      }
-    }
-
     try {
-      // Runtime routing + allowedUsers edits propagate immediately: the
-      // gateway's `resolveRouting` and the Telegram adapter's
-      // `getAllowedUsers` closure both read from this registry on every
-      // inbound message. No reconciliation plumbing required.
-      const updated = channelRegistry.update(name, patch);
-      await channelRegistry.save();
-      eventBus?.emit({
-        type: 'channel:config-changed',
-        channel: name,
-        fields: Object.keys(patch),
-      });
+      const updated = await channels.update(name, patch);
       return c.json(updated);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      return c.json({ error: message }, 500);
+    } catch (error) {
+      return channelOperationError(c, error);
     }
   });
 
   app.delete('/channels/:name', async (c) => {
     const name = decodeURIComponent(c.req.param('name'));
-    const entry = channelRegistry.get(name);
-    if (!entry) return c.json({ error: 'not found' }, 404);
-    // Stop the adapter BEFORE removing from the registry. The gateway's
-    // `resolveRouting` pulls from the registry on every message, so if we
-    // removed first, in-flight messages between the remove and the stop
-    // would be audit-logged as `channel_removed` rather than routed —
-    // technically correct but chatty. Stopping first makes the shutdown
-    // clean: no new messages, no polling, no stale routing.
-    await gateway.stopChannel(name);
-    channelRegistry.remove(name);
-    await channelRegistry.save();
-    eventBus?.emit({ type: 'channel:removed', channel: name });
-    return c.json({ ok: true });
+    try {
+      await channels.remove(name);
+      return c.json({ ok: true });
+    } catch (error) {
+      return channelOperationError(c, error);
+    }
   });
 
   // --- Credential routes ---
@@ -1576,7 +1283,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     // Telegram channel, restart its adapter so the grammy Bot captures
     // the new token. No-op for other keys; no-op if no such channel
     // exists yet. Errors are logged but do not fail the request.
-    await restartChannelForTokenRotation(body.key);
+    await channels.restartForCredential(body.key);
     return c.json({ ok: true }, 201);
   });
 
