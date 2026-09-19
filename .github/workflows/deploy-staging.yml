@@ -1,0 +1,229 @@
+name: Deploy staging
+
+# Every commit on main reaches staging once CI is green. Each job checks its
+# own configuration and skips with a notice when the target isn't set up yet,
+# so this workflow is never red for a missing secret. Setup: deploy/README.md.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit or branch to deploy
+        default: main
+
+# Queue, never cancel: a half-applied deploy is worse than a late one.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  gate:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.pick.outputs.ref }}
+    steps:
+      - id: pick
+        run: echo "ref=${{ github.event.workflow_run.head_sha || inputs.ref }}" >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: gate
+    uses: ./.github/workflows/server-image.yml
+    with:
+      push: true
+      ref: ${{ needs.gate.outputs.ref }}
+      tags: staging
+    secrets: inherit
+
+  server:
+    needs: [gate, image]
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          DEPLOY_DIR: ${{ vars.SERVER_DEPLOY_DIR }}
+        run: |
+          if [ -n "$SSH_KEY" ] && [ -n "$DEPLOY_DIR" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::skipped: staging server not configured (SERVER_SSH_KEY / SERVER_DEPLOY_DIR)"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          ref: ${{ needs.gate.outputs.ref }}
+
+      - name: SSH credentials
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SERVER_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Ship deploy files and run deploy.sh
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          TARGET: ${{ secrets.SERVER_SSH_USER }}@${{ secrets.SERVER_SSH_HOST }}
+          DEPLOY_DIR: ${{ vars.SERVER_DEPLOY_DIR }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          ssh_opts="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=yes"
+          rsync -az -e "ssh $ssh_opts" deploy/server/docker-compose.yml deploy/server/deploy.sh deploy/server/smoke.sh "$TARGET:$DEPLOY_DIR/"
+          printf '%s' "$GHCR_TOKEN" | ssh $ssh_opts "$TARGET" "docker login ghcr.io -u '$GHCR_USER' --password-stdin >/dev/null && cd '$DEPLOY_DIR' && ./deploy.sh '$IMAGE'"
+
+      - name: Smoke from outside
+        if: steps.cfg.outputs.configured == 'true' && vars.CP_PUBLIC_URL != ''
+        run: deploy/server/smoke.sh "${{ vars.CP_PUBLIC_URL }}" "${{ vars.RELAY_PROBE_URL }}"
+
+  web:
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          PROJECT: ${{ vars.CF_PAGES_PROJECT_WEB }}
+          CP_URL: ${{ vars.WEB_CONTROL_PLANE_URL }}
+        run: |
+          if [ -n "$PROJECT" ] && [ -n "$CP_URL" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::skipped: staging web not configured (CF_PAGES_PROJECT_WEB / WEB_CONTROL_PLANE_URL)"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          ref: ${{ needs.gate.outputs.ref }}
+
+      - uses: actions/setup-node@v6
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      - if: steps.cfg.outputs.configured == 'true'
+        run: npm ci
+
+      # apps/web typechecks against built workspace packages.
+      - if: steps.cfg.outputs.configured == 'true'
+        run: npm run build
+
+      - name: Build for staging
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.WEB_CLERK_PUBLISHABLE_KEY }}
+          VITE_CONTROL_PLANE_URL: ${{ vars.WEB_CONTROL_PLANE_URL }}
+          VITE_RELAY_DOMAIN: ${{ vars.WEB_RELAY_DOMAIN }}
+        run: deploy/web/build.sh
+
+      - name: Deploy to Cloudflare Pages (staging branch)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy apps/web/dist --project-name=${{ vars.CF_PAGES_PROJECT_WEB }} --branch=staging
+
+  website:
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          PROJECT: ${{ vars.CF_PAGES_PROJECT }}
+        run: |
+          if [ -n "$PROJECT" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::skipped: website not configured (CF_PAGES_PROJECT)"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          ref: ${{ needs.gate.outputs.ref }}
+
+      - uses: actions/setup-node@v6
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      - if: steps.cfg.outputs.configured == 'true'
+        run: npm ci
+
+      - name: Build static site
+        if: steps.cfg.outputs.configured == 'true'
+        run: npm run website:build
+
+      - name: Deploy to Cloudflare Pages (staging branch)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy apps/website/out --project-name=${{ vars.CF_PAGES_PROJECT }} --branch=staging
+
+  waitlist:
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          ENABLED: ${{ vars.WAITLIST_ENABLED }}
+        run: |
+          if [ "$ENABLED" = "true" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::skipped: waitlist staging not enabled (WAITLIST_ENABLED)"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          ref: ${{ needs.gate.outputs.ref }}
+
+      - uses: actions/setup-node@v6
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      - if: steps.cfg.outputs.configured == 'true'
+        run: npm ci
+
+      - name: Deploy worker (staging env)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/waitlist
+          command: deploy --env staging

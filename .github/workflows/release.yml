@@ -1,0 +1,414 @@
+name: Release
+
+# Cut with `scripts/release.sh patch|minor|major`. The pushed vX.Y.Z tag:
+#   verify  → tag agrees with every version file; draft GitHub Release created
+#   gates   → build, lint, test on the tagged commit
+#   image   → ghcr.io/…/dash-server:vX.Y.Z (+ latest)
+#   desktop → Mission Control DMG/zip uploaded to the draft release
+#   web / website / waitlist / server → production (environment "production": reviewer approval)
+#   ios / android → TestFlight upload / signed AAB, when store credentials exist
+# Publishing the draft release is the human go-live for desktop: install.sh
+# follows releases/latest, which ignores drafts. Setup: deploy/README.md.
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Tag matches every version file
+        run: node scripts/check-release-version.mjs "$TAG"
+      - id: version
+        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+      - name: Draft GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --draft --generate-notes --title "Dash $TAG"
+
+  gates:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run lint
+      - run: npm test
+
+  image:
+    needs: [verify, gates]
+    uses: ./.github/workflows/server-image.yml
+    with:
+      push: true
+      tags: |
+        ${{ github.ref_name }}
+        latest
+    secrets: inherit
+
+  desktop:
+    needs: [verify, gates]
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run mc:build
+      - name: Signing configuration
+        id: sign
+        env:
+          CSC_LINK_SECRET: ${{ secrets.MAC_CSC_LINK }}
+        run: |
+          if [ -n "$CSC_LINK_SECRET" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::desktop: building unsigned (MAC_CSC_LINK not set); install.sh strips quarantine"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Package (signed + notarized)
+        if: steps.sign.outputs.signed == 'true'
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run package -w apps/mission-control -- --mac --x64 --arm64 --publish never
+      - name: Package (unsigned)
+        if: steps.sign.outputs.signed != 'true'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run package -w apps/mission-control -- --mac --x64 --arm64 --publish never
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          files=(apps/mission-control/release/*.dmg apps/mission-control/release/*.zip apps/mission-control/release/*.blockmap apps/mission-control/release/latest-mac.yml)
+          [ ${#files[@]} -gt 0 ] || { echo "no desktop artifacts produced" >&2; exit 1; }
+          gh release upload "$TAG" "${files[@]}" --clobber
+
+  web:
+    needs: [verify, gates]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          PROJECT: ${{ vars.CF_PAGES_PROJECT_WEB }}
+          CP_URL: ${{ vars.WEB_CONTROL_PLANE_URL }}
+        run: |
+          if [ -n "$PROJECT" ] && [ -n "$CP_URL" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::skipped: production web not configured (CF_PAGES_PROJECT_WEB / WEB_CONTROL_PLANE_URL)"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v6
+        if: steps.cfg.outputs.configured == 'true'
+      - uses: actions/setup-node@v6
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          node-version: 22
+          cache: npm
+      - if: steps.cfg.outputs.configured == 'true'
+        run: npm ci
+      - if: steps.cfg.outputs.configured == 'true'
+        run: npm run build
+      - name: Build for production
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.WEB_CLERK_PUBLISHABLE_KEY }}
+          VITE_CONTROL_PLANE_URL: ${{ vars.WEB_CONTROL_PLANE_URL }}
+          VITE_RELAY_DOMAIN: ${{ vars.WEB_RELAY_DOMAIN }}
+        run: deploy/web/build.sh
+      - name: Deploy to Cloudflare Pages (production branch)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy apps/web/dist --project-name=${{ vars.CF_PAGES_PROJECT_WEB }} --branch=main
+
+  website:
+    needs: [verify, gates]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          PROJECT: ${{ vars.CF_PAGES_PROJECT }}
+        run: |
+          if [ -n "$PROJECT" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::skipped: website not configured (CF_PAGES_PROJECT)"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v6
+        if: steps.cfg.outputs.configured == 'true'
+      - uses: actions/setup-node@v6
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          node-version: 22
+          cache: npm
+      - if: steps.cfg.outputs.configured == 'true'
+        run: npm ci
+      - name: Build static site
+        if: steps.cfg.outputs.configured == 'true'
+        run: npm run website:build
+      - name: Deploy to Cloudflare Pages (production branch)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy apps/website/out --project-name=${{ vars.CF_PAGES_PROJECT }} --branch=main
+
+  waitlist:
+    needs: [verify, gates]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          ENABLED: ${{ vars.WAITLIST_ENABLED }}
+        run: |
+          if [ "$ENABLED" = "true" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::skipped: waitlist production not enabled (WAITLIST_ENABLED)"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v6
+        if: steps.cfg.outputs.configured == 'true'
+      - uses: actions/setup-node@v6
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          node-version: 22
+          cache: npm
+      - if: steps.cfg.outputs.configured == 'true'
+        run: npm ci
+      - name: Deploy worker (production)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/waitlist
+          command: deploy
+
+  server:
+    needs: [verify, image]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          DEPLOY_DIR: ${{ vars.SERVER_DEPLOY_DIR }}
+        run: |
+          if [ -n "$SSH_KEY" ] && [ -n "$DEPLOY_DIR" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::skipped: production server not configured (SERVER_SSH_KEY / SERVER_DEPLOY_DIR)"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v6
+        if: steps.cfg.outputs.configured == 'true'
+      - name: SSH credentials
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SERVER_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Ship deploy files and run deploy.sh
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          TARGET: ${{ secrets.SERVER_SSH_USER }}@${{ secrets.SERVER_SSH_HOST }}
+          DEPLOY_DIR: ${{ vars.SERVER_DEPLOY_DIR }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/dash-server:${{ github.ref_name }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          ssh_opts="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=yes"
+          rsync -az -e "ssh $ssh_opts" deploy/server/docker-compose.yml deploy/server/deploy.sh deploy/server/smoke.sh "$TARGET:$DEPLOY_DIR/"
+          printf '%s' "$GHCR_TOKEN" | ssh $ssh_opts "$TARGET" "docker login ghcr.io -u '$GHCR_USER' --password-stdin >/dev/null && cd '$DEPLOY_DIR' && ./deploy.sh '${IMAGE,,}'"
+      - name: Smoke from outside
+        if: steps.cfg.outputs.configured == 'true' && vars.CP_PUBLIC_URL != ''
+        run: deploy/server/smoke.sh "${{ vars.CP_PUBLIC_URL }}" "${{ vars.RELAY_PROBE_URL }}"
+
+  ios:
+    needs: [verify, gates]
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: production
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          CP_URL: ${{ vars.IOS_CONTROL_PLANE_URL }}
+        run: |
+          if [ -n "$KEY_ID" ] && [ -n "$TEAM" ] && [ -n "$CP_URL" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::skipped: TestFlight not configured (ASC_KEY_ID / APPLE_TEAM_ID / IOS_CONTROL_PLANE_URL)"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v6
+        if: steps.cfg.outputs.configured == 'true'
+      - uses: maxim-lobanov/setup-xcode@v1
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          xcode-version: '16.3'
+      - name: Verify generated project is committed
+        if: steps.cfg.outputs.configured == 'true'
+        run: |
+          ios/scripts/bootstrap-xcodegen.sh
+          ios/scripts/check-project.sh
+      - name: App Store Connect key
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          mkdir -p ~/private_keys
+          printf '%s\n' "$ASC_PRIVATE_KEY" > "$HOME/private_keys/AuthKey_$ASC_KEY_ID.p8"
+          chmod 600 "$HOME/private_keys/AuthKey_$ASC_KEY_ID.p8"
+          plutil -replace teamID -string "$APPLE_TEAM_ID" ios/Config/ExportOptions-AppStore.plist
+      - name: Archive
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_CONTROL_PLANE_URL: ${{ vars.IOS_CONTROL_PLANE_URL }}
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/Dash.xcodeproj -scheme Dash -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Dash.xcarchive" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            DASH_CONTROL_PLANE_URL="$IOS_CONTROL_PLANE_URL" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/private_keys/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            archive | tail -40
+      - name: Upload to TestFlight
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/Dash.xcarchive" \
+            -exportOptionsPlist ios/Config/ExportOptions-AppStore.plist \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/private_keys/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" | tail -20
+
+  android:
+    needs: [verify, gates]
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PLAY: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$KEYSTORE" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::skipped: Android release signing not configured (ANDROID_KEYSTORE_BASE64)"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$PLAY" ]; then echo "play=true" >> "$GITHUB_OUTPUT"; else echo "play=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/checkout@v6
+        if: steps.cfg.outputs.configured == 'true'
+      - uses: actions/setup-java@v5
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v6
+        if: steps.cfg.outputs.configured == 'true'
+      - name: Keystore
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+      - name: Build signed bundle
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          DASH_ANDROID_KEYSTORE: ${{ runner.temp }}/release.keystore
+          DASH_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          DASH_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          DASH_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          DASH_ANDROID_VERSION_CODE: ${{ github.run_number }}
+          DASH_ANDROID_VERSION_NAME: ${{ needs.verify.outputs.version }}
+        run: ./gradlew bundleRelease assembleRelease
+      - name: Attach to the draft release
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp app/build/outputs/bundle/release/app-release.aab "Dash-$TAG.aab"
+          cp app/build/outputs/apk/release/app-release.apk "Dash-$TAG.apk"
+          gh release upload "$TAG" "Dash-$TAG.aab" "Dash-$TAG.apk" --clobber
+      - name: Upload to Play (internal track)
+        if: steps.cfg.outputs.configured == 'true' && steps.cfg.outputs.play == 'true'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: app.dash
+          releaseFiles: android/app/build/outputs/bundle/release/app-release.aab
+          track: internal
+          status: completed
