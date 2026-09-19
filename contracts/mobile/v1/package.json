@@ -4,13 +4,7 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": [
-    "dist",
-    "README.md",
-    "openapi.yaml",
-    "chat-ws.schema.json",
-    "fixtures"
-  ],
+  "files": ["dist", "README.md", "openapi.yaml", "chat-ws.schema.json", "fixtures"],
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -27,12 +21,8 @@
     "yaml": "^2.9.0"
   },
   "tsup": {
-    "entry": [
-      "src/index.ts"
-    ],
-    "format": [
-      "esm"
-    ],
+    "entry": ["src/index.ts"],
+    "format": ["esm"],
     "dts": true,
     "clean": true,
     "sourcemap": true
