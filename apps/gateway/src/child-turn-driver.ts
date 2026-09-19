@@ -12,28 +12,30 @@ import type {
 } from '@dash/swarm';
 import { ChildTurnStartError } from '@dash/swarm';
 import { type ConversationService, ConversationServiceError } from './conversation-service.js';
-import type { ResumableChatHub } from './resumable-chat-hub.js';
+import type { ExecutionCoordinator } from './execution-coordinator.js';
 import { grantFromSpec } from './subagent-resume.js';
 
 export interface ChildTurnDriverOptions {
   conversations: ConversationService;
-  /** Late-bound: the hub is constructed after the coordinator that uses it. */
-  hub: () => ResumableChatHub | undefined;
+  /** Late-bound: execution is constructed after the coordinator that uses it. */
+  execution: () =>
+    | Pick<ExecutionCoordinator, 'startSystemTurn' | 'cancel' | 'addObserver'>
+    | undefined;
   /** Where a child that could not be persisted is reported. */
   warn?(message: string): void;
 }
 
 /**
  * The gateway's {@link ChildTurnDriver}: a child is a REAL conversation
- * (`kind: 'subagent'`) whose turns run through the same `ResumableChatHub` as a
+ * (`kind: 'subagent'`) whose turns run through the same `ExecutionCoordinator` as a
  * user's, so it persists with `seq`, replays, survives a restart, and can later
  * be resumed (design §7.1, §7.4).
  *
  * Everything the coordinator needs back — the child's events, its completion —
- * arrives through a single hub turn observer, filtered to child conversations.
+ * arrives through a single execution observer, filtered to child conversations.
  */
 export function createChildTurnDriver(options: ChildTurnDriverOptions): ChildTurnDriver & {
-  /** Wire the hub observer. Returns a disposer. */
+  /** Wire the execution observer. Returns a disposer. */
   attachObserver(): () => void;
 } {
   const { conversations } = options;
@@ -76,12 +78,15 @@ export function createChildTurnDriver(options: ChildTurnDriverOptions): ChildTur
     },
 
     startTurn({ agentId, conversationId, text, requestId }): { turnId: string } {
-      const hub = options.hub();
-      if (!hub) {
-        throw new ChildTurnStartError('stopped', 'the gateway chat hub is not running');
+      const execution = options.execution();
+      if (!execution) {
+        throw new ChildTurnStartError(
+          'stopped',
+          'the gateway execution coordinator is not running',
+        );
       }
       try {
-        return hub.startSystemTurn({
+        return execution.startSystemTurn({
           agentId,
           conversationId,
           text,
@@ -95,8 +100,8 @@ export function createChildTurnDriver(options: ChildTurnDriverOptions): ChildTur
       } catch (err) {
         // TWO shapes reach here and they mean different things. `acceptTurn`
         // throws a typed `conversation_busy` when the child already holds a
-        // turn lease — retryable. A STOPPED hub throws a BARE `Error`
-        // ("Resumable chat hub is stopped"), which is terminal; classifying it
+        // turn lease — retryable. A STOPPED coordinator throws a BARE `Error`
+        // ("Execution coordinator is stopped"), which is terminal; classifying it
         // as busy would have the caller wait for a lease that will never free.
         if (err instanceof ConversationServiceError) {
           const reason = err.code === 'conversation_busy' ? 'busy' : 'error';
@@ -107,11 +112,10 @@ export function createChildTurnDriver(options: ChildTurnDriverOptions): ChildTur
     },
 
     async cancelTurn(_agentId: string, conversationId: string): Promise<void> {
-      const hub = options.hub();
+      const execution = options.execution();
       const turnId = conversations.get(conversationId, { includeDeleted: true })?.activeTurnId;
-      if (!hub || !turnId) return;
-      // The hub's cancel needs a sink to catch up; a child turn has none.
-      await hub.cancel(turnId, { send: () => {} });
+      if (!execution || !turnId) return;
+      await execution.cancel(turnId);
     },
 
     updateChild(id: string, patch: { status?: WorkerStatus; info?: Partial<ChildInfo> }): void {
@@ -172,9 +176,9 @@ export function createChildTurnDriver(options: ChildTurnDriverOptions): ChildTur
     },
 
     attachObserver(): () => void {
-      const hub = options.hub();
-      if (!hub) return () => {};
-      return hub.addObserver({
+      const execution = options.execution();
+      if (!execution) return () => {};
+      return execution.addObserver({
         onEvent(turn, event) {
           if (!isChild(turn.conversationId)) return;
           for (const listener of [...eventListeners]) listener(turn, event);

@@ -221,6 +221,8 @@ export interface ConversationService {
   listMessages(input: ListMessagesInput): ConversationMessagePage;
   listPending(input: ListPendingInput): ConversationPendingPage;
   queueSnapshot(conversationId: string): ConversationQueueSnapshot;
+  /** Read-only admission aid; command methods still validate ownership and payload on replay. */
+  hasCommand(commandId: string): boolean;
   enqueueFollowUp(input: EnqueueFollowUpInput): ConversationCommandReceipt;
   interruptAndEnqueue(input: InterruptAndEnqueueInput): ConversationCommandReceipt;
   stopConversation(input: ConversationCommandTarget): ConversationCommandReceipt;

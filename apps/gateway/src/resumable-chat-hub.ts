@@ -1,17 +1,11 @@
-import { randomUUID } from 'node:crypto';
-import type { AgentEvent } from '@dash/agent';
 import type {
   ConversationKind,
   ConversationMessageOrigin,
   ConversationQueueSnapshot,
-  ConversationSummary,
   MobileWsClientFrame,
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
-import { isTransientAgentEvent } from '@dash/swarm';
-import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { toClientLocation } from './client-location.js';
-import type { ConversationAutoTitleService } from './conversation-auto-title.js';
 import {
   type AcceptedTurn,
   type ConversationService,
@@ -19,8 +13,18 @@ import {
   type PersistedTurnFrame,
 } from './conversation-service.js';
 import type { EventLogEntry } from './event-log-store.js';
-import type { MemorySweepService } from './memory-sweep.js';
-import type { SkillReviewService } from './skill-review.js';
+import type {
+  ExecutionCoordinator,
+  ExecutionTurn,
+  StartSystemTurnInput,
+  TurnObserver,
+} from './execution-coordinator.js';
+export type {
+  ObservedTurn,
+  StartSystemTurnInput,
+  TurnObserver,
+  TurnOutcome,
+} from './execution-coordinator.js';
 
 export type ResumableSendFrame = Extract<MobileWsClientFrame, { type: 'message' }> & {
   resumable: true;
@@ -40,60 +44,7 @@ export interface TurnFrameSink {
 
 export interface ResumableChatHubOptions {
   conversations: ConversationService;
-  agents: AgentChatCoordinator;
-  autoTitle: ConversationAutoTitleService;
-  /** Optional post-turn memory sweep; scheduled only for turns that complete. */
-  memorySweep?: Pick<MemorySweepService, 'schedule'>;
-  skillReview?: Pick<SkillReviewService, 'schedule'>;
-  swarmCoordinator?: { cancelTurn(agentId: string, conversationId: string): boolean };
-  onChanged?(summary: ConversationSummary): void;
-}
-
-/** The turn a `TurnObserver` callback is about. */
-export interface ObservedTurn {
-  agentId: string;
-  conversationId: string;
-  turnId: string;
-}
-
-export type TurnOutcome = 'completed' | 'cancelled' | 'failed';
-
-/**
- * Watches every turn the hub runs. The sub-agent coordinator (design
- * 2026-09-04 sub-agents, 7.1) uses this to track a child's tool-call count,
- * its report, and its terminal state without owning the run.
- *
- * Callbacks are fire-and-forget: a throwing observer is isolated so it can
- * never break the turn it is watching.
- */
-export interface TurnObserver {
-  onEvent(turn: ObservedTurn, event: AgentEvent): void;
-  /**
-   * `error` carries the failure text of a `'failed'` turn. `runTurn` throws on
-   * an `error` event BEFORE it reaches `onEvent`, so without it an observer
-   * would know a turn failed and never learn why — and a sub-agent's report is
-   * exactly that text.
-   */
-  onFinish(turn: ObservedTurn, outcome: TurnOutcome, error?: string): void;
-}
-
-export interface StartSystemTurnInput {
-  agentId: string;
-  conversationId: string;
-  text: string;
-  /** `'notification'` wakes a parent; `'parent'` is a spawned child's first turn. */
-  origin: Exclude<ConversationMessageOrigin, 'user'>;
-  /** Supply for an idempotent retry; otherwise one is generated. */
-  turnId?: string;
-  /**
-   * The CLIENT's correlation id for the request that caused this turn, echoed
-   * verbatim on the turn's `accepted` frame (`ChatAccepted.requestId`). The
-   * server picks the turn id for a sub-agent resume, so this is the only thing
-   * that tells a client which of its own in-flight follow-ups a later
-   * `accepted` belongs to. Live-only: it is never written to the event log, so
-   * a replayed `accepted` never carries it.
-   */
-  requestId?: string;
+  execution: ExecutionCoordinator;
 }
 
 export interface ResumableChatHub {
@@ -133,38 +84,13 @@ export interface ResumableChatHub {
   addObserver(observer: TurnObserver): () => void;
   cancelAgent(agentId: string): Promise<void>;
   allowAgent(agentId: string): void;
+  /** Detach this adapter without cancelling execution. */
+  dispose(): void;
   stop(): Promise<void>;
 }
 
 function conversationKey(agentId: string, conversationId: string): string {
   return `${agentId}/${conversationId}`;
-}
-
-interface LiveTurn {
-  turnId: string;
-  agentId: string;
-  conversationId: string;
-  /** Decides conversation fan-out: only a non-`'user'` turn reaches subscribers. */
-  origin: ConversationMessageOrigin;
-  /**
-   * `'subagent'` for a CHILD conversation's turn. Read only by the post-turn
-   * work below, which is the parent's, not the child's.
-   */
-  kind: ConversationKind;
-  controller: AbortController;
-  subscribers: Set<TurnFrameSink>;
-  cancelled: boolean;
-  terminal: boolean;
-  settled: boolean;
-  /** One `onFinish` per turn, whichever path gets there first. */
-  finishNotified: boolean;
-  /** Durable pending item represented by this execution, if queue-admitted. */
-  pendingItemId?: string;
-  /** Terminal outcome, set before provider cleanup completes. */
-  outcome?: TurnOutcome;
-  /** Interrupt may advance after cancellation; Stop can fence it back off. */
-  advanceAfterSettlement: boolean;
-  promise: Promise<void>;
 }
 
 function frameFromEntry(entry: EventLogEntry): MobileWsServerFrame {
@@ -194,7 +120,10 @@ function frameFromEntry(entry: EventLogEntry): MobileWsServerFrame {
   }
 }
 
-function frameFromPersisted(live: LiveTurn, persisted: PersistedTurnFrame): MobileWsServerFrame {
+function frameFromPersisted(
+  live: ExecutionTurn,
+  persisted: PersistedTurnFrame,
+): MobileWsServerFrame {
   return frameFromEntry({
     seq: persisted.seq,
     msgId: live.turnId,
@@ -213,7 +142,7 @@ function frameFromPersisted(live: LiveTurn, persisted: PersistedTurnFrame): Mobi
  * are optional and absent means `'user'` (spec 7.6).
  */
 function frameFromAccepted(
-  frame: ResumableSendFrame,
+  frame: Pick<ResumableSendFrame, 'id' | 'conversationId'>,
   accepted: AcceptedTurn,
   origin: ConversationMessageOrigin,
   kind: ConversationKind,
@@ -239,35 +168,39 @@ function frameFromAccepted(
 }
 
 export function createResumableChatHub(options: ResumableChatHubOptions): ResumableChatHub {
-  const { conversations, agents } = options;
-  const turns = new Map<string, LiveTurn>();
+  const { conversations, execution } = options;
+  const turnSubscribers = new Map<string, Set<TurnFrameSink>>();
   const conversationSubscribers = new Map<string, Set<TurnFrameSink>>();
   const conversationWatchers = new Map<string, Set<TurnFrameSink>>();
-  const advancingConversations = new Set<string>();
-  const observers = new Set<TurnObserver>();
-  const quiescingAgents = new Set<string>();
-  let stopped = false;
-
-  const assertAccepting = (): void => {
-    if (stopped) throw new Error('Resumable chat hub is stopped');
-  };
-
-  const assertAgentAccepting = (agentId: string): void => {
-    assertAccepting();
-    if (quiescingAgents.has(agentId)) {
-      throw new ConversationServiceError(
-        'conversation_busy',
-        'Agent is being disabled. Try again shortly.',
-        409,
-        true,
-      );
+  const commandSinks = new Map<string, TurnFrameSink[]>();
+  const assertAccepting = () => execution.assertAccepting();
+  const sinksForTurn = (turnId: string): Set<TurnFrameSink> => {
+    let sinks = turnSubscribers.get(turnId);
+    if (!sinks) {
+      sinks = new Set();
+      turnSubscribers.set(turnId, sinks);
     }
+    return sinks;
   };
-
   const assertOwnedConversation = (agentId: string, conversationId: string): void => {
     const conversation = conversations.get(conversationId);
     if (!conversation || conversation.agentId !== agentId) {
       throw new ConversationServiceError('not_found', 'Conversation not found', 404, false);
+    }
+  };
+
+  const detachSink = (sink: TurnFrameSink): void => {
+    for (const sinks of turnSubscribers.values()) sinks.delete(sink);
+    // Conversation subscriptions outlive any single turn, so a closed socket
+    // that is only dropped from live turns would keep being written to for
+    // every future turn on that conversation.
+    for (const [key, sinks] of conversationSubscribers) {
+      if (!sinks.delete(sink)) continue;
+      if (sinks.size === 0) conversationSubscribers.delete(key);
+    }
+    for (const [key, sinks] of conversationWatchers) {
+      if (!sinks.delete(sink)) continue;
+      if (sinks.size === 0) conversationWatchers.delete(key);
     }
   };
 
@@ -276,6 +209,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       sink.send(frame);
       return true;
     } catch {
+      detachSink(sink);
       return false;
     }
   };
@@ -320,27 +254,27 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
    * learned to handle a turn it did not start.
    */
   const broadcast = (
-    live: LiveTurn,
+    live: ExecutionTurn,
     frame: MobileWsServerFrame,
     watcherFrame: MobileWsServerFrame = frame,
   ): void => {
     const key = conversationKey(live.agentId, live.conversationId);
     const legacySubscribers = live.origin === 'user' ? undefined : conversationSubscribers.get(key);
     const watchers = conversationWatchers.get(key);
-    for (const sink of live.subscribers) {
+    for (const sink of sinksForTurn(live.turnId)) {
       if (send(sink, frame)) continue;
-      live.subscribers.delete(sink);
+      sinksForTurn(live.turnId).delete(sink);
       removeConversationSubscriber(key, sink);
       removeConversationWatcher(key, sink);
     }
     for (const sink of [...(legacySubscribers ?? [])]) {
-      if (live.subscribers.has(sink)) continue;
+      if (sinksForTurn(live.turnId).has(sink)) continue;
       if (send(sink, frame)) continue;
       removeConversationSubscriber(key, sink);
       removeConversationWatcher(key, sink);
     }
     for (const sink of [...(watchers ?? [])]) {
-      if (live.subscribers.has(sink) || legacySubscribers?.has(sink)) continue;
+      if (sinksForTurn(live.turnId).has(sink) || legacySubscribers?.has(sink)) continue;
       if (send(sink, watcherFrame)) continue;
       removeConversationSubscriber(key, sink);
       removeConversationWatcher(key, sink);
@@ -369,38 +303,6 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     }
   };
 
-  const observedTurn = (live: LiveTurn): ObservedTurn => ({
-    agentId: live.agentId,
-    conversationId: live.conversationId,
-    turnId: live.turnId,
-  });
-
-  const notifyEvent = (live: LiveTurn, event: AgentEvent): void => {
-    if (observers.size === 0) return;
-    const turn = observedTurn(live);
-    for (const observer of [...observers]) {
-      try {
-        observer.onEvent(turn, event);
-      } catch (error) {
-        console.error('[resumable-chat-hub] turn observer onEvent threw', error);
-      }
-    }
-  };
-
-  const notifyFinish = (live: LiveTurn, outcome: TurnOutcome, error?: string): void => {
-    if (live.finishNotified) return;
-    live.finishNotified = true;
-    if (observers.size === 0) return;
-    const turn = observedTurn(live);
-    for (const observer of [...observers]) {
-      try {
-        observer.onFinish(turn, outcome, error);
-      } catch (error) {
-        console.error('[resumable-chat-hub] turn observer onFinish threw', error);
-      }
-    }
-  };
-
   const replay = (
     agentId: string,
     conversationId: string,
@@ -420,334 +322,134 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     sink: TurnFrameSink,
   ): void => {
     const conversation = conversations.get(conversationId);
-    const live = turns.get(turnId);
+    const live = execution.getLiveTurn(turnId);
     if (
       conversation?.activeTurnId === turnId &&
       live?.agentId === agentId &&
       live.conversationId === conversationId
     ) {
-      live.subscribers.add(sink);
+      sinksForTurn(live.turnId).add(sink);
     }
   };
 
-  const unsettledTurn = (agentId: string, conversationId: string): LiveTurn | undefined =>
-    [...turns.values()].find(
-      (live) => live.agentId === agentId && live.conversationId === conversationId && !live.settled,
-    );
-
-  let advancePending: (agentId: string, conversationId: string) => void = () => {};
-
-  const finish = (live: LiveTurn, outcome: 'completed' | 'cancelled'): PersistedTurnFrame => {
-    const persisted = conversations.finishTurn({
-      conversationId: live.conversationId,
-      turnId: live.turnId,
-      outcome,
-    });
-    live.terminal = true;
-    live.outcome = outcome;
-    broadcast(live, frameFromPersisted(live, persisted));
-    options.onChanged?.(persisted.conversation);
-    return persisted;
-  };
-
-  const runTurn = async (live: LiveTurn, frame: ResumableSendFrame): Promise<void> => {
-    let stream: ReturnType<AgentChatCoordinator['chat']> | undefined;
-    let failureMessage: string | undefined;
-    try {
-      stream = agents.chat({
-        agentId: frame.agentId,
-        conversationId: frame.conversationId,
-        channelId: frame.channelId,
-        text: frame.text,
-        images: frame.images?.length
-          ? frame.images.map((image) => ({ type: 'image' as const, ...image }))
-          : undefined,
-        location: toClientLocation(frame.location),
-        modality: frame.modality,
-        messageId: frame.id,
-        signal: live.controller.signal,
-      });
-      while (true) {
-        const result = await stream.next();
-        if (result.done) break;
-        const event = result.value;
-        if (event.type === 'error') throw event.error;
-        notifyEvent(live, event);
-        if (isTransientAgentEvent(event)) {
-          // Spec §7.2: live-stream only. Subscribers still see it, but it is
-          // never persisted — hence no seq, and no row for a resume to replay.
-          broadcast(live, {
-            type: 'event',
-            id: live.turnId,
-            conversationId: live.conversationId,
-            event,
-          });
-          continue;
-        }
-        const persisted = conversations.appendTurnEvent(live.conversationId, live.turnId, event);
-        if (persisted) broadcast(live, frameFromPersisted(live, persisted));
-      }
-      if (!live.cancelled) {
-        finish(live, 'completed');
-        // A CHILD's turn is never swept or reviewed. Both services key on
-        // `agentId`, and a child conversation carries its PARENT's — so a
-        // child's transcript would be extracted into the parent's memory dir
-        // and its managed skills dir, and the resulting notice would be posted
-        // into the child's conversation. That is the write path the child was
-        // deliberately denied: it inherits memory read-only (`tools: false` in
-        // `buildChildAgentConfig`), and a `skipMemory` type gets none at all.
-        // Children report to their parent; the parent decides what is kept.
-        if (live.kind !== 'subagent') {
-          options.memorySweep?.schedule({
-            agentId: live.agentId,
-            conversationId: live.conversationId,
-            turnId: live.turnId,
-          });
-          // Only completed turns are reviewed: a failed or cancelled turn has no
-          // outcome to learn from, and half of one is worse than none.
-          options.skillReview?.schedule({
-            agentId: live.agentId,
-            conversationId: live.conversationId,
-            turnId: live.turnId,
-          });
-        }
-      }
-    } catch (error) {
-      if (!live.cancelled) {
-        const message = error instanceof Error ? error.message : String(error);
-        failureMessage = message;
-        const persisted = conversations.finishTurn({
-          conversationId: live.conversationId,
-          turnId: live.turnId,
-          outcome: 'failed',
-          error: message,
-          retryable: false,
-        });
-        live.terminal = true;
-        live.outcome = 'failed';
-        broadcast(live, frameFromPersisted(live, persisted));
-        options.onChanged?.(persisted.conversation);
-      }
-    } finally {
-      try {
-        if (stream) await stream.return(undefined);
-      } finally {
-        live.settled = true;
-        const shouldAdvance =
-          live.outcome === 'completed' ||
-          (live.outcome === 'cancelled' && live.advanceAfterSettlement);
-        if (live.pendingItemId) {
-          conversations.completePendingClaim(live.pendingItemId, !shouldAdvance);
-          broadcastQueue(
-            live.agentId,
-            live.conversationId,
-            conversations.queueSnapshot(live.conversationId),
-          );
-        } else if (!shouldAdvance) {
-          conversations.pausePending(live.conversationId);
-          broadcastQueue(
-            live.agentId,
-            live.conversationId,
-            conversations.queueSnapshot(live.conversationId),
-          );
-        }
-        if (live.terminal && turns.get(live.turnId) === live) turns.delete(live.turnId);
-        // Notify only after the provider stream and durable queue bookkeeping
-        // have settled. Finish observers can start notification turns, and the
-        // conversation fence must see the previous run as fully released.
-        notifyFinish(live, live.outcome ?? 'failed', failureMessage);
-        if (shouldAdvance) advancePending(live.agentId, live.conversationId);
-      }
-    }
-  };
-
-  const cancelLive = (
-    live: LiveTurn,
-    sink?: TurnFrameSink,
-    advanceAfterSettlement = false,
-  ): void => {
-    if (!advanceAfterSettlement || !live.cancelled) {
-      live.advanceAfterSettlement = advanceAfterSettlement;
-    }
-    if (live.terminal) return;
-    if (sink) live.subscribers.add(sink);
-    if (live.cancelled) return;
-    const recoveringSettledFailure = live.settled;
-    finish(live, 'cancelled');
-    live.cancelled = true;
-    live.controller.abort();
-    agents.cancel(live.agentId, live.conversationId);
-    options.swarmCoordinator?.cancelTurn(live.agentId, live.conversationId);
-    // A settled, non-terminal live turn exists only when its earlier terminal
-    // persistence failed. Once this retry succeeds, do not let that historical
-    // rejection make cancelAgent() or stop() report a false cleanup failure.
-    if (recoveringSettledFailure) {
-      live.promise = live.promise.catch(() => {});
-      notifyFinish(live, 'cancelled');
-    }
-    if (live.settled && turns.get(live.turnId) === live) turns.delete(live.turnId);
-  };
-
-  /**
-   * The one accept → run path. `start` supplies the socket that sent the
-   * frame; `startSystemTurn` supplies none, so the turn reaches conversation
-   * subscribers only. Keeping both on this function is what stops the
-   * turn-lease and auto-title behaviour from drifting between them.
-   */
-  const acceptAndRun = (
-    frame: ResumableSendFrame,
-    sink: TurnFrameSink | undefined,
-    origin: ConversationMessageOrigin,
+  const acceptedFrame = (
+    turn: ExecutionTurn,
+    accepted: AcceptedTurn,
     requestId?: string,
-    pendingItemId?: string,
-  ): void => {
-    assertAgentAccepting(frame.agentId);
-    const unsettled = unsettledTurn(frame.agentId, frame.conversationId);
-    if (unsettled && unsettled.turnId !== frame.id) {
-      throw new ConversationServiceError(
-        'conversation_busy',
-        'The previous turn is still settling',
-        409,
-        true,
-        { activeTurnId: unsettled.turnId },
-      );
-    }
-    const accepted = conversations.acceptTurn({
-      agentId: frame.agentId,
-      conversationId: frame.conversationId,
-      turnId: frame.id,
-      text: frame.text,
-      images: frame.images,
-      origin,
-      ...(pendingItemId ? { pendingItemId } : {}),
-    });
-    const acceptedFrame = frameFromAccepted(
-      frame,
+    watched = false,
+  ): MobileWsServerFrame =>
+    frameFromAccepted(
+      {
+        id: turn.turnId,
+        conversationId: turn.conversationId,
+      },
       accepted,
-      origin,
-      accepted.conversation.kind,
+      turn.origin,
+      turn.kind,
       requestId,
+      watched,
     );
-    const watchedAcceptedFrame = frameFromAccepted(
-      frame,
-      accepted,
-      origin,
-      accepted.conversation.kind,
-      requestId,
-      true,
-    );
-
-    if (!accepted.created) {
-      // Idempotent re-send of a turn we already accepted: catch this socket up
-      // rather than starting a second run. Nothing to replay without a sink.
-      if (!sink || !send(sink, acceptedFrame)) return;
-      if (!replay(frame.agentId, frame.conversationId, accepted.seq, sink)) return;
-      addConversationSubscriber(conversationKey(frame.agentId, frame.conversationId), sink);
-      attachIfLive(frame.id, frame.agentId, frame.conversationId, sink);
-      return;
-    }
-
-    const live: LiveTurn = {
-      turnId: frame.id,
-      agentId: frame.agentId,
-      conversationId: frame.conversationId,
-      origin,
-      kind: accepted.conversation.kind,
-      controller: new AbortController(),
-      subscribers: new Set(sink ? [sink] : []),
-      cancelled: false,
-      terminal: false,
-      settled: false,
-      finishNotified: false,
-      ...(accepted.pendingItemId ? { pendingItemId: accepted.pendingItemId } : {}),
-      advanceAfterSettlement: false,
-      promise: Promise.resolve(),
-    };
-    turns.set(frame.id, live);
-    // Sending a message subscribes the socket to the conversation, so an
-    // existing client receives later server-initiated turns with no change.
-    if (sink) addConversationSubscriber(conversationKey(frame.agentId, frame.conversationId), sink);
-    // A failed send here drops the sink from both sets, exactly as it did
-    // when `accepted` was written straight to the socket.
-    broadcast(live, acceptedFrame, watchedAcceptedFrame);
-    if (accepted.firstUserMessage) {
-      options.autoTitle.schedule({
-        conversationId: frame.conversationId,
-        agentId: frame.agentId,
-        text: frame.text,
-      });
-    }
-    options.onChanged?.(accepted.conversation);
-    live.promise = runTurn(live, frame);
-    void live.promise.catch(() => {});
-  };
-
-  const publishCommand = (
-    agentId: string,
-    conversationId: string,
-    sink: TurnFrameSink,
-    receipt: Extract<MobileWsServerFrame, { type: 'command_receipt' }>,
-  ): void => {
-    send(sink, receipt);
-    broadcastQueue(agentId, conversationId, receipt.queue, receipt.id);
-    const summary = conversations.get(conversationId);
-    if (summary) options.onChanged?.(summary);
-  };
-
-  advancePending = (agentId, conversationId) => {
-    if (stopped || quiescingAgents.has(agentId)) return;
-    if (unsettledTurn(agentId, conversationId)) return;
-    const key = conversationKey(agentId, conversationId);
-    if (advancingConversations.has(key)) return;
-    advancingConversations.add(key);
-    try {
-      const pending = conversations.claimNextPending(conversationId);
-      if (!pending?.claimedTurnId) return;
-      broadcastQueue(agentId, conversationId, conversations.queueSnapshot(conversationId));
-      const frame: ResumableSendFrame = {
-        type: 'message',
-        id: pending.claimedTurnId,
-        agentId,
-        channelId: 'direct',
-        conversationId,
-        text: pending.text,
-        ...(pending.images ? { images: pending.images } : {}),
-        resumable: true,
-      };
-      try {
-        acceptAndRun(frame, undefined, 'user', pending.commandId, pending.id);
-      } catch (error) {
-        conversations.releasePendingClaim(pending.id);
-        conversations.pausePending(conversationId);
-        broadcastQueue(agentId, conversationId, conversations.queueSnapshot(conversationId));
-        throw error;
+  const dispose = execution.subscribe((update) => {
+    switch (update.type) {
+      case 'accepted':
+        broadcast(
+          update.turn,
+          acceptedFrame(update.turn, update.accepted, update.requestId),
+          acceptedFrame(update.turn, update.accepted, update.requestId, true),
+        );
+        break;
+      case 'persisted':
+        broadcast(update.turn, frameFromPersisted(update.turn, update.persisted));
+        break;
+      case 'transient':
+        broadcast(update.turn, {
+          type: 'event',
+          id: update.turn.turnId,
+          conversationId: update.turn.conversationId,
+          event: update.event,
+        });
+        break;
+      case 'queue':
+        broadcastQueue(update.agentId, update.conversationId, update.queue, update.commandId);
+        break;
+      case 'command': {
+        const sinks = commandSinks.get(
+          `${conversationKey(update.agentId, update.conversationId)}/${update.receipt.id}`,
+        );
+        const sink = sinks?.at(-1);
+        if (sink) send(sink, update.receipt);
+        break;
       }
+      case 'settled':
+        turnSubscribers.delete(update.turn.turnId);
+        break;
+    }
+  });
+  const command = (
+    frame: { id: string; agentId: string; conversationId: string },
+    sink: TurnFrameSink,
+    execute: () => unknown,
+  ): void => {
+    const key = `${conversationKey(frame.agentId, frame.conversationId)}/${frame.id}`;
+    const sinks = commandSinks.get(key) ?? [];
+    commandSinks.set(key, sinks);
+    sinks.push(sink);
+    try {
+      execute();
     } finally {
-      advancingConversations.delete(key);
+      sinks.pop();
+      if (sinks.length === 0) commandSinks.delete(key);
     }
   };
-
   const hub: ResumableChatHub = {
     start(frame, sink) {
-      acceptAndRun(frame, sink, 'user');
+      // Admission publishes synchronously: register first so accepted always
+      // precedes provider events, then undo only provisional additions on failure.
+      const key = conversationKey(frame.agentId, frame.conversationId);
+      const hadConversation = conversationSubscribers.get(key)?.has(sink);
+      const hadTurn = turnSubscribers.get(frame.id)?.has(sink);
+      sinksForTurn(frame.id).add(sink);
+      addConversationSubscriber(key, sink);
+      try {
+        const accepted = execution.start({
+          agentId: frame.agentId,
+          conversationId: frame.conversationId,
+          turnId: frame.id,
+          channelId: frame.channelId,
+          text: frame.text,
+          images: frame.images,
+          location: toClientLocation(frame.location),
+          modality: frame.modality,
+        });
+        if (!accepted.created) {
+          // A duplicate is a replay for this requester, never another execution
+          // or a broadcast to peers that already saw its accepted event.
+          if (!hadTurn) turnSubscribers.get(frame.id)?.delete(sink);
+          if (turnSubscribers.get(frame.id)?.size === 0) turnSubscribers.delete(frame.id);
+          if (!hadConversation) removeConversationSubscriber(key, sink);
+          const turn: ExecutionTurn = {
+            agentId: frame.agentId,
+            conversationId: frame.conversationId,
+            turnId: frame.id,
+            origin: 'user',
+            kind: accepted.conversation.kind,
+          };
+          if (!send(sink, acceptedFrame(turn, accepted))) return;
+          if (!replay(frame.agentId, frame.conversationId, accepted.seq, sink)) return;
+          addConversationSubscriber(key, sink);
+          attachIfLive(frame.id, frame.agentId, frame.conversationId, sink);
+          if (!execution.getLiveTurn(frame.id)) turnSubscribers.delete(frame.id);
+        }
+      } catch (error) {
+        if (!hadTurn) turnSubscribers.get(frame.id)?.delete(sink);
+        if (turnSubscribers.get(frame.id)?.size === 0) turnSubscribers.delete(frame.id);
+        if (!hadConversation) removeConversationSubscriber(key, sink);
+        throw error;
+      }
     },
-
-    startSystemTurn({ agentId, conversationId, text, origin, turnId, requestId }) {
-      const frame: ResumableSendFrame = {
-        type: 'message',
-        id: turnId ?? randomUUID(),
-        agentId,
-        channelId: 'system',
-        conversationId,
-        text,
-        resumable: true,
-      };
-      // A `conversation_busy` from acceptTurn propagates on purpose: the
-      // caller queues the notification and drains it on the next finishTurn.
-      acceptAndRun(frame, undefined, origin, requestId);
-      return { turnId: frame.id };
+    startSystemTurn(input) {
+      return execution.startSystemTurn(input);
     },
-
     resume(frame, sink) {
       assertAccepting();
       assertOwnedConversation(frame.agentId, frame.conversationId);
@@ -778,95 +480,29 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     },
 
     followUp(frame, sink) {
-      assertAgentAccepting(frame.agentId);
-      const receipt = conversations.enqueueFollowUp({
-        commandId: frame.id,
-        agentId: frame.agentId,
-        conversationId: frame.conversationId,
-        text: frame.text,
-        images: frame.images,
-      });
-      publishCommand(frame.agentId, frame.conversationId, sink, receipt);
-      if (receipt.status !== 'rejected') advancePending(frame.agentId, frame.conversationId);
+      const { id, type: _type, ...input } = frame;
+      command(frame, sink, () => execution.followUp({ ...input, commandId: id }));
     },
-
     interruptAndSend(frame, sink) {
-      assertAgentAccepting(frame.agentId);
-      const receipt = conversations.interruptAndEnqueue({
-        commandId: frame.id,
-        agentId: frame.agentId,
-        conversationId: frame.conversationId,
-        expectedActiveTurnId: frame.expectedActiveTurnId,
-        text: frame.text,
-        images: frame.images,
-      });
-      publishCommand(frame.agentId, frame.conversationId, sink, receipt);
-      if (receipt.status === 'rejected') return;
-      const live = receipt.affectedTurnId ? turns.get(receipt.affectedTurnId) : undefined;
-      if (
-        live?.agentId === frame.agentId &&
-        live.conversationId === frame.conversationId &&
-        !live.settled
-      ) {
-        cancelLive(live, undefined, true);
-      } else {
-        advancePending(frame.agentId, frame.conversationId);
-      }
+      const { id, type: _type, ...input } = frame;
+      command(frame, sink, () => execution.interruptAndSend({ ...input, commandId: id }));
     },
-
     stopConversation(frame, sink) {
-      assertAgentAccepting(frame.agentId);
-      const receipt = conversations.stopConversation({
-        commandId: frame.id,
-        agentId: frame.agentId,
-        conversationId: frame.conversationId,
-      });
-      publishCommand(frame.agentId, frame.conversationId, sink, receipt);
-      if (receipt.status === 'rejected' || !receipt.affectedTurnId) return;
-      const live = turns.get(receipt.affectedTurnId);
-      if (live?.agentId === frame.agentId && live.conversationId === frame.conversationId) {
-        cancelLive(live, undefined, false);
-      }
+      const { id, type: _type, ...input } = frame;
+      command(frame, sink, () => execution.stopConversation({ ...input, commandId: id }));
     },
-
     resumePending(frame, sink) {
-      assertAgentAccepting(frame.agentId);
-      const receipt = conversations.resumePending({
-        commandId: frame.id,
-        agentId: frame.agentId,
-        conversationId: frame.conversationId,
-      });
-      publishCommand(frame.agentId, frame.conversationId, sink, receipt);
-      if (receipt.status !== 'rejected') advancePending(frame.agentId, frame.conversationId);
+      const { id, type: _type, ...input } = frame;
+      command(frame, sink, () => execution.resumePending({ ...input, commandId: id }));
     },
-
     editPending(frame, sink) {
-      assertAgentAccepting(frame.agentId);
-      const receipt = conversations.editPending({
-        commandId: frame.id,
-        agentId: frame.agentId,
-        conversationId: frame.conversationId,
-        pendingId: frame.pendingId,
-        expectedVersion: frame.expectedVersion,
-        text: frame.text,
-        images: frame.images,
-      });
-      publishCommand(frame.agentId, frame.conversationId, sink, receipt);
+      const { id, type: _type, ...input } = frame;
+      command(frame, sink, () => execution.editPending({ ...input, commandId: id }));
     },
-
     removePending(frame, sink) {
-      assertAgentAccepting(frame.agentId);
-      const receipt = conversations.removePending({
-        commandId: frame.id,
-        agentId: frame.agentId,
-        conversationId: frame.conversationId,
-        pendingId: frame.pendingId,
-        expectedVersion: frame.expectedVersion,
-      });
-      publishCommand(frame.agentId, frame.conversationId, sink, receipt);
-      if (receipt.status !== 'rejected') advancePending(frame.agentId, frame.conversationId);
+      const { id, type: _type, ...input } = frame;
+      command(frame, sink, () => execution.removePending({ ...input, commandId: id }));
     },
-
     subscribe(agentId, conversationId, sink) {
       assertAccepting();
       assertOwnedConversation(agentId, conversationId);
@@ -878,63 +514,34 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     },
 
     addObserver(observer) {
-      observers.add(observer);
-      return () => {
-        observers.delete(observer);
-      };
+      return execution.addObserver(observer);
     },
-
-    async answer(turnId, questionId, answer) {
-      assertAccepting();
-      const live = turns.get(turnId);
-      if (!live || live.terminal) {
-        throw new ConversationServiceError('not_found', `Turn ${turnId} is not live`, 404, false);
-      }
-      await agents.answerQuestion(live.agentId, live.conversationId, questionId, answer);
+    answer(turnId, questionId, answer) {
+      return execution.answer(turnId, questionId, answer);
     },
-
     async cancel(turnId, sink) {
       assertAccepting();
-      const live = turns.get(turnId);
-      if (live) cancelLive(live, sink);
+      if (execution.getLiveTurn(turnId)) sinksForTurn(turnId).add(sink);
+      await execution.cancel(turnId);
     },
-
-    detach(sink) {
-      for (const live of turns.values()) live.subscribers.delete(sink);
-      // Conversation subscriptions outlive any single turn, so a closed socket
-      // that is only dropped from live turns would keep being written to for
-      // every future turn on that conversation.
-      for (const [key, sinks] of conversationSubscribers) {
-        if (!sinks.delete(sink)) continue;
-        if (sinks.size === 0) conversationSubscribers.delete(key);
-      }
-      for (const [key, sinks] of conversationWatchers) {
-        if (!sinks.delete(sink)) continue;
-        if (sinks.size === 0) conversationWatchers.delete(key);
-      }
+    detach: detachSink,
+    cancelAgent(agentId) {
+      return execution.cancelAgent(agentId);
     },
-
-    async cancelAgent(agentId) {
-      quiescingAgents.add(agentId);
-      const matching = [...turns.values()].filter((live) => live.agentId === agentId);
-      for (const live of matching) cancelLive(live);
-      await Promise.all(matching.map((live) => live.promise));
-    },
-
     allowAgent(agentId) {
-      quiescingAgents.delete(agentId);
+      execution.allowAgent(agentId);
     },
-
-    async stop() {
-      stopped = true;
-      const active = [...turns.values()];
-      for (const live of active) cancelLive(live);
-      await Promise.all(active.map((live) => live.promise));
+    dispose() {
+      dispose();
+      turnSubscribers.clear();
       conversationSubscribers.clear();
       conversationWatchers.clear();
-      observers.clear();
+      commandSinks.clear();
+    },
+    async stop() {
+      await execution.stop();
+      hub.dispose();
     },
   };
-
   return hub;
 }

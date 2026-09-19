@@ -3,20 +3,20 @@ import { ChildTurnStartError } from '@dash/swarm';
 import type { RegisteredAgent } from './agent-registry.js';
 import { ConversationServiceError } from './conversation-service.js';
 import type { ConversationService } from './conversation-service.js';
-import type { ResumableChatHub } from './resumable-chat-hub.js';
+import type { ExecutionCoordinator } from './execution-coordinator.js';
 import { isSubagentsEnabled } from './subagent-config.js';
 
 export interface NotificationDriverOptions {
   conversations: ConversationService;
-  /** Late-bound: the hub is constructed after the coordinator (see index.ts). */
-  hub: () => ResumableChatHub | undefined;
+  /** Late-bound: execution is constructed after the coordinator (see index.ts). */
+  execution: () => Pick<ExecutionCoordinator, 'startSystemTurn'> | undefined;
   agentRegistry: { get(agentId: string): RegisteredAgent | undefined };
   warn: (message: string) => void;
 }
 
 /**
  * The gateway's real {@link NotificationDriver}: the `pending_notifications`
- * table for durability and the shared `ResumableChatHub` for the
+ * table for durability and the shared `ExecutionCoordinator` for the
  * server-initiated parent turn (design §7.3).
  */
 export function createNotificationDriver(options: NotificationDriverOptions): NotificationDriver {
@@ -33,9 +33,12 @@ export function createNotificationDriver(options: NotificationDriverOptions): No
     ack: (ids) => options.conversations.ackNotifications(ids),
 
     startNotificationTurn(agentId, conversationId, text, turnId) {
-      const hub = options.hub();
-      if (!hub) {
-        throw new ChildTurnStartError('stopped', 'the gateway chat hub is not running');
+      const execution = options.execution();
+      if (!execution) {
+        throw new ChildTurnStartError(
+          'stopped',
+          'the gateway execution coordinator is not running',
+        );
       }
 
       // Bounded failure (ruling 8): an agent that has been deleted, disabled or
@@ -52,7 +55,7 @@ export function createNotificationDriver(options: NotificationDriverOptions): No
 
       try {
         // Ruling 2: `acceptTurn` decides idle vs busy. No pre-check.
-        return hub.startSystemTurn({
+        return execution.startSystemTurn({
           agentId,
           conversationId,
           text,
@@ -65,8 +68,8 @@ export function createNotificationDriver(options: NotificationDriverOptions): No
         // a typed `conversation_busy` when the parent still holds its turn
         // lease — retryable, and the COMMON case, because delivery is attempted
         // from the finishing turn's own hook. Everything else typed is the
-        // parent being gone. A STOPPED hub throws a BARE Error ("Resumable chat
-        // hub is stopped"), which is terminal. Letting any of these escape
+        // parent being gone. A stopped coordinator throws a bare Error, which is
+        // terminal. Letting any of these escape
         // untranslated makes the coordinator's `instanceof ChildTurnStartError`
         // test false, so a busy parent would take the unclassified path.
         if (err instanceof ConversationServiceError) {

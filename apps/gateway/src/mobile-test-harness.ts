@@ -17,6 +17,7 @@ import { createConversationAutoTitleService } from './conversation-auto-title.js
 import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
+import { createExecutionCoordinator } from './execution-coordinator.js';
 import { createDynamicGateway } from './gateway.js';
 import { createLanMobileApp } from './lan-mobile-app.js';
 import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
@@ -304,16 +305,6 @@ export async function startMobileTestHarness(
     memoryDir: (agentId) => join(dataDir, 'memory', agentId),
     createBackend: async () => new ScriptedMobileBackend(scenario, slowEventRelease.promise),
   });
-  gateway.registerAgent(registered.id, {
-    chat(channelId, conversationId, text) {
-      return agents.chat({ agentId: registered.id, channelId, conversationId, text });
-    },
-    listSkills() {
-      return agents.listSkills(registered.id);
-    },
-  });
-  await gateway.start();
-
   const autoTitle = createConversationAutoTitleService({
     conversations,
     generateTitle: async () => 'Mobile test conversation',
@@ -325,7 +316,7 @@ export async function startMobileTestHarness(
       }),
     logger,
   });
-  const hub = createResumableChatHub({
+  const execution = createExecutionCoordinator({
     conversations,
     agents,
     autoTitle,
@@ -337,10 +328,22 @@ export async function startMobileTestHarness(
       }),
   });
 
+  const hub = createResumableChatHub({ conversations, execution });
+  gateway.registerAgent(registered.id, {
+    chat(channelId, conversationId, text) {
+      return execution.legacy.chat({ agentId: registered.id, channelId, conversationId, text });
+    },
+    listSkills() {
+      return agents.listSkills(registered.id);
+    },
+  });
+  await gateway.start();
+
   let stopPromise: Promise<void> | undefined;
   const stop = (): Promise<void> => {
     stopPromise ??= (async () => {
-      await hub.stop();
+      await execution.stop();
+      hub.dispose();
       await autoTitle.flush();
       await agents.stop();
       await gateway.stop();
@@ -365,7 +368,7 @@ export async function startMobileTestHarness(
       credentialStore,
       modelsStore,
       conversationService: conversations,
-      resumableChatHub: hub,
+      execution,
       mobileToken: chatToken,
       token: managementToken,
       lanTlsFingerprint: lanTls.fingerprint,
@@ -397,7 +400,7 @@ export async function startMobileTestHarness(
     const chatApp = new Hono();
     const chatWebSocket = createNodeWebSocket({ app: chatApp });
     mountChatWs(chatApp, {
-      agents,
+      execution,
       resumableChatHub: hub,
       token: chatToken,
       upgradeWebSocket: chatWebSocket.upgradeWebSocket,
@@ -410,7 +413,7 @@ export async function startMobileTestHarness(
     const lanApp = createLanMobileApp(managementApp);
     const lanWebSocket = createNodeWebSocket({ app: lanApp });
     mountChatWs(lanApp, {
-      agents,
+      execution,
       resumableChatHub: hub,
       token: chatToken,
       upgradeWebSocket: lanWebSocket.upgradeWebSocket,

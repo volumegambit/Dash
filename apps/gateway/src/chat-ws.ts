@@ -9,17 +9,17 @@ import {
 import { isTransientAgentEvent } from '@dash/swarm';
 import type { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
-import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { toClientLocation } from './client-location.js';
 import { toMobileApiError } from './conversation-routes.js';
 import { ConversationServiceError } from './conversation-service.js';
 import type { EventLogStore } from './event-log-store.js';
+import type { ExecutionCoordinator } from './execution-coordinator.js';
 import type { ResumableChatHub, ResumableSendFrame, TurnFrameSink } from './resumable-chat-hub.js';
 import { createVoiceTurnBridge, withTranscriptionDeadline } from './voice-bridge.js';
 import type { WsTicketStore } from './ws-ticket-store.js';
 
 export interface ChatWsOptions {
-  agents: AgentChatCoordinator;
+  execution: Pick<ExecutionCoordinator, 'legacy'>;
   resumableChatHub: ResumableChatHub;
   token?: string;
   upgradeWebSocket: UpgradeWebSocket;
@@ -33,14 +33,6 @@ export interface ChatWsOptions {
   eventLogStore?: EventLogStore;
   /** When true, log every inbound and outbound WebSocket message. */
   verbose?: boolean;
-  /**
-   * Swarm coordinator hook: an explicit user cancel of a chat turn must
-   * also terminalize that conversation's live swarm workers (a bare
-   * socket close intentionally does NOT — it is indistinguishable from a
-   * network drop, and dropped consumers reconcile via the event log while
-   * workers finish). Structural type so tests can pass a stub.
-   */
-  swarmCoordinator?: { cancelTurn(agentId: string, conversationId: string): boolean };
   /**
    * Speech provider for the hands-free voice mode. Absent (or unavailable at
    * `voice_start` time) answers every `voice_start` with
@@ -451,7 +443,7 @@ function conversationKey(agentId: string, conversationId: string): string {
 
 export function mountChatWs(app: Hono, options: ChatWsOptions): void {
   const {
-    agents,
+    execution,
     resumableChatHub,
     upgradeWebSocket,
     verbose = false,
@@ -830,14 +822,28 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
           if (msg.type === 'answer') {
             const entry = activeStreams.get(msg.id);
             if (entry) {
-              dispatchHub(ws, msg.id, undefined, () =>
-                agents.answerQuestion(
+              dispatchHub(ws, msg.id, undefined, () => {
+                if (
+                  !execution.legacy.ownsTurn(
+                    entry.agentId,
+                    entry.conversationId,
+                    entry.controller.signal,
+                  )
+                ) {
+                  throw new ConversationServiceError(
+                    'not_found',
+                    'No active legacy request for this connection.',
+                    404,
+                    false,
+                  );
+                }
+                return execution.legacy.answerQuestion(
                   entry.agentId,
                   entry.conversationId,
                   msg.questionId,
                   msg.answer,
-                ),
-              );
+                );
+              });
             } else {
               dispatchHub(ws, msg.id, undefined, () =>
                 resumableChatHub.answer(msg.id, msg.questionId, msg.answer),
@@ -849,15 +855,12 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
           if (msg.type === 'cancel') {
             const entry = activeStreams.get(msg.id);
             if (entry) {
+              // The request signal cancels only its admitted execution. A
+              // rejected request must never cancel another socket's turn.
               entry.controller.abort();
               activeStreams.delete(msg.id);
               const key = conversationKey(entry.agentId, entry.conversationId);
               if (conversationStreams.get(key) === msg.id) conversationStreams.delete(key);
-              agents.cancel(entry.agentId, entry.conversationId);
-              // A user cancel terminalizes the conversation's live swarm
-              // workers too — aborting the orchestrator alone would leave
-              // them running (and billing) headless.
-              options.swarmCoordinator?.cancelTurn(entry.agentId, entry.conversationId);
               sendServerMessage(ws, { type: 'done', id: msg.id });
             } else {
               dispatchHub(ws, msg.id, undefined, () => resumableChatHub.cancel(msg.id, sink));
@@ -886,10 +889,22 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
 
             // Check if there's an active stream on the same conversation
             const existingMsgId = conversationStreams.get(convKey);
-            if (existingMsgId && activeStreams.has(existingMsgId)) {
+            const existing = existingMsgId ? activeStreams.get(existingMsgId) : undefined;
+            if (existing) {
               const behavior = msg.streamingBehavior;
+              if (
+                (behavior === 'steer' || behavior === 'followUp') &&
+                !execution.legacy.ownsTurn(agentId, convId, existing.controller.signal)
+              ) {
+                sendServerMessage(ws, {
+                  type: 'error',
+                  id: msg.id,
+                  error: 'No active legacy request for this connection.',
+                });
+                return;
+              }
               if (behavior === 'steer') {
-                agents.steer(agentId, convId, text, images).catch((err) => {
+                execution.legacy.steer(agentId, convId, text, images).catch((err) => {
                   sendServerMessage(ws, {
                     type: 'error',
                     id: msg.id,
@@ -899,7 +914,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                 return;
               }
               if (behavior === 'followUp') {
-                agents.followUp(agentId, convId, text, images).catch((err) => {
+                execution.legacy.followUp(agentId, convId, text, images).catch((err) => {
                   sendServerMessage(ws, {
                     type: 'error',
                     id: msg.id,
@@ -916,7 +931,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
             conversationStreams.set(convKey, msg.id);
 
             (async () => {
-              const stream = agents.chat({
+              const stream = execution.legacy.chat({
                 agentId,
                 conversationId: convId,
                 channelId,
@@ -983,11 +998,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
           connectionSocket = undefined;
           stopVoice('socket');
           resumableChatHub.detach(sink);
-          for (const { controller, agentId, conversationId } of activeStreams.values()) {
-            controller.abort();
-            agents.cancel(agentId, conversationId);
-            options.swarmCoordinator?.cancelTurn(agentId, conversationId);
-          }
+          for (const { controller } of activeStreams.values()) controller.abort();
           activeStreams.clear();
           conversationStreams.clear();
         },

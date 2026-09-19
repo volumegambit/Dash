@@ -8,6 +8,7 @@ import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent
 import { createChildTurnDriver } from './child-turn-driver.js';
 import type { ConversationAutoTitleService } from './conversation-auto-title.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
+import { type ExecutionCoordinator, createExecutionCoordinator } from './execution-coordinator.js';
 import { recoverGatewayTurns } from './gateway-recovery.js';
 import { createNotificationDriver } from './notification-driver.js';
 import { type ResumableChatHub, createResumableChatHub } from './resumable-chat-hub.js';
@@ -111,10 +112,10 @@ describe('a child interrupted by a gateway restart', { timeout: 20_000 }, () => 
     coordinator: SwarmCoordinator;
     hub: ResumableChatHub;
   } {
-    const hubRef: { current?: ResumableChatHub } = {};
+    const executionRef: { current?: ExecutionCoordinator } = {};
     const childDriver = createChildTurnDriver({
       conversations,
-      hub: () => hubRef.current,
+      execution: () => executionRef.current,
       warn: () => {},
     });
     const coordinator: SwarmCoordinator = new SwarmCoordinator({
@@ -128,17 +129,18 @@ describe('a child interrupted by a gateway restart', { timeout: 20_000 }, () => 
         }),
       notifications: createNotificationDriver({
         conversations,
-        hub: () => hubRef.current,
+        execution: () => executionRef.current,
         agentRegistry,
         warn: () => {},
       }),
     });
-    const hub = createResumableChatHub({
+    const execution = createExecutionCoordinator({
       conversations,
       agents: makeAgents(childScript),
       autoTitle,
     });
-    hubRef.current = hub;
+    const hub = createResumableChatHub({ conversations, execution });
+    executionRef.current = execution;
     // index.ts:1058 does exactly this once the hub exists; without it the
     // driver never sees a child turn's events or its finish.
     childDriver.attachObserver();

@@ -7,6 +7,7 @@ import { type AgentChatCoordinator, createAgentChatCoordinator } from './agent-c
 import { AgentRegistry } from './agent-registry.js';
 import type { ConversationAutoTitleService } from './conversation-auto-title.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
+import { type ExecutionCoordinator, createExecutionCoordinator } from './execution-coordinator.js';
 import { type WorkerBackend, createFakeChildDriver } from './fake-child-driver.js';
 import { createNotificationDriver } from './notification-driver.js';
 import { type ResumableChatHub, createResumableChatHub } from './resumable-chat-hub.js';
@@ -23,7 +24,7 @@ import { isSubagentsEnabled } from './subagent-config.js';
  * translate. Only the LLM is fake: the orchestrator's `AgentBackend` and the
  * child transport are scripted.
  *
- * The wiring below mirrors `index.ts` exactly (late-bound `hubRef`, the
+ * The wiring below mirrors `index.ts` exactly (late-bound `executionRef`, the
  * `onFinish` observer that drains), because a divergence there is precisely the
  * class of bug this file exists to catch.
  */
@@ -49,6 +50,7 @@ describe('completion notifications, end to end', () => {
   let coordinator: SwarmCoordinator;
   let agents: AgentChatCoordinator;
   let hub: ResumableChatHub;
+  let execution: ExecutionCoordinator;
   let agentId: string;
   let parentId: string;
   /** Scripts the orchestrator backend pops, in turn order. */
@@ -89,7 +91,7 @@ describe('completion notifications, end to end', () => {
       systemPrompt: 'orchestrate',
     }).id;
 
-    const hubRef: { current?: ResumableChatHub } = {};
+    const executionRef: { current?: ExecutionCoordinator } = {};
     const childDriver = createFakeChildDriver(async () => {
       const backend = childBackends.shift();
       if (!backend) throw new Error('no child backend scripted');
@@ -100,7 +102,7 @@ describe('completion notifications, end to end', () => {
       childDriver,
       notifications: createNotificationDriver({
         conversations,
-        hub: () => hubRef.current,
+        execution: () => executionRef.current,
         agentRegistry: registry,
         warn: (message) => warnings.push(message),
       }),
@@ -119,11 +121,12 @@ describe('completion notifications, end to end', () => {
       },
     });
 
-    hub = createResumableChatHub({ conversations, agents, autoTitle });
-    hubRef.current = hub;
+    execution = createExecutionCoordinator({ conversations, agents, autoTitle });
+    hub = createResumableChatHub({ conversations, execution });
+    executionRef.current = execution;
     // Ruling 3: the parent's finishTurn is what drains a queue that piled up
     // while it was busy. Same registration index.ts performs.
-    hub.addObserver({
+    execution.addObserver({
       onEvent() {},
       onFinish(turn) {
         void coordinator.deliverPending(turn.agentId, turn.conversationId).catch(() => {});
@@ -285,7 +288,7 @@ describe('completion notifications, end to end', () => {
     });
 
     const turnDone = deferred();
-    hub.addObserver({
+    execution.addObserver({
       onEvent() {},
       onFinish(turn) {
         if (turn.turnId === 'turn-busy') turnDone.resolve();
