@@ -33,7 +33,7 @@ export function AgentMonitorTab({ agent }: AgentMonitorTabProps): JSX.Element {
 
       <div className="rounded-lg border border-border bg-card-bg p-3 font-[family-name:var(--font-mono)] text-xs leading-5">
         <p className="text-muted">
-          Squad member logs are managed by the gateway. Check gateway logs for runtime details.
+          Squad member logs are managed by the HQ. Check HQ logs for runtime details.
         </p>
       </div>
     </div>

@@ -50,7 +50,7 @@ struct SpeechSettingsFeatureTests {
 
     #expect(harness.feature.config == nil)
     #expect(harness.feature.isLoading == false)
-    #expect(harness.feature.error == "Speech isn't set up on your gateway yet.")
+    #expect(harness.feature.error == "Speech isn't set up on your HQ yet.")
   }
 
   /// Pull-to-refresh during a save would replace `config` with the
@@ -224,7 +224,7 @@ struct SpeechSettingsFeatureTests {
 
     await harness.feature.setVoice("English_radiant_girl")
 
-    #expect(harness.feature.error == "Your gateway's speech provider key was rejected.")
+    #expect(harness.feature.error == "Your HQ's speech provider key was rejected.")
   }
 
   @Test("a failure that is not a speech failure reads as a gateway problem")
@@ -235,7 +235,7 @@ struct SpeechSettingsFeatureTests {
 
     await harness.feature.setVoice("English_radiant_girl")
 
-    #expect(harness.feature.error == "Couldn't reach your gateway. Try again.")
+    #expect(harness.feature.error == "Couldn't reach your HQ. Try again.")
   }
 
   // MARK: - Providers
@@ -263,9 +263,9 @@ struct SpeechSettingsFeatureTests {
     #expect(harness.feature.transcriptionProvider?.available == false)
     #expect(
       harness.feature.transcriptionAvailability
-        == "No API key for this provider on your gateway."
+        == "No API key for this provider on your HQ."
     )
-    #expect(harness.feature.speechAvailability == "No API key for this provider on your gateway.")
+    #expect(harness.feature.speechAvailability == "No API key for this provider on your HQ.")
     // Realtime is a pseudo-provider the gateway always reports: the row is
     // disabled and says why rather than being missing.
     #expect(harness.feature.realtimeAvailability == "No configured provider offers realtime speech yet.")
@@ -372,7 +372,7 @@ struct SpeechSettingsFeatureTests {
 
     await harness.feature.previewVoice()
 
-    #expect(harness.feature.error == "Speech isn't set up on your gateway yet.")
+    #expect(harness.feature.error == "Speech isn't set up on your HQ yet.")
     #expect(harness.feature.isPreviewing == false)
     #expect(harness.session.playbackActivations == 0)
     #expect(harness.session.deactivations == 0)

@@ -5,7 +5,7 @@ description: "Reusable instructions that agents discover and load on demand."
 
 Skills are reusable instructions that persist across conversations. An agent can load a skill when it recognizes a matching task, giving it step-by-step guidance without you repeating yourself every time.
 
-Dash ships with a **bundled library** of ready-made skills (research, drafting, summarizing, code review, and more), and agents can **install more** from the public skill ecosystem — by chat or from Mission Control. Users can also list and run skills directly from a chat channel with slash commands.
+Dash ships with a **bundled library** of ready-made skills (research, drafting, summarizing, code review, and more), and agents can **install more** from the public skill ecosystem — by chat or from Desktop. Users can also list and run skills directly from a chat channel with slash commands.
 
 ## How skills work
 
@@ -67,7 +67,7 @@ tags: [deployment, aws]
 | `description` | Yes | When to use this skill. Shown in the skill index — write it for discovery. |
 | `trigger` | No | Specific phrases or contexts that should activate this skill. Shown in the index alongside the description. |
 | `tools` | No | Tools this skill needs (e.g. `[bash, read]`). Informational in v1. |
-| `tags` | No | Categories for organizing skills in Mission Control. |
+| `tags` | No | Categories for organizing skills in Desktop. |
 | `model` | No | Model override for this skill. Stored but not acted on in v1. |
 | `context` | No | Set to `fork` for subagent execution. Stored but not acted on in v1. |
 | `allowed-tools` | No | Restrict tools during skill execution. Stored but not acted on in v1. |
@@ -89,11 +89,11 @@ Each agent has a managed skills directory outside its workspace:
 ~/.dash/gateway/skills/{agent-name}/
 ```
 
-This directory is created automatically. Skills here are managed through Mission Control or created by the agent itself (if allowed). The agent's file tools cannot reach this directory — it's outside the workspace sandbox.
+This directory is created automatically. Skills here are managed through Desktop or created by the agent itself (if allowed). The agent's file tools cannot reach this directory — it's outside the workspace sandbox.
 
 ### Additional paths
 
-From the agent's **Skills** tab in Mission Control, you can add extra directories to scan for skills. If a path is inside the agent's workspace, the agent's file tools can read and write to it. This is an opt-in choice for power users who want to manage skills alongside project files.
+From the agent's **Skills** tab in Desktop, you can add extra directories to scan for skills. If a path is inside the agent's workspace, the agent's file tools can read and write to it. This is an opt-in choice for power users who want to manage skills alongside project files.
 
 ### Bundled library
 
@@ -107,9 +107,9 @@ When a user says something like "remember how to deploy to staging", the agent u
 
 Squad member-created skills:
 - Are saved to the managed directory (outside the workspace)
-- Are labeled "Squad member" in Mission Control so you can distinguish them from skills you pushed
+- Are labeled "Squad member" in Desktop so you can distinguish them from skills you pushed
 - Cannot overwrite existing skills — the agent can only create new ones
-- Can be reviewed, edited, or deleted by the operator through Mission Control
+- Can be reviewed, edited, or deleted by the operator through Desktop
 
 <Warning>
 The `create_skill` tool lets the agent write persistent instructions that affect its own future behavior. Only enable it for agents you trust to self-modify responsibly.
@@ -136,13 +136,13 @@ Nothing sensitive should ever be recorded. As with memory, that is an instructio
 
 ### Seeing it happen
 
-When the review records something, a small chip appears in the conversation where it happened — "Learned: write-files", or "Remembered: …" for a memory. It is part of the conversation, so it is still there when you scroll back or reopen it later. The same chip shows in Mission Control, on iPhone, and on the web.
+When the review records something, a small chip appears in the conversation where it happened — "Learned: write-files", or "Remembered: …" for a memory. It is part of the conversation, so it is still there when you scroll back or reopen it later. The same chip shows in Desktop, on iPhone, and on the web.
 
 ### Where it lives
 
-Learned skills sit in the same managed directory as any other squad member skill, are labelled **Squad member** in Mission Control, and can be read, edited, or deleted there like the rest. Beside each one is a `lessons.json` file holding the individual lessons.
+Learned skills sit in the same managed directory as any other squad member skill, are labelled **Squad member** in Desktop, and can be read, edited, or deleted there like the rest. Beside each one is a `lessons.json` file holding the individual lessons.
 
-Open a learned skill in Mission Control and you see its lessons one by one, each with how often the agent has judged it helpful or harmful, and a **Retire** button. On iPhone and on the web the list is read-only — you can see what an agent knows and read the lessons, but changing them is done from Mission Control.
+Open a learned skill in Desktop and you see its lessons one by one, each with how often the agent has judged it helpful or harmful, and a **Retire** button. On iPhone and on the web the list is read-only — you can see what an agent knows and read the lessons, but changing them is done from Desktop.
 
 Learning only ever writes to skills the agent created itself. A skill you wrote, one installed from the ecosystem, and anything in the bundled library are never modified. When the agent learns something about one of those, it records it in a companion skill that is loaded alongside the original, so the lesson still arrives when it is relevant.
 
@@ -150,7 +150,7 @@ Learning only ever writes to skills the agent created itself. A skill you wrote,
 
 Each lesson carries a count of how often the review judged it right and how often it judged it wrong. A lesson that keeps proving wrong and never proves useful retires itself, and retired lessons are kept in the file rather than deleted, so you can see what happened and put one back by hand.
 
-To correct something immediately, open the skill in Mission Control and **Retire** the lesson. Retiring keeps it in the file and stops the agent proposing it again. To stop Dash managing a learned skill altogether, delete its `lessons.json` — the skill stays as an ordinary one that learning no longer touches.
+To correct something immediately, open the skill in Desktop and **Retire** the lesson. Retiring keeps it in the file and stops the agent proposing it again. To stop Dash managing a learned skill altogether, delete its `lessons.json` — the skill stays as an ordinary one that learning no longer touches.
 
 ### Settings
 
@@ -180,13 +180,13 @@ Skills can be installed from any of these sources:
 
 - **Git** — `git:owner/repo[/subpath][@ref]` (e.g. `git:NousResearch/hermes-agent/skills/research/arxiv@main`)
 - **URL** — a direct link to a `SKILL.md`
-- **Local path** — a folder on the gateway host
+- **Local path** — a folder on the HQ host
 
 Installed skills land in the managed directory and are labeled **Remote**.
 
 <Warning>
 Installing a skill adds instructions the agent will follow. Two safeguards keep this safe:
-- Skills are **text-only** — any bundled scripts are stripped on install, so an installed skill can never run code on your gateway.
+- Skills are **text-only** — any bundled scripts are stripped on install, so an installed skill can never run code on your HQ.
 - Every install passes through a **security scan** that refuses skills containing prompt-injection, secret-exfiltration, or destructive instructions. If the scan can't run, the install is refused.
 
 Only enable `install_skill` for agents whose audience you trust.
@@ -206,7 +206,7 @@ When an agent serves a messaging channel, users can manage skills inline:
 
 Natural language works too — "what skills do you have?" or "install the arxiv skill from …" — when the agent has the relevant tools.
 
-## Managing skills in Mission Control
+## Managing skills in Desktop
 
 The agent detail page has a **Skills** tab where you can manage an agent's skills directly:
 

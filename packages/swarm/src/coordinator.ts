@@ -478,7 +478,7 @@ export class SwarmCoordinator {
     }
     if (this.activeWorkerCount() >= this.globalMax) {
       throw new Error(
-        `the gateway is at its global worker limit (${this.globalMax}) — wait for workers to finish`,
+        `the HQ is at its global worker limit (${this.globalMax}) — wait for workers to finish`,
       );
     }
     // The nesting ceiling. `resolveChildTools` already withholds `agent` /
@@ -727,7 +727,7 @@ export class SwarmCoordinator {
     }
     if (this.activeWorkerCount() >= this.globalMax) {
       throw new Error(
-        `the gateway is at its global worker limit (${this.globalMax}) — wait for workers to finish`,
+        `the HQ is at its global worker limit (${this.globalMax}) — wait for workers to finish`,
       );
     }
     const run = turn && !turn.finalized ? this.ensureRun(turn) : undefined;

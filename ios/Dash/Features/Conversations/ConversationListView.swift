@@ -22,9 +22,9 @@ struct ConversationRowActionPolicy: Equatable {
     canRename = showsRename && mutationsAllowed
     canDelete = showsDelete && mutationsAllowed && hasActiveTurn == false
 
-    renameDisabledHint = mutationsAllowed ? "" : "Connect to the gateway to rename"
+    renameDisabledHint = mutationsAllowed ? "" : "Connect to the HQ to rename"
     if mutationsAllowed == false {
-      deleteDisabledHint = "Connect to the gateway to delete"
+      deleteDisabledHint = "Connect to the HQ to delete"
     } else if hasActiveTurn {
       deleteDisabledHint = "Wait for the active turn to finish before deleting"
     } else {
@@ -129,8 +129,8 @@ enum ComposeAgentSelection {
   ) -> String {
     if mutationsAllowed == false {
       return isConnecting
-        ? "Connecting to the gateway"
-        : "Connect to the gateway to create a conversation"
+        ? "Connecting to the HQ"
+        : "Connect to the HQ to create a conversation"
     }
     if availableAgents(agents, filteredAgentID: filteredAgentID).isEmpty {
       return "Enable or create an agent before starting a conversation"
@@ -492,7 +492,7 @@ struct ConversationListView: View {
       ContentUnavailableView(
         "No cached conversations",
         systemImage: "wifi.slash",
-        description: Text("Connect to the gateway to load conversations.")
+        description: Text("Connect to the HQ to load conversations.")
       )
     }
   }

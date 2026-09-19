@@ -181,7 +181,7 @@ function isOptionalNonblankString(value: unknown): boolean {
 function invalidFrame(): never {
   throw new ResumableChatTransportError(
     'update_required',
-    'Update Dash: the gateway sent an unsupported chat frame',
+    'Update Dash: the HQ sent an unsupported chat frame',
   );
 }
 
@@ -342,7 +342,7 @@ function classifyReplayFailure(error: unknown): ResumableChatTransportError | nu
     if (error.status === 401 || code === 'unauthorized') {
       return new ResumableChatTransportError(
         'repair_required',
-        'Gateway authorization failed. Reconnect this gateway to continue.',
+        'HQ authorization failed. Reconnect this HQ to continue.',
         code,
         false,
       );
@@ -350,7 +350,7 @@ function classifyReplayFailure(error: unknown): ResumableChatTransportError | nu
     if (error.status === 429 || code === 'rate_limited') {
       return new ResumableChatTransportError(
         'rate_limited',
-        error.apiError?.error ?? 'Gateway rate limit reached. Retry when the countdown finishes.',
+        error.apiError?.error ?? 'HQ rate limit reached. Retry when the countdown finishes.',
         code,
         error.apiError?.retryable ?? true,
         undefined,
@@ -360,7 +360,7 @@ function classifyReplayFailure(error: unknown): ResumableChatTransportError | nu
     if (error.status === 426 || code === 'capability_required') {
       return new ResumableChatTransportError(
         'update_required',
-        `Update Dash: ${error.apiError?.error ?? 'the gateway requires a newer client'}`,
+        `Update Dash: ${error.apiError?.error ?? 'the HQ requires a newer client'}`,
         code,
         error.apiError?.retryable ?? false,
       );
@@ -817,7 +817,7 @@ export class ResumableChatTransport {
           state,
           new ResumableChatTransportError(
             'repair_required',
-            'Gateway authorization failed. Reconnect this gateway to continue.',
+            'HQ authorization failed. Reconnect this HQ to continue.',
             undefined,
             false,
             undefined,
@@ -832,7 +832,7 @@ export class ResumableChatTransport {
           state,
           new ResumableChatTransportError(
             'rate_limited',
-            'Gateway rate limit reached. Retry when the countdown finishes.',
+            'HQ rate limit reached. Retry when the countdown finishes.',
             'rate_limited',
             true,
             undefined,

@@ -731,7 +731,7 @@ struct AppModelTests {
     #expect(model.route == .connect)
     #expect(model.selectedProfile == nil)
     #expect(model.snapshot == nil)
-    #expect(model.banner == .failed("Dash couldn't remove all local gateway data."))
+    #expect(model.banner == .failed("Dash couldn't remove all local HQ data."))
     #expect(await forget.calls == [.deleteSecrets, .clearData])
   }
 

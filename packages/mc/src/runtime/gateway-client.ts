@@ -246,7 +246,7 @@ export class GatewayHttpError extends Error {
     public readonly body: string,
     public readonly apiError?: MobileApiError,
   ) {
-    super(`Gateway ${label} failed: ${status} ${body}`.trimEnd());
+    super(`HQ ${label} failed: ${status} ${body}`.trimEnd());
     this.name = 'GatewayHttpError';
   }
 }
@@ -254,7 +254,7 @@ export class GatewayHttpError extends Error {
 /** The LAN TLS capability route responded, but its certificate pin was unusable. */
 export class InvalidGatewayLanTlsFingerprintError extends Error {
   constructor() {
-    super('Gateway LAN TLS fingerprint response is invalid');
+    super('HQ LAN TLS fingerprint response is invalid');
     this.name = 'InvalidGatewayLanTlsFingerprintError';
   }
 }

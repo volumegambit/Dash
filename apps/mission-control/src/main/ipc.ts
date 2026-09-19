@@ -563,7 +563,7 @@ function getLanIp(): Promise<string> {
 
 export function assertLocalPairingSource(profile: Pick<GatewayConnectionSettings, 'mode'>): void {
   if (profile.mode !== 'local') {
-    throw new Error('Switch to the local gateway before pairing a device');
+    throw new Error('Switch to the local HQ before pairing a device');
   }
 }
 
@@ -1079,11 +1079,11 @@ export async function registerIpcHandlers(
     const profile = await getGatewayConnectionProfile();
     if (profile.mode === 'local') return null;
     if (!profile.managementBaseUrl) {
-      throw new Error('Remote gateway profile is missing its management URL');
+      throw new Error('Remote HQ profile is missing its management URL');
     }
     const secrets = await keychain.getRemoteGatewaySecrets();
     if (!secrets) {
-      throw new Error('Remote gateway credentials are missing; reconnect the gateway');
+      throw new Error('Remote HQ credentials are missing; reconnect the HQ');
     }
     const managementBaseUrl = trimTrailingSlash(profile.managementBaseUrl);
     return {
@@ -1131,7 +1131,7 @@ export async function registerIpcHandlers(
 
   const getRequiredGatewayManagementClient = async (): Promise<GatewayManagementClient> => {
     const client = await getGatewayManagementClient();
-    if (!client) throw new Error('Gateway not running');
+    if (!client) throw new Error('HQ not running');
     return client;
   };
 
@@ -1177,11 +1177,11 @@ export async function registerIpcHandlers(
     }
     const gatewayState = await new GatewayStateStore(DATA_DIR).read();
     if (!gatewayState) {
-      throw new Error(`Gateway not running — ${feature} unavailable`);
+      throw new Error(`HQ not running — ${feature} unavailable`);
     }
     const token = await gw.getGatewayToken();
     if (!token) {
-      throw new Error(`Gateway not running — ${feature} unavailable`);
+      throw new Error(`HQ not running — ${feature} unavailable`);
     }
     return new ManagementClient(`http://127.0.0.1:${gatewayState.port}`, token);
   };
@@ -1226,7 +1226,7 @@ export async function registerIpcHandlers(
       context,
       existing: pendingConversationRuntime,
       createRepository: () => {
-        if (!gatewayId) throw new Error('Verified gateway identity is missing');
+        if (!gatewayId) throw new Error('Verified HQ identity is missing');
         return new GatewayConversationRepository(
           gatewayId,
           client,
@@ -1286,9 +1286,9 @@ export async function registerIpcHandlers(
         context,
         existing: pendingConversationRuntime,
         createRepository: () => {
-          if (!context.gatewayId) throw new Error('Gateway identity unavailable');
+          if (!context.gatewayId) throw new Error('HQ identity unavailable');
           const offline = async (): Promise<never> => {
-            throw new TypeError('Gateway connection unavailable');
+            throw new TypeError('HQ connection unavailable');
           };
           const client = {
             listConversations: offline,
@@ -1307,7 +1307,7 @@ export async function registerIpcHandlers(
           );
         },
         createTransport: () => {
-          throw new Error('Gateway connection unavailable');
+          throw new Error('HQ connection unavailable');
         },
       });
       if (chatService) activatePendingConversationRuntime(chatService, pendingConversationRuntime);
@@ -1386,7 +1386,7 @@ export async function registerIpcHandlers(
     secrets: RemoteGatewaySecrets,
   ) => {
     if (!profile.managementBaseUrl) {
-      throw new Error('Remote gateway profile is missing its management URL');
+      throw new Error('Remote HQ profile is missing its management URL');
     }
     const client = new GatewayManagementClient(
       trimTrailingSlash(profile.managementBaseUrl),
@@ -1679,7 +1679,7 @@ export async function registerIpcHandlers(
     assertLocalPairingSource(await getGatewayConnectionProfile());
     const chatToken = await gw.getChatToken();
     if (!chatToken) {
-      throw new Error('Gateway not running — start it before pairing a device');
+      throw new Error('HQ not running — start it before pairing a device');
     }
     // Relay mode is available once the gateway is enrolled with the control
     // plane (an issued-gateway record with a gatewayId + relay host). Absent →
@@ -1764,7 +1764,7 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('gateway:enroll', async (_e, subdomain: string): Promise<void> => {
     if (!(await controlPlaneSession.getToken())) {
-      throw new Error('Sign in to Dash before enrolling a gateway');
+      throw new Error('Sign in to Dash before enrolling an HQ');
     }
     await enrollGateway({
       subdomain,
@@ -1790,7 +1790,7 @@ export async function registerIpcHandlers(
   ipcMain.handle('devices:revoke', async (_e, deviceId: string) => {
     const issued = await gw.getIssuedGateway();
     if (!issued) {
-      throw new Error('No gateway enrolled — nothing to revoke');
+      throw new Error('No HQ enrolled — nothing to revoke');
     }
     await controlPlaneClient.revokePairing(issued.gatewayId, deviceId);
   });
@@ -2332,7 +2332,7 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('gateway:restart', async () => {
     if ((await getGatewayConnectionProfile()).mode !== 'local') {
-      throw new Error('Restart from Mission Control is only available for the local gateway');
+      throw new Error('Restart from Desktop is only available for the local HQ');
     }
     await gw.restart();
     await refreshGatewayConnection();

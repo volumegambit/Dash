@@ -59,5 +59,5 @@ final class AppLaunch {
   }
 
   static let storageFailureMessage =
-    "Check available storage, then try again. Your gateway data has not been changed."
+    "Check available storage, then try again. Your HQ data has not been changed."
 }

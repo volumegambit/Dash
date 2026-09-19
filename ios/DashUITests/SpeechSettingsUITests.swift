@@ -9,7 +9,7 @@ import XCTest
 /// without a speech provider looks like.
 @MainActor
 final class SpeechSettingsUITests: DashUITestCase {
-  private static let unavailableCopy = "Update your gateway to use speech."
+  private static let unavailableCopy = "Update your HQ to use speech."
 
   func testSpeechRowIsOfferedWhenTheGatewayAdvertisesSpeech() {
     let app = launch(scenario: "paired-online")

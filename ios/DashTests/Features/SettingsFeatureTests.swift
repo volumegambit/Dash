@@ -177,7 +177,7 @@ struct SettingsFeatureTests {
 
       #expect(
         feature.error
-          == "Sign in again from the gateway list, or Disconnect & Forget this gateway, then try again."
+          == "Sign in again from the HQ list, or Disconnect & Forget this HQ, then try again."
       )
       #expect(feature.error?.contains("Re-pair") == false)
     }
@@ -264,7 +264,7 @@ struct SettingsFeatureTests {
     await feature.disconnectAndForget(confirmed: true)
 
     #expect(await actions.calls == [.disconnect])
-    #expect(feature.error == "Dash couldn't remove this gateway from Keychain. Try again.")
+    #expect(feature.error == "Dash couldn't remove this HQ from Keychain. Try again.")
     #expect(feature.isForgetting == false)
   }
 
@@ -278,7 +278,7 @@ struct SettingsFeatureTests {
     #expect(await actions.calls == [.disconnect])
     #expect(
       feature.error
-        == "The connection was removed, but Dash couldn't remove all cached gateway data."
+        == "The connection was removed, but Dash couldn't remove all cached HQ data."
     )
   }
 
@@ -365,7 +365,7 @@ struct SettingsFeatureTests {
     #expect(model.selectedProfile == profile)
     #expect(model.settingsFeature === feature)
     #expect(model.connectionState == .repairRequired)
-    #expect(feature.error == "Dash couldn't remove this gateway from Keychain. Try again.")
+    #expect(feature.error == "Dash couldn't remove this HQ from Keychain. Try again.")
   }
 
   @Test("AppModel clears an unusable profile after cache purge failure")
@@ -388,7 +388,7 @@ struct SettingsFeatureTests {
     #expect(model.settingsFeature == nil)
     #expect(
       feature.error
-        == "The connection was removed, but Dash couldn't remove all cached gateway data."
+        == "The connection was removed, but Dash couldn't remove all cached HQ data."
     )
   }
 

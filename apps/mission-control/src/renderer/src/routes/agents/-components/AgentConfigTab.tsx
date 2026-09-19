@@ -1041,7 +1041,7 @@ export function AgentConfigTab({
               Enable swarm — let this agent spawn parallel workers
             </label>
             <p className="mt-1.5 text-[11px] text-muted">
-              Leave a cap blank to use the gateway default. Changes take effect on the agent's next
+              Leave a cap blank to use the HQ default. Changes take effect on the agent's next
               message.
             </p>
 

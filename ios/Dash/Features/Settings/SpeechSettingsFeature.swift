@@ -41,13 +41,13 @@ final class SpeechSettingsFeature {
   /// The fallback for anything that is not a `GatewayError.speech` — this
   /// screen only ever talks to the gateway, so a non-speech failure IS a
   /// gateway-reachability failure.
-  static let failureMessage = "Couldn't reach your gateway. Try again."
-  static let unavailableMessage = "Speech isn't set up on your gateway yet."
-  static let unauthorizedMessage = "Your gateway's speech provider key was rejected."
+  static let failureMessage = "Couldn't reach your HQ. Try again."
+  static let unavailableMessage = "Speech isn't set up on your HQ yet."
+  static let unauthorizedMessage = "Your HQ's speech provider key was rejected."
   /// The realtime pseudo-provider's reason (`REALTIME_PSEUDO_STATUS` in
   /// `packages/speech/src/service.ts`), as a sentence.
   static let realtimeUnavailableMessage = "No configured provider offers realtime speech yet."
-  static let noCredentialMessage = "No API key for this provider on your gateway."
+  static let noCredentialMessage = "No API key for this provider on your HQ."
 
   private(set) var config: SpeechConfigDTO?
   private(set) var providers: [SpeechProviderStatusDTO] = []
@@ -306,7 +306,7 @@ final class SpeechSettingsFeature {
   }
 
   static func availability(of provider: SpeechProviderStatusDTO?) -> String {
-    guard let provider else { return "Not configured on your gateway." }
+    guard let provider else { return "Not configured on your HQ." }
     guard provider.available == false else { return "Ready" }
     switch provider.reason {
     case .noCredential:
@@ -314,7 +314,7 @@ final class SpeechSettingsFeature {
     case .noProviderOffersRealtime:
       return realtimeUnavailableMessage
     case nil:
-      return "Unavailable on your gateway."
+      return "Unavailable on your HQ."
     }
   }
 

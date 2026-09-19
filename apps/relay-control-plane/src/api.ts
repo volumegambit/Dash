@@ -161,14 +161,14 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
       return c.json({ error: 'chatToken too long' }, 400);
     }
     const ok = provisioning.setWebChatToken(accountId, c.req.param('id'), chatToken);
-    if (!ok) return c.json({ error: 'gateway not found' }, 404);
+    if (!ok) return c.json({ error: 'HQ not found' }, 404);
     return c.json({ ok: true });
   });
 
   app.delete('/v1/gateways/:id', async (c) => {
     const accountId = c.get('accountId');
     const ok = await provisioning.deleteGateway(accountId, c.req.param('id'));
-    if (!ok) return c.json({ error: 'gateway not found' }, 404);
+    if (!ok) return c.json({ error: 'HQ not found' }, 404);
     return c.json({ ok: true });
   });
 
@@ -209,10 +209,10 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
       return c.json(chatToken === undefined ? { credential } : { credential, chatToken });
     } catch (err) {
       if (err instanceof WebChatTokenMissingError) {
-        return c.json({ error: 'no web chat token registered for this gateway' }, 409);
+        return c.json({ error: 'no web chat token registered for this HQ' }, 409);
       }
       // Cross-account or unknown gateway — don't disclose existence.
-      return c.json({ error: 'gateway not found' }, 404);
+      return c.json({ error: 'HQ not found' }, 404);
     }
   });
 
@@ -234,10 +234,10 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
       return c.json(created);
     } catch (err) {
       if (err instanceof WebChatTokenMissingError) {
-        return c.json({ error: 'no web chat token registered for this gateway' }, 409);
+        return c.json({ error: 'no web chat token registered for this HQ' }, 409);
       }
       // Cross-account or unknown gateway — don't disclose existence.
-      return c.json({ error: 'gateway not found' }, 404);
+      return c.json({ error: 'HQ not found' }, 404);
     }
   });
 
@@ -245,7 +245,7 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     const accountId = c.get('accountId');
     const gatewayId = c.req.param('id');
     const pairings = provisioning.listPairings(accountId, gatewayId);
-    if (pairings === null) return c.json({ error: 'gateway not found' }, 404);
+    if (pairings === null) return c.json({ error: 'HQ not found' }, 404);
     // Projected, not the raw record: `credentialHash` has no business reaching
     // a browser (or any client), and shipping the whole row means every future
     // column is published by accident. `status` IS included — revoked rows are

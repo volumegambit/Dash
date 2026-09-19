@@ -1207,8 +1207,8 @@ struct ConversationListFeatureTests {
     #expect(offlineIdle.showsDelete)
     #expect(offlineIdle.canRename == false)
     #expect(offlineIdle.canDelete == false)
-    #expect(offlineIdle.renameDisabledHint == "Connect to the gateway to rename")
-    #expect(offlineIdle.deleteDisabledHint == "Connect to the gateway to delete")
+    #expect(offlineIdle.renameDisabledHint == "Connect to the HQ to rename")
+    #expect(offlineIdle.deleteDisabledHint == "Connect to the HQ to delete")
   }
 
   @Test("a raced delete busy response remains actionable")
@@ -2324,12 +2324,12 @@ struct ComposeAgentSelectionTests {
     #expect(
       ComposeAgentSelection.unavailableHint(
         agents, filteredAgentID: nil, mutationsAllowed: false, isConnecting: true
-      ) == "Connecting to the gateway"
+      ) == "Connecting to the HQ"
     )
     #expect(
       ComposeAgentSelection.unavailableHint(
         agents, filteredAgentID: nil, mutationsAllowed: false, isConnecting: false
-      ) == "Connect to the gateway to create a conversation"
+      ) == "Connect to the HQ to create a conversation"
     )
     #expect(
       ComposeAgentSelection.unavailableHint(

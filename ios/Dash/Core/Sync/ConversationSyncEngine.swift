@@ -946,7 +946,7 @@ actor ConversationSyncEngine {
 
   private func requireOnlineMutation() throws {
     guard isShutdown == false, connection == .online else {
-      throw GatewayError.transport("Mutations require an online gateway")
+      throw GatewayError.transport("Mutations require an online HQ")
     }
   }
 

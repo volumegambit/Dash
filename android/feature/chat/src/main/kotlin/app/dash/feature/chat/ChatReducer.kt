@@ -92,7 +92,7 @@ object ChatReducer {
         is AgentEvent.SkillLoaded -> appendStatus(state, "Skill loaded", event.name)
         is AgentEvent.SkillCreated -> appendStatus(state, "Skill created: ${event.name}", event.description)
         is AgentEvent.McpServerError -> appendStatus(state, "MCP server error: ${event.server}", event.error)
-        is AgentEvent.Unknown -> appendStatus(state, "Gateway event: ${event.type}")
+        is AgentEvent.Unknown -> appendStatus(state, "HQ event: ${event.type}")
 
         is AgentEvent.Response ->
             updateLastAssistant(state) {

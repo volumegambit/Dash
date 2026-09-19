@@ -1,21 +1,21 @@
 ---
 title: "Chat with Your Squad Member"
-description: "Talk to your squad through Mission Control, Telegram, or the WebSocket API."
+description: "Talk to your squad through Desktop, Telegram, or the WebSocket API."
 ---
 
-Once your squad member is deployed, there are three ways to talk to it: the built-in Mission Control chat, messaging apps like Telegram, or the WebSocket API for programmatic access.
+Once your squad member is deployed, there are three ways to talk to it: the built-in Desktop chat, messaging apps like Telegram, or the WebSocket API for programmatic access.
 
 ## Three ways to chat
 
 | Method | Best for | Setup required |
 |--------|----------|----------------|
-| **Mission Control** | Day-to-day interaction, debugging, monitoring | None — built in |
+| **Desktop** | Day-to-day interaction, debugging, monitoring | None — built in |
 | **Messaging apps** | Reaching your squad from Telegram or WhatsApp | Connect a messaging app |
 | **WebSocket API** | Building integrations, automation, custom UIs | Developer setup |
 
-## Mission Control chat
+## Desktop chat
 
-The fastest way to talk to your squad. Open the **Chat** tab in Mission Control and start a new conversation.
+The fastest way to talk to your squad. Open the **Chat** tab in Desktop and start a new conversation.
 
 **Tabbed interface** — open multiple conversations at once and switch between them like browser tabs. Use ⌘T to open a new tab, ⌘W to close, and ⌘1–9 to switch.
 
@@ -30,7 +30,7 @@ The empty chat panel shows your recent conversations and deployed agents for qui
 
 ## Reading tool activity
 
-When your agent uses a tool, Mission Control and the web client show a tool card. Dash for iOS groups
+When your agent uses a tool, Desktop and the web client show a tool card. Dash for iOS groups
 consecutive thinking, status, and tool steps into one compact **Activity** row so a long tool run does
 not crowd out the conversation. Tap the row to inspect the individual steps and available results.
 
@@ -45,9 +45,9 @@ not crowd out the conversation. Tap the row to inspect the individual steps and 
 
 ## Composer keys
 
-The message box uses the same keys across Mission Control, the web client, and iOS, with one deliberate difference on iOS:
+The message box uses the same keys across Desktop, the web client, and iOS, with one deliberate difference on iOS:
 
-| Key | Mission Control & web | iOS |
+| Key | Desktop & web | iOS |
 |-----|--------------------------|-----|
 | **Return** | Send | Insert a line break |
 | **Shift+Return** | Insert a line break | Insert a line break |
@@ -64,7 +64,7 @@ Connect your agent to a messaging app and chat with it just like you would with 
 Setting this up takes a few minutes:
 
 1. Create a bot on the messaging platform
-2. Add the bot token to Mission Control
+2. Add the bot token to Desktop
 3. Configure which agent handles messages from that bot
 
 Once connected, your agent is always reachable — from your phone, desktop, or anywhere the messaging app runs.
@@ -125,7 +125,7 @@ Every conversation is persisted as a session. When you send a message to an agen
 
 Sessions are stored as append-only JSONL files. Each message, tool call, and response is recorded in order. This means your conversation history is durable and can be inspected if needed.
 
-Sessions are scoped by agent and conversation ID. A chat in Mission Control and a chat on Telegram are separate sessions, even if they're with the same agent.
+Sessions are scoped by agent and conversation ID. A chat in Desktop and a chat on Telegram are separate sessions, even if they're with the same agent.
 
 ## Streaming
 
@@ -136,4 +136,4 @@ Responses arrive in real time as the agent works. You don't wait for the full re
 - **Tool results** update the same card when the tool finishes, showing what came back (see [Reading tool activity](#reading-tool-activity))
 - **Thinking** appears only when the model supplies a thinking block
 
-This streaming experience works across all three chat methods — Mission Control, messaging apps, and the WebSocket API.
+This streaming experience works across all three chat methods — Desktop, messaging apps, and the WebSocket API.

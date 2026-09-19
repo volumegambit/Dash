@@ -20,13 +20,13 @@ describe('GatewayRuntimeSettings', () => {
     );
     expect(screen.queryByLabelText('Management URL')).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /change gateway/i }));
+    await user.click(screen.getByRole('button', { name: /change HQ/i }));
 
-    expect(screen.getByRole('heading', { name: /choose a gateway/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /choose an HQ/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /use this computer/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /connect existing gateway/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /connect existing HQ/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /self-host on a vps/i })).toBeInTheDocument();
-    expect(screen.queryByText(/hosted dash gateway/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/hosted dash HQ/i)).not.toBeInTheDocument();
   });
 
   it('shows an authenticated identity failure as reconnect-required', async () => {
@@ -40,14 +40,14 @@ describe('GatewayRuntimeSettings', () => {
       health: 'unhealthy',
       issue: {
         kind: 'repair_required',
-        message: 'Gateway authorization failed. Reconnect this gateway to continue.',
+        message: 'HQ authorization failed. Reconnect this HQ to continue.',
         retryable: false,
       },
     });
 
     render(<GatewayRuntimeSettings />);
 
-    expect(await screen.findByText(/gateway authorization failed/i)).toBeInTheDocument();
+    expect(await screen.findByText(/HQ authorization failed/i)).toBeInTheDocument();
     expect(screen.getByTestId('gateway-runtime-status')).toHaveTextContent(
       'prod - reconnect required',
     );
@@ -71,16 +71,16 @@ describe('GatewayRuntimeSettings', () => {
 
     render(<GatewayRuntimeSettings />);
 
-    await user.click(await screen.findByRole('button', { name: /change gateway/i }));
-    await user.click(screen.getByRole('button', { name: /connect existing gateway/i }));
-    await user.type(screen.getByLabelText('Gateway name'), 'prod');
+    await user.click(await screen.findByRole('button', { name: /change HQ/i }));
+    await user.click(screen.getByRole('button', { name: /connect existing HQ/i }));
+    await user.type(screen.getByLabelText('HQ name'), 'prod');
     await user.type(screen.getByLabelText('Management URL'), 'https://gw.relay.example.com');
     await user.type(screen.getByLabelText('Chat URL'), 'wss://gw.relay.example.com');
     await user.type(screen.getByLabelText('Management token'), 'mgmt-token');
     await user.type(screen.getByLabelText('Chat token'), 'chat-token');
     await user.type(screen.getByLabelText('Relay credential'), 'relay-cred');
 
-    const useGateway = screen.getByRole('button', { name: /use this gateway/i });
+    const useGateway = screen.getByRole('button', { name: /use this HQ/i });
     expect(useGateway).toBeDisabled();
 
     await user.click(screen.getByRole('button', { name: /test connection/i }));
@@ -118,20 +118,20 @@ describe('GatewayRuntimeSettings', () => {
     const user = userEvent.setup();
     mockApi.gatewayConnectionTest.mockResolvedValueOnce({
       ok: false,
-      message: 'Could not reach that gateway. Check the URL and tokens, then try again.',
+      message: 'Could not reach that HQ. Check the URL and tokens, then try again.',
     });
 
     render(<GatewayRuntimeSettings />);
 
-    await user.click(await screen.findByRole('button', { name: /change gateway/i }));
-    await user.click(screen.getByRole('button', { name: /connect existing gateway/i }));
+    await user.click(await screen.findByRole('button', { name: /change HQ/i }));
+    await user.click(screen.getByRole('button', { name: /connect existing HQ/i }));
     await user.type(screen.getByLabelText('Management URL'), 'https://broken.example.com');
     await user.type(screen.getByLabelText('Management token'), 'bad-mgmt');
     await user.type(screen.getByLabelText('Chat token'), 'bad-chat');
     await user.click(screen.getByRole('button', { name: /test connection/i }));
 
-    expect(await screen.findByText(/could not reach that gateway/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /use this gateway/i })).toBeDisabled();
+    expect(await screen.findByText(/could not reach that HQ/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /use this HQ/i })).toBeDisabled();
     expect(mockApi.gatewayConnectionSaveRelay).not.toHaveBeenCalled();
   });
 
@@ -139,14 +139,14 @@ describe('GatewayRuntimeSettings', () => {
     const user = userEvent.setup();
     render(<GatewayRuntimeSettings />);
 
-    await user.click(await screen.findByRole('button', { name: /change gateway/i }));
+    await user.click(await screen.findByRole('button', { name: /change HQ/i }));
 
     expect(screen.queryByLabelText('Host')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /self-host on a vps/i }));
     await user.type(screen.getByLabelText('Host'), '203.0.113.10');
     await user.type(screen.getByLabelText('User'), 'dash');
-    await user.type(screen.getByLabelText('Gateway id'), 'gw-1');
+    await user.type(screen.getByLabelText('HQ id'), 'gw-1');
     await user.type(screen.getByLabelText('Relay URL'), 'wss://relay.example.com');
     await user.type(screen.getByLabelText('Relay token'), 'relay-token');
     await user.type(screen.getByLabelText('VPS relay credential'), 'relay-cred');

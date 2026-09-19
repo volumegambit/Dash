@@ -139,7 +139,7 @@ const BATCHES: { title: string; cases: Case[] }[] = [
 function Gallery(): JSX.Element {
   return (
     <div className="mx-auto max-w-3xl p-6">
-      <h1 className="mb-1 text-lg font-semibold">Mission Control — tool-card gallery</h1>
+      <h1 className="mb-1 text-lg font-semibold">Desktop — tool-card gallery</h1>
       <p className="mb-6 text-xs text-muted">
         Same fixtures as the iOS and web galleries. Click a header to expand a card.
       </p>

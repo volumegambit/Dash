@@ -23,9 +23,9 @@ OpenRouter models keep the upstream vendor in the name, so they carry a second p
 
 ## Configuring credentials
 
-Each provider needs an API key. The recommended approach is through **Mission Control**, which stores keys in an AES-256-GCM encrypted credential store. Open **Settings → AI Providers**, select your provider, and paste your key.
+Each provider needs an API key. The recommended approach is through **Desktop**, which stores keys in an AES-256-GCM encrypted credential store. Open **Settings → AI Providers**, select your provider, and paste your key.
 
-For standalone gateway usage (no Mission Control), set credentials via environment variables instead — for example in an `.env` file or your Docker environment.
+For standalone HQ usage (no Desktop), set credentials via environment variables instead — for example in an `.env` file or your Docker environment.
 
 A trusted [plugin](/plugins#provider-credentials) can also contribute additional providers here, which you connect the same way as the built-in ones.
 
@@ -121,7 +121,7 @@ OPENROUTER_API_KEY=sk-or-v1-...
 
 ## Using a provider in an agent
 
-When you deploy or edit an agent in Mission Control, pick its model from the dropdown — it lists models for every provider you've connected, in `provider/model` format. Each agent can use a different provider, and the prefix tells Dash which API to call:
+When you deploy or edit an agent in Desktop, pick its model from the dropdown — it lists models for every provider you've connected, in `provider/model` format. Each agent can use a different provider, and the prefix tells Dash which API to call:
 
 - `anthropic/claude-sonnet-4-20250514`
 - `openai/gpt-4o`

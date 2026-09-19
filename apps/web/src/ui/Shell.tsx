@@ -33,7 +33,7 @@ export const WebAppStoreContext = createContext<WebAppStore | null>(null);
  * revoked/rejected credential (design doc, Error Handling: "revoked/rejected
  * credential → GatewayPicker with explanation"). */
 export const SESSION_REVOKED_COPY =
-  'Your web session for this gateway was revoked. Pair again to continue.';
+  'Your web session for this HQ was revoked. Pair again to continue.';
 
 /** Reads the store `Shell` created for the picked gateway. Must be called
  * from a component mounted under `Shell`'s `'chat'` view (Task 13's
@@ -41,7 +41,7 @@ export const SESSION_REVOKED_COPY =
 export function useWebAppStore(): WebAppStore {
   const store = useContext(WebAppStoreContext);
   if (!store) {
-    throw new Error('useWebAppStore must be used within Shell once a gateway has been chosen');
+    throw new Error('useWebAppStore must be used within Shell once an HQ has been chosen');
   }
   return store;
 }
@@ -130,13 +130,13 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
           }
         }
       } catch (err) {
-        console.error('Shell: failed to load gateways', err);
+        console.error('Shell: failed to load HQs', err);
         // Surface the real failure instead of masquerading as an empty
         // account — an unreachable control plane or a failed Clerk token
         // exchange must read differently from "no gateways enrolled".
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err);
-          setPickGatewayNotice(`Couldn't load your gateways: ${message}`);
+          setPickGatewayNotice(`Couldn't load your HQs: ${message}`);
         }
       } finally {
         if (!cancelled) setLoading(false);

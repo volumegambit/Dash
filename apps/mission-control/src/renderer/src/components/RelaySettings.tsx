@@ -132,8 +132,8 @@ export function RelaySettings({
       </h2>
       <p className="mb-3 max-w-xl text-xs text-muted">
         Reach your agents from your phone over the internet through the hosted Dash relay. Sign in
-        to Dash, create a gateway, then pair your phone by scanning its QR code. Leave this off to
-        pair over your local network only.
+        to Dash, create an HQ, then pair your phone by scanning its QR code. Leave this off to pair
+        over your local network only.
       </p>
 
       {!status?.signedIn && (
@@ -148,7 +148,7 @@ export function RelaySettings({
             Signed in to Dash
           </p>
           <label className="text-xs text-muted" htmlFor="subdomain-input">
-            Choose a permanent address for this gateway
+            Choose a permanent address for this HQ
           </label>
           <div className="flex items-center gap-2">
             <input
@@ -185,7 +185,7 @@ export function RelaySettings({
       {status?.signedIn && status.enrolled && (
         <div className="grid gap-3">
           <p data-testid="relay-status" className="text-xs text-green">
-            Gateway ready at <span className="font-mono text-foreground">{status.subdomain}</span>
+            HQ ready at <span className="font-mono text-foreground">{status.subdomain}</span>
           </p>
           <div className="grid gap-2">
             <h3 className="text-[11px] uppercase tracking-[1px] text-muted">Paired devices</h3>

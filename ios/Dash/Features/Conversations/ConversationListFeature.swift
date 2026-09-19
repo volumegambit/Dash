@@ -109,7 +109,7 @@ extension ConversationMutationError {
   var userMessage: String {
     switch self {
     case .offline:
-      "Connect to the gateway and try again."
+      "Connect to the HQ and try again."
     case .invalidTitle:
       "Enter a title that is not empty."
     case .outcomeUnknown:

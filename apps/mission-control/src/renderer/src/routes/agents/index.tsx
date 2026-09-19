@@ -178,7 +178,7 @@ function Agents(): JSX.Element {
               Remove {removeTarget.name}?
             </h2>
             <p className="mt-1 text-sm text-muted">
-              This will remove the squad member from the gateway.
+              This will remove the squad member from the HQ.
             </p>
 
             <div className="mt-6 flex justify-end gap-2">

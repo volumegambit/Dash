@@ -670,7 +670,7 @@ final class AgentsFeature {
 
   private func requireMutation() -> Bool {
     guard mutationsAllowed else {
-      mutationError = "Connect to the gateway to make changes."
+      mutationError = "Connect to the HQ to make changes."
       return false
     }
     return true

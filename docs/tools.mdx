@@ -3,7 +3,7 @@ title: "Tools"
 description: "Built-in tools for file operations, shell commands, web access, skills, and integrations — with workspace sandboxing."
 ---
 
-Tools are what your agents can *do*. Each tool gives an agent a real-world capability — reading files, running commands, searching the web, and more. You enable tools per agent when you deploy or edit it in Mission Control.
+Tools are what your agents can *do*. Each tool gives an agent a real-world capability — reading files, running commands, searching the web, and more. You enable tools per agent when you deploy or edit it in Desktop.
 
 ## File tools
 
@@ -205,7 +205,7 @@ Reading and writing memory is automatic — whenever memory is on for an agent, 
 
 ## Projects
 
-Task-tracking tools for the [Projects](/projects) board in Mission Control. Every agent has these automatically — they are not part of the per-agent tool selection.
+Task-tracking tools for the [Projects](/projects) board in Desktop. Every agent has these automatically — they are not part of the per-agent tool selection.
 
 | Tool | What it does |
 |------|--------------|
@@ -222,7 +222,7 @@ Task-tracking tools for the [Projects](/projects) board in Mission Control. Ever
 
 Every read, create, update, or comment automatically links the agent's current chat session to the task, so the task page shows which conversations touched it. When an agent sets a task's sub-status to `waiting_on_human`, the task appears in your Inbox under **Waiting on you**.
 
-Not affected by workspace sandboxing — task data lives in the gateway's local database.
+Not affected by workspace sandboxing — task data lives in the HQ's local database.
 
 ## Sub-agents
 
@@ -301,7 +301,7 @@ There's also a list of everything running in the conversation:
 
 - **Web** — a **Tasks** button in the top bar (with a live count) opens a tasks panel; each row has **Stop** and **Resume**.
 - **iOS** — a **Tasks** toolbar button opens a sheet, plus a strip above the composer while anything is live.
-- **Mission Control** — the people icon in the chat header opens the **Sub-agents** panel, with **Stop**, **Resume**, and the child's transcript in place. The icon appears once the conversation has sub-agents (or when the agent's Swarm card is ticked).
+- **Desktop** — the people icon in the chat header opens the **Sub-agents** panel, with **Stop**, **Resume**, and the child's transcript in place. The icon appears once the conversation has sub-agents (or when the agent's Swarm card is ticked).
 
 Sub-agent rows are a chat-app feature. Over Telegram or WhatsApp you get the agent's final answer only.
 
@@ -318,7 +318,7 @@ What that means in practice:
 - A worker's **read-only default is unchanged**: with no `tools` argument it gets `read`, `grep`, `find`, and `ls`, intersected with what the parent holds.
 - Two consequences worth knowing: an agent whose `subagents.allowedTypes` excludes `general-purpose` now refuses `spawn_worker`, and a worker can launch sub-agents of its own.
 
-**Caps.** Spawning is bounded by the agent's caps (concurrent children, total per turn, messages per child, and a wall-clock limit) plus a gateway-wide ceiling — see [Configuration → Sub-agents](/configuration#sub-agents). A call that would exceed a cap **fails with an error result** (rendered as an error tool block in chat) rather than silently doing nothing, so the agent can adapt.
+**Caps.** Spawning is bounded by the agent's caps (concurrent children, total per turn, messages per child, and a wall-clock limit) plus an HQ-wide ceiling — see [Configuration → Sub-agents](/configuration#sub-agents). A call that would exceed a cap **fails with an error result** (rendered as an error tool block in chat) rather than silently doing nothing, so the agent can adapt.
 
 The four tools:
 
@@ -362,7 +362,7 @@ The four tools:
   </Tab>
 </Tabs>
 
-A worker is a sub-agent, so it gets [`ask_orchestrator`](#sub-agents) like any other child, and it draws the same row in chat. Watch and steer one from the tasks panel, the tasks sheet, or Mission Control's **Sub-agents** panel — see [Architecture → Sub-agents](/architecture#sub-agents).
+A worker is a sub-agent, so it gets [`ask_orchestrator`](#sub-agents) like any other child, and it draws the same row in chat. Watch and steer one from the tasks panel, the tasks sheet, or Desktop's **Sub-agents** panel — see [Architecture → Sub-agents](/architecture#sub-agents).
 
 ## Workspace sandboxing
 

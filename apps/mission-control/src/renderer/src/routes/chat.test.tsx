@@ -303,7 +303,7 @@ describe('Chat search params', () => {
 
     render(<Chat />);
 
-    expect(await screen.findByText('Choose Gateway or On this Mac')).toBeInTheDocument();
+    expect(await screen.findByText('Choose HQ or On this Mac')).toBeInTheDocument();
     expect(useChatStore.getState().selectedConversationRef).toBeNull();
   });
 });
@@ -410,7 +410,7 @@ describe('canonical conversation UI', () => {
     render(<Chat />);
 
     expect(
-      screen.getByText('Gateway offline — cached conversations are read-only.'),
+      screen.getByText('HQ offline — cached conversations are read-only.'),
     ).toBeInTheDocument();
     expect(screen.getByText('cached transcript')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Reconnect to send a message')).toBeDisabled();
@@ -429,16 +429,16 @@ describe('canonical conversation UI', () => {
       connectionIssue: {
         conversation: { id: '*', origin: 'gateway' },
         kind: 'repair_required',
-        message: 'Gateway authorization failed. Reconnect this gateway to continue.',
+        message: 'HQ authorization failed. Reconnect this HQ to continue.',
         retryable: false,
       },
     });
 
     render(<Chat />);
 
-    expect(screen.getByText(/gateway authorization failed/i)).toBeInTheDocument();
+    expect(screen.getByText(/HQ authorization failed/i)).toBeInTheDocument();
     expect(
-      screen.queryByText('Gateway offline — cached conversations are read-only.'),
+      screen.queryByText('HQ offline — cached conversations are read-only.'),
     ).not.toBeInTheDocument();
   });
 

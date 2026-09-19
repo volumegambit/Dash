@@ -43,7 +43,7 @@ actor SSEClient {
 
           let (bytes, response) = try await session.bytes(for: request)
           guard let httpResponse = response as? HTTPURLResponse else {
-            throw GatewayError.transport("Gateway returned a non-HTTP SSE response")
+            throw GatewayError.transport("HQ returned a non-HTTP SSE response")
           }
           guard (200..<300).contains(httpResponse.statusCode) else {
             throw mapSSEStatus(httpResponse.statusCode, relay: endpoint.profile.mode == .relay)

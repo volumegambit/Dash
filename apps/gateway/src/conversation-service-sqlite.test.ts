@@ -865,7 +865,7 @@ describe('SqliteConversationService durable turns', () => {
         seq: 3,
         payload: {
           type: 'error',
-          error: 'Gateway restarted while this turn was in progress.',
+          error: 'HQ restarted while this turn was in progress.',
           code: 'gateway_offline',
           retryable: true,
         },

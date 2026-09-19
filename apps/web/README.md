@@ -1,12 +1,12 @@
 # Dash Web
 
-A static single-page app that lets a browser chat with a Dash gateway over the
+A static single-page app that lets a browser chat with a Dash HQ over the
 [hosted relay](../relay/README.md) and [control plane](../relay-control-plane) — the
 same infrastructure the phone apps use for remote access. There is no server-side
 component here: `apps/web` builds to a static `dist/` and is served from its own
 origin, same as any SPA.
 
-For the end-user guide (sign in, pick a gateway, chat, troubleshooting), see
+For the end-user guide (sign in, pick an HQ, chat, troubleshooting), see
 [docs/web.mdx](../../docs/web.mdx). This README is for whoever builds and deploys it.
 
 ## Build
@@ -30,7 +30,7 @@ npm test -w apps/web         # vitest run
 ## Deploy: its own origin
 
 Serve `dist/` at its own origin, separate from the control plane and from any
-gateway — for example `https://app.<relay-domain>`. The app is entirely static, so
+HQ — for example `https://app.<relay-domain>`. The app is entirely static, so
 any static host works as long as:
 
 - It serves `index.html` for unknown paths (client-side routing has none today, but
@@ -54,7 +54,7 @@ the bundle was built with.
 Notes on that policy:
 
 - `connect-src` is pinned to exactly three network destinations: the control
-  plane, any gateway subdomain under your relay domain, and Clerk. It replaces an
+  plane, any HQ subdomain under your relay domain, and Clerk. It replaces an
   earlier blanket `https:`, which allowed the app to talk to any HTTPS origin at
   all — a meaningful difference given the pairing credential lives in IndexedDB
   and is therefore readable by any script that runs on this origin.
@@ -91,8 +91,8 @@ each is fixed per build/deploy — there's no runtime config file):
 | Variable | Required | Meaning |
 |---|---|---|
 | `VITE_CLERK_PUBLISHABLE_KEY` | Yes | Clerk publishable key for the Clerk application used for sign-in. Passkeys must be enabled for this application in the Clerk dashboard — that's dashboard configuration, not something this app sets. Missing/empty renders a configuration-error screen instead of crashing (see `AppRoot.tsx`). |
-| `VITE_CONTROL_PLANE_URL` | Yes | Base URL of the relay control plane (`apps/relay-control-plane`), e.g. `https://cp.<relay-domain>`. Used for listing gateways and minting/revoking pairings. |
-| `VITE_RELAY_DOMAIN` | Yes | Domain the hosted relay is served under. Combined with a gateway's `subdomain` to build its REST base (`https://<subdomain>.<relayDomain>/mobile/v1`) and WS base (`wss://<subdomain>.<relayDomain>/ws/chat`) — see `src/config.ts` and `src/ui/Shell.tsx`. |
+| `VITE_CONTROL_PLANE_URL` | Yes | Base URL of the relay control plane (`apps/relay-control-plane`), e.g. `https://cp.<relay-domain>`. Used for listing HQs and minting/revoking pairings. |
+| `VITE_RELAY_DOMAIN` | Yes | Domain the hosted relay is served under. Combined with an HQ's `subdomain` to build its REST base (`https://<subdomain>.<relayDomain>/mobile/v1`) and WS base (`wss://<subdomain>.<relayDomain>/ws/chat`) — see `src/config.ts` and `src/ui/Shell.tsx`. |
 
 Example `.env.production` (not committed):
 
@@ -110,14 +110,14 @@ chain the design doc for this feature describes, wired through config:
 
 | Where | What to set | Why |
 |---|---|---|
-| Gateway (`apps/gateway`) | Usually **nothing** — see below. `DASH_WEB_ORIGINS` (comma-separated exact origins) overrides. | Gates the gateway's `/mobile/v1` CORS allowlist for browser `fetch`/`XHR`. A relay-enrolled gateway defaults to allowing `https://app.<relay zone>`, derived from the relay URL it dials, so the standard deployment needs no per-machine configuration. Native/mobile clients are unaffected either way — they don't send `Origin`. |
-| Control plane (`apps/relay-control-plane`) | `RELAY_CP_WEB_ORIGINS` (env) or `--web-origins` (flag), comma-separated exact origins | Gates CORS on `/v1/*` and `/gw/dial-token` for the browser calls this app makes (listing gateways, minting/revoking pairings). Same rule: unset/empty disables CORS on those routes. |
+| HQ (`apps/gateway`) | Usually **nothing** — see below. `DASH_WEB_ORIGINS` (comma-separated exact origins) overrides. | Gates the HQ's `/mobile/v1` CORS allowlist for browser `fetch`/`XHR`. A relay-enrolled HQ defaults to allowing `https://app.<relay zone>`, derived from the relay URL it dials, so the standard deployment needs no per-machine configuration. Native/mobile clients are unaffected either way — they don't send `Origin`. |
+| Control plane (`apps/relay-control-plane`) | `RELAY_CP_WEB_ORIGINS` (env) or `--web-origins` (flag), comma-separated exact origins | Gates CORS on `/v1/*` and `/gw/dial-token` for the browser calls this app makes (listing HQs, minting/revoking pairings). Same rule: unset/empty disables CORS on those routes. |
 | Control plane | Clerk OIDC config (`RELAY_CP_CLERK_FRONTEND_API`, `RELAY_CP_CLERK_CLIENT_ID`) | Must point at the **same Clerk application** as this app's `VITE_CLERK_PUBLISHABLE_KEY`, or the control plane can't verify the ID token this app sends. |
-| Relay (`apps/relay`) | Nothing to configure for this — noted for context | The relay exempts CORS preflights (`OPTIONS`) to canonical mobile targets from its credential check so the gateway's CORS allowlist stays the single origin-policy holder, and rate-limits those preflights on a separate, tighter bucket (`preflightBurst` default 10, `preflightRatePerSec` default 5 per gateway — internal defaults, not currently exposed as flags/env). If browser requests get unexpectedly rate-limited, this is why. |
+| Relay (`apps/relay`) | Nothing to configure for this — noted for context | The relay exempts CORS preflights (`OPTIONS`) to canonical mobile targets from its credential check so the HQ's CORS allowlist stays the single origin-policy holder, and rate-limits those preflights on a separate, tighter bucket (`preflightBurst` default 10, `preflightRatePerSec` default 5 per HQ — internal defaults, not currently exposed as flags/env). If browser requests get unexpectedly rate-limited, this is why. |
 
-### The gateway's default allowlist
+### The HQ's default allowlist
 
-A gateway enrolled with the hosted control plane dials
+An HQ enrolled with the hosted control plane dials
 `wss://<gatewayId>.<relay zone>`, so it can work out where the web client lives:
 it allows `https://app.<relay zone>` automatically. Deploying this app at that
 origin — the layout "Deploy: its own origin" above recommends — means there is
@@ -129,13 +129,13 @@ nothing to set on each user's machine.
 |---|---|
 | unset | `https://app.<relay zone>` when relay-enrolled; no origins otherwise |
 | `https://a.example, https://b.example` | exactly those — to *extend* rather than replace, list the default alongside your own |
-| set but empty | no origins at all: browser access to this gateway is off |
+| set but empty | no origins at all: browser access to this HQ is off |
 
-A gateway that is not relay-enrolled derives nothing (there is no zone to derive
+An HQ that is not relay-enrolled derives nothing (there is no zone to derive
 from) and so has CORS disabled unless `DASH_WEB_ORIGINS` says otherwise.
 
 In short: pick the web client's deployed origin first. If it is
-`https://app.<relay zone>` the gateway already agrees; otherwise put that exact
+`https://app.<relay zone>` the HQ already agrees; otherwise put that exact
 origin in `DASH_WEB_ORIGINS`. Either way it must also be in the control plane's
 `RELAY_CP_WEB_ORIGINS`/`--web-origins`, which has no such derivation. A mismatch
 shows up as a browser CORS error at the relevant hop, not as an application
@@ -150,15 +150,15 @@ Summarized from the design doc's as-built amendment
 2. It calls the control plane to mint a **web pairing**:
    `POST /v1/gateways/:id/pairings/pairing-id-v1` → `{ credential, pairingId, chatToken }`.
    The plain `/v1/gateways/:id/pairings` route (no `pairing-id-v1` suffix) is a
-   legacy Mission-Control-compat route that returns only `{ credential }` — no
+   legacy Desktop compatibility route that returns only `{ credential }` — no
    `pairingId`, no `chatToken` — so it can't be used here.
    - `credential` is a per-device, individually revocable relay pairing credential.
-   - `chatToken` is the gateway's **gateway-wide chat-scoped bearer** — the same one
-     Mission Control embeds in QR pairings — registered with the control plane by
-     Mission Control's Remote-access enroll flow (`PUT /v1/gateways/:id/web-chat-token`).
-   - Gateways enrolled before this feature shipped haven't registered a chat token
+   - `chatToken` is the HQ's **HQ-wide chat-scoped bearer** — the same one
+     Desktop embeds in QR pairings — registered with the control plane by
+     Desktop's Remote-access enroll flow (`PUT /v1/gateways/:id/web-chat-token`).
+   - HQs enrolled before this feature shipped haven't registered a chat token
      yet, so this call returns **409** (`no web chat token registered for this
-     gateway`) until the owner re-runs enroll from Mission Control. See
+     HQ`) until the owner re-runs enroll from Desktop. See
      `GATEWAY_NEEDS_REENROLL_COPY` in `src/ui/GatewayPicker.tsx`.
 3. REST calls carry `Authorization: Bearer <chatToken>` plus an
    `x-dash-relay-credential` header (the per-device credential) — see
@@ -170,30 +170,30 @@ Summarized from the design doc's as-built amendment
    path, since that goes through the WS ticket flow below).
 4. The chat WebSocket carries the relay credential via `Sec-WebSocket-Protocol`
    (browsers can't set arbitrary headers on a WS upgrade) and a short-lived,
-   single-use `?ticket=` the gateway issues and redeems — see `src/api/chat-socket.ts`.
+   single-use `?ticket=` the HQ issues and redeems — see `src/api/chat-socket.ts`.
 
 Consequence worth knowing: revoking a web pairing from the Devices screen revokes
 this browser's relay reach, but **not** the chat bearer it already received (that
-bearer is gateway-wide, not per-device). Tighter per-device isolation is a
+bearer is HQ-wide, not per-device). Tighter per-device isolation is a
 reversible follow-up, not something this build does.
 
-A pairing credential rejected as a 401 by the relay or gateway (revoked from
-another device, from Mission Control, or expired) puts the store's `connection`
+A pairing credential rejected as a 401 by the relay or HQ (revoked from
+another device, from Desktop, or expired) puts the store's `connection`
 into a terminal `'unauthorized'` state — it never silently retries an auth
 failure. `Shell.tsx` notices that state, clears the local `CredentialStore` entry
-for that gateway, and routes back to the gateway picker with
-`SESSION_REVOKED_COPY`: *"Your web session for this gateway was revoked. Pair
-again to continue."* Picking the gateway again mints a fresh pairing and clears
+for that HQ, and routes back to the HQ picker with
+`SESSION_REVOKED_COPY`: *"Your web session for this HQ was revoked. Pair
+again to continue."* Picking the HQ again mints a fresh pairing and clears
 the notice.
 
 ## Testing
 
 ```bash
-npm test -w apps/web     # vitest run — unit + component tests, mocked control plane/gateway
+npm test -w apps/web     # vitest run — unit + component tests, mocked control plane/HQ
 ```
 
-An integration test also exists that drives the web client against a real gateway —
-`src/integration/web-gateway.integration.test.ts` boots the gateway's mobile test
+An integration test also exists that drives the web client against a real HQ —
+`src/integration/web-gateway.integration.test.ts` boots the HQ's mobile test
 harness and runs `MobileRestClient`/`ChatSocket`/`createWebAppStore` end to end with
 no mocks (list → create conversation → ws-ticket → real WS upgrade → send →
 streamed completion → transcript). It runs as part of `npm test -w apps/web`.

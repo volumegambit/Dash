@@ -283,7 +283,7 @@ describe('ChatService', () => {
     const noGwService = new ChatService(store, onEvent, onDone, onError);
     const conv = await createLocal(noGwService, 'agent-1');
     await expect(sendLocal(noGwService, conv.id, 'hello')).rejects.toThrow(
-      'Gateway connection not configured',
+      'HQ connection not configured',
     );
   });
 

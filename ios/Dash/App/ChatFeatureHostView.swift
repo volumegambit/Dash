@@ -29,7 +29,7 @@ struct ChatFeatureHostView: View {
         ContentUnavailableView(
           "Chat unavailable",
           systemImage: "exclamationmark.bubble",
-          description: Text("Check this gateway's connection and try again.")
+          description: Text("Check this HQ's connection and try again.")
         )
         .navigationTitle(conversation.title)
       } else {

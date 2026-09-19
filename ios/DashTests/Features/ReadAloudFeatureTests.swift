@@ -126,7 +126,7 @@ struct ReadAloudFeatureTests {
     await harness.feature.toggle(messageID: "m1", text: "hello")
 
     await expectEventually("the failure to surface") { harness.feature.error != nil }
-    #expect(harness.feature.error == "Speech isn't set up on your gateway yet.")
+    #expect(harness.feature.error == "Speech isn't set up on your HQ yet.")
   }
 
   @Test("a rejected provider key reads as a key problem, never as a pairing problem")
@@ -140,7 +140,7 @@ struct ReadAloudFeatureTests {
     await harness.feature.toggle(messageID: "m1", text: "hello")
 
     await expectEventually("the failure to surface") { harness.feature.error != nil }
-    #expect(harness.feature.error == "Your gateway's speech provider key was rejected.")
+    #expect(harness.feature.error == "Your HQ's speech provider key was rejected.")
   }
 
   @Test("a non-speech failure gets the plain read-aloud sentence")

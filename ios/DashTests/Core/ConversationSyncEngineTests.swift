@@ -1423,7 +1423,7 @@ struct ConversationSyncEngineTests {
         )
       )
     }
-    #expect(blocked == .transport("Mutations require an online gateway"))
+    #expect(blocked == .transport("Mutations require an online HQ"))
     #expect(await api.createRequests.isEmpty)
 
     await gate.release()
@@ -1555,7 +1555,7 @@ struct ConversationSyncEngineTests {
     }
     await engine.sceneDidEnterBackground()
 
-    #expect(createError == .transport("Mutations require an online gateway"))
+    #expect(createError == .transport("Mutations require an online HQ"))
     #expect(await api.createRequests.isEmpty)
     #expect(await chat.calls == [.shutdown])
   }

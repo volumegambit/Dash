@@ -247,7 +247,7 @@ export class ProvisioningService {
       throw new InvalidSubdomainError(`invalid subdomain label: ${label}`);
     }
     if (!opts.publicKey) {
-      throw new InvalidPublicKeyError('gateway public key required');
+      throw new InvalidPublicKeyError('HQ public key required');
     }
     if (!this.#store.isSubdomainAvailable(label)) {
       throw new SubdomainTakenError(`subdomain taken: ${label}`);
@@ -335,7 +335,7 @@ export class ProvisioningService {
   ): Promise<CreatedPairing | PendingApproval> {
     const gateway = this.#store.getGateway(gatewayId);
     if (!gateway || gateway.accountId !== accountId) {
-      throw new Error(`gateway ${gatewayId} not found for account ${accountId}`);
+      throw new Error(`HQ ${gatewayId} not found for account ${accountId}`);
     }
     // A browser cannot be handed the chat bearer out of band, so a web pairing
     // is only useful with one. Resolve it BEFORE minting: failing afterwards
@@ -345,7 +345,7 @@ export class ProvisioningService {
     const registered = this.#store.getWebChatToken(gatewayId);
     if (clientKind === 'web') {
       if (!registered) {
-        throw new WebChatTokenMissingError(`no web chat token registered for gateway ${gatewayId}`);
+        throw new WebChatTokenMissingError(`no web chat token registered for HQ ${gatewayId}`);
       }
       chatToken = registered;
     } else if (registered) {

@@ -91,7 +91,7 @@ class PairingViewModel(
                 false
             }
             if (!reachable) {
-                _state.value = PairingUiState.Error("Could not reach gateway at ${profile.host}")
+                _state.value = PairingUiState.Error("Could not reach HQ at ${profile.host}")
                 return@launch
             }
             saveProfile(profile)

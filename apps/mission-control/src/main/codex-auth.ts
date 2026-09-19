@@ -123,7 +123,7 @@ const SUCCESS_HTML = `<!DOCTYPE html>
 <body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#111;color:#fff">
 <div style="text-align:center">
 <h1 style="color:#22c55e">&#10003; Logged in</h1>
-<p>You can close this tab and return to Mission Control.</p>
+<p>You can close this tab and return to Desktop.</p>
 </div>
 </body>
 </html>`;

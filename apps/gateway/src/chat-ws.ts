@@ -625,7 +625,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
             type: 'voice_error',
             id: frame.id,
             code: 'unavailable',
-            error: 'Speech is not configured on this gateway',
+            error: 'Speech is not configured on this HQ',
           });
           return;
         }

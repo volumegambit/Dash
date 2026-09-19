@@ -95,9 +95,9 @@ function KeychainConsentStep({
         Welcome to Dash
       </h1>
       <p className="mt-3 text-sm text-muted">
-        Dash stores its gateway access tokens in your system's secure credential store (macOS
-        Keychain, Windows Credential Manager, or libsecret on Linux), so they're encrypted at rest
-        and gated by your login session.
+        Dash stores its HQ access tokens in your system's secure credential store (macOS Keychain,
+        Windows Credential Manager, or libsecret on Linux), so they're encrypted at rest and gated
+        by your login session.
       </p>
       <p className="mt-3 text-sm text-muted">
         In a moment, your system will ask you to allow Dash to access these credentials. You only
@@ -149,7 +149,7 @@ function SettingUpStep({
           <DashSquadMark size={48} />
         </div>
         <h1 className="font-[family-name:var(--font-display)] text-3xl font-extrabold tracking-tight">
-          Gateway Error
+          HQ Error
         </h1>
         <p className="mt-3 text-sm text-red">{error}</p>
         <button
@@ -172,7 +172,7 @@ function SettingUpStep({
       <h1 className="font-[family-name:var(--font-display)] text-3xl font-extrabold tracking-tight">
         Welcome to DashSquad
       </h1>
-      <p className="mt-3 text-muted">Setting up your gateway&hellip;</p>
+      <p className="mt-3 text-muted">Setting up your HQ&hellip;</p>
       <div className="mt-8 flex justify-center">
         <Loader size={24} className="animate-spin text-muted" />
       </div>
@@ -233,7 +233,7 @@ function ProviderStep({
             <p className="text-sm text-muted">
               {error
                 ? error.message
-                : 'The gateway reported no provider catalogs. Make sure the built-in dash-core-providers plugin is enabled.'}
+                : 'The HQ reported no provider catalogs. Make sure the built-in dash-core-providers plugin is enabled.'}
             </p>
             <button
               type="button"

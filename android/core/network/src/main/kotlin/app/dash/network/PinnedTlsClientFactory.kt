@@ -61,7 +61,7 @@ private class ExactLeafTrustManager(
         leaf.checkValidity()
         val actualSha256 = MessageDigest.getInstance("SHA-256").digest(leaf.encoded)
         if (!MessageDigest.isEqual(expectedSha256, actualSha256)) {
-            throw CertificateException("Server certificate does not match the paired gateway")
+            throw CertificateException("Server certificate does not match the paired HQ")
         }
     }
 

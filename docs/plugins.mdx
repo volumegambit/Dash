@@ -9,7 +9,7 @@ Dash plugins follow the **Claude Code plugin layout**, so a plugin published for
 
 ## Quick start
 
-Here's the whole journey, from an empty list to a working plugin — all from **Mission Control → Settings → Plugins**:
+Here's the whole journey, from an empty list to a working plugin — all from **Desktop → Settings → Plugins**:
 
 <Steps>
 <Step title="Install a plugin">
@@ -29,11 +29,11 @@ Skills become loadable by any agent; commands and subagents are available as `/<
 </Step>
 </Steps>
 
-The rest of this page is the reference behind each of those steps. Prefer files over clicks? You can also drop a plugin directory under your gateway's plugins folder (`~/.dash/gateway/plugins/`) and edit `config.json` by hand — see [Where plugins live](#where-plugins-live), [Configuration → Plugins](/configuration#plugins), and the [complete example](#a-complete-example-plugin) below.
+The rest of this page is the reference behind each of those steps. Prefer files over clicks? You can also drop a plugin directory under your HQ's plugins folder (`~/.dash/gateway/plugins/`) and edit `config.json` by hand — see [Where plugins live](#where-plugins-live), [Configuration → Plugins](/configuration#plugins), and the [complete example](#a-complete-example-plugin) below.
 
 ## Where plugins live
 
-Installed plugins live in your gateway's managed plugins folder:
+Installed plugins live in your HQ's managed plugins folder:
 
 ```
 ~/.dash/gateway/plugins/
@@ -41,9 +41,9 @@ Installed plugins live in your gateway's managed plugins folder:
 └── <plugin-name>/       # one directory per plugin (its skills, commands, etc.)
 ```
 
-This is the default. The gateway stores everything under `~/.dash` (overridable with `$DASH_HOME`), and its own data lives in `~/.dash/gateway` — so plugins land in `~/.dash/gateway/plugins/`. Running the gateway standalone with `--data-dir <path>` puts them in `<path>/plugins/` instead. See the [data directory layout](/configuration#data-directory) for the full picture.
+This is the default. The HQ stores everything under `~/.dash` (overridable with `$DASH_HOME`), and its own data lives in `~/.dash/gateway` — so plugins land in `~/.dash/gateway/plugins/`. Running the HQ standalone with `--data-dir <path>` puts them in `<path>/plugins/` instead. See the [data directory layout](/configuration#data-directory) for the full picture.
 
-You rarely need to touch this folder — Mission Control's **Plugins** screen and the management API manage it for you. But it's there if you want to drop in a plugin by hand or inspect `config.json` directly.
+You rarely need to touch this folder — Desktop's **Plugins** screen and the management API manage it for you. But it's there if you want to drop in a plugin by hand or inspect `config.json` directly.
 
 ## What's in a plugin
 
@@ -57,7 +57,7 @@ A plugin is a directory with an optional `.claude-plugin/plugin.json` manifest p
 | `.mcp.json` | MCP servers (extra [tools](/tools)) | Enabled **and** trusted |
 | `hooks/hooks.json` | Shell commands that run at key points in a run | Enabled **and** trusted |
 | `providers/` | LLM provider catalogs that add selectable models | Enabled **and** trusted |
-| `bin/` | Executables added to the gateway's `PATH` | Enabled **and** trusted |
+| `bin/` | Executables added to the HQ's `PATH` | Enabled **and** trusted |
 
 The first three components are **markdown** — they only contribute instructions, so an enabled plugin loads them right away. The last four **run code or carry credentials**, so they stay inert until you explicitly *trust* the plugin (see [Security model](#security-model)).
 
@@ -69,7 +69,7 @@ Already comfortable with skills? A plugin is the next step up: instead of instal
 
 ## Installing a plugin
 
-You install a plugin **by source** from **Settings → Plugins** in Mission Control — fill in the **Install Plugin** form and click **Install** — or, if you're scripting, by calling the management API's `POST /plugins/install` endpoint directly. Either way the installer fetches the plugin, scans it, and drops it into your gateway's managed plugins directory at `~/.dash/gateway/plugins/<name>` — no restart needed; the gateway hot-reloads.
+You install a plugin **by source** from **Settings → Plugins** in Desktop — fill in the **Install Plugin** form and click **Install** — or, if you're scripting, by calling the management API's `POST /plugins/install` endpoint directly. Either way the installer fetches the plugin, scans it, and drops it into your HQ's managed plugins directory at `~/.dash/gateway/plugins/<name>` — no restart needed; the HQ hot-reloads.
 
 A plugin install takes a single `source` string in one of three forms:
 
@@ -77,7 +77,7 @@ A plugin install takes a single `source` string in one of three forms:
 |-------------|---------|---------------|
 | **Git** | `git:owner/repo[/subpath][@ref]` | A GitHub repo (optionally a subdirectory and a pinned ref) |
 | **URL** | `https://example.com/my-plugin.tar.gz` | A direct link to a `.tar.gz` archive (`http://` is also accepted) |
-| **Local** | `/path/to/plugin` or `/path/to/plugin.tar.gz` | A folder or archive already on the gateway host |
+| **Local** | `/path/to/plugin` or `/path/to/plugin.tar.gz` | A folder or archive already on the HQ host |
 
 For example, installing from git:
 
@@ -102,9 +102,9 @@ git:acme/dash-plugins/research@9f2c1ab…       # a full commit SHA (recommended
 
 A **full commit SHA** is the safest choice — it pins to exact bytes that can't change underneath you. A branch like `@main` always installs the latest, which is convenient but means a later reinstall can bring in different code.
 
-## Managing plugins in Mission Control
+## Managing plugins in Desktop
 
-Mission Control's **Settings → Plugins** screen is where you install, inspect, enable, trust, and remove plugins without touching a config file. Changes take effect immediately; the gateway hot-reloads as you go.
+Desktop's **Settings → Plugins** screen is where you install, inspect, enable, trust, and remove plugins without touching a config file. Changes take effect immediately; the HQ hot-reloads as you go.
 
 **Install Plugin form.** At the top of the screen, a **Source** field takes any install source (git, URL, or local path — see [Installing a plugin](#installing-a-plugin)) and an optional **Name** field overrides the install name (the manifest's `name` still wins when one is present). Click **Install** to fetch, scan, and load the plugin. If the scan flags the plugin as *suspicious* or *dangerous*, the screen shows the verdict so you can decide whether to keep it.
 
@@ -134,23 +134,23 @@ The **Trust Plugin** button is disabled until the plugin is **enabled** — you 
 
 ## Security model
 
-Installing a plugin brings someone else's instructions — and potentially their code — onto your gateway. Dash treats every install as **untrusted by default** and layers several defenses:
+Installing a plugin brings someone else's instructions — and potentially their code — onto your HQ. Dash treats every install as **untrusted by default** and layers several defenses:
 
-1. **Untrusted on arrival.** A freshly installed plugin is `enabled` but **not** `trusted`. Its markdown components (skills, commands, subagents) load, but its **code components stay inert** — MCP servers, hooks, `bin/` executables, and provider catalogs do nothing until you trust the plugin. Nothing a plugin ships can execute on your gateway from the install alone.
+1. **Untrusted on arrival.** A freshly installed plugin is `enabled` but **not** `trusted`. Its markdown components (skills, commands, subagents) load, but its **code components stay inert** — MCP servers, hooks, `bin/` executables, and provider catalogs do nothing until you trust the plugin. Nothing a plugin ships can execute on your HQ from the install alone.
 
-2. **Trust is a separate, deliberate action.** Marking a plugin `trusted` is a distinct step you take *after* you've reviewed it — never something an install, a marketplace entry, or the plugin itself can do on your behalf. Only trust plugins whose code you've read and are willing to run inside the gateway process.
+2. **Trust is a separate, deliberate action.** Marking a plugin `trusted` is a distinct step you take *after* you've reviewed it — never something an install, a marketplace entry, or the plugin itself can do on your behalf. Only trust plugins whose code you've read and are willing to run inside the HQ process.
 
 3. **A heuristic scan, fail-closed.** Before a plugin is installed, its manifest and code payloads (`bin/`, `hooks/hooks.json`, `.mcp.json`, `providers/`) are scanned for **dangerous** patterns — downloads piped into a shell, destructive deletes, prompt-injection, secret exfiltration, and embedded private keys. A plugin the scan flags as **dangerous is refused** (the install fails; nothing lands on disk), and the scan is fail-closed: if it can't complete, the install is rejected rather than waved through. Softer **suspicious** signals — reading environment variables, base64 decoding, or prototype-pollution keys in a config file — are noted but do **not** block the install; treat them as a prompt to review the plugin before you trust it.
 
 4. **Path-traversal (zip-slip) protection.** Archives are extracted with hard guards: any entry whose path would escape the destination — via `../`, an absolute path, or a symlink pointing outside — is rejected and the whole install fails. A malicious archive can't write files outside its own plugin directory.
 
 <Warning>
-Trusting a plugin lets its hooks, MCP servers, `bin/` executables, and provider catalogs run inside the gateway with its privileges. Review a plugin before you trust it — especially anything installed from a source you don't control.
+Trusting a plugin lets its hooks, MCP servers, `bin/` executables, and provider catalogs run inside the HQ with its privileges. Review a plugin before you trust it — especially anything installed from a source you don't control.
 </Warning>
 
 ## Provider credentials
 
-Some plugins ship **LLM provider catalogs** (`providers/*.json`) that add extra AI providers — your company's internal model gateway, a regional endpoint, or any OpenAI-compatible service. When you've **trusted** a plugin that ships one, its providers appear automatically on the **Settings → AI Providers** screen in Mission Control ([AI Providers](/ai-providers)), listed right alongside the built-in ones (Claude, OpenAI, Google, Kimi, OpenRouter).
+Some plugins ship **LLM provider catalogs** (`providers/*.json`) that add extra AI providers — your company's internal model HQ, a regional endpoint, or any OpenAI-compatible service. When you've **trusted** a plugin that ships one, its providers appear automatically on the **Settings → AI Providers** screen in Desktop ([AI Providers](/ai-providers)), listed right alongside the built-in ones (Claude, OpenAI, Google, Kimi, OpenRouter).
 
 Adding a key works exactly like a built-in provider: open **AI Providers**, pick the plugin's provider, and paste your key. Each provider needs its own API key.
 
@@ -180,7 +180,7 @@ Once a plugin is loaded (and trusted, where needed), its components show up in d
 | **MCP servers** | Register automatically at startup; their tools become available to the agent — no explicit invocation. | Yes |
 | **Hooks** | Run transparently at events during a run (session start, before/after tools, and so on). | Yes |
 | **LLM providers** | Appear in the agent's model picker once trusted and a key is added. | Yes |
-| **Executables (`bin/`)** | Prepended to the gateway's `PATH`, so they resolve when a command, hook, or the agent's shell tools run them by name. | Yes |
+| **Executables (`bin/`)** | Prepended to the HQ's `PATH`, so they resolve when a command, hook, or the agent's shell tools run them by name. | Yes |
 
 ### Skills
 
@@ -198,9 +198,9 @@ A plugin's `commands/<name>.md` becomes a slash command **`/<plugin>:<command>`*
 
 These are **trusted** code components, and none of them is invoked by a slash command — they wire in behind the scenes:
 
-- **MCP servers** (`.mcp.json`) register with the gateway at startup. Their tools become part of the agent's toolset; registration is fail-isolated, so a server that won't start is logged and skipped without taking down the gateway.
+- **MCP servers** (`.mcp.json`) register with the HQ at startup. Their tools become part of the agent's toolset; registration is fail-isolated, so a server that won't start is logged and skipped without taking down the HQ.
 - **Hooks** (`hooks/hooks.json`) run automatically at key points in a run — session start, before and after tools, and run completion. You don't call them; they fire on events. For the full event list and behavior see [Hooks in the configuration reference](/configuration#hooks).
-- **Executables** (`bin/`) are prepended to the gateway's `PATH`, so a plugin's tools resolve ahead of system binaries when a command, hook, or the agent's shell tools invoke them by name.
+- **Executables** (`bin/`) are prepended to the HQ's `PATH`, so a plugin's tools resolve ahead of system binaries when a command, hook, or the agent's shell tools invoke them by name.
 
 ### LLM providers
 
@@ -212,7 +212,7 @@ By default, **every agent sees every loaded plugin**. You can scope an individua
 
 <Steps>
 <Step title="Open the agent's config">
-In Mission Control, go to **Squad**, open the squad member, and switch to its **Config** tab.
+In Desktop, go to **Squad**, open the squad member, and switch to its **Config** tab.
 </Step>
 <Step title="Open the Plugins card">
 Expand the **Plugins** card. When no plugins are selected it reads **"All plugins (default)"** — the agent sees every loaded plugin.
@@ -223,14 +223,14 @@ Use **Add plugin...** to pick from the **loaded** plugins. Each one you add appe
 </Steps>
 
 <Note>
-Per-agent selection controls **visibility only — it does not trust a plugin**. Trust is gateway-wide: selecting a plugin for an agent never makes its code run if the plugin isn't trusted, and a trusted plugin stays trusted regardless of which agents are scoped to it. Only **loaded** plugins are offered in the picker — a disabled or errored plugin contributes nothing to route.
+Per-agent selection controls **visibility only — it does not trust a plugin**. Trust is HQ-wide: selecting a plugin for an agent never makes its code run if the plugin isn't trusted, and a trusted plugin stays trusted regardless of which agents are scoped to it. Only **loaded** plugins are offered in the picker — a disabled or errored plugin contributes nothing to route.
 </Note>
 
 ## Choosing AI providers per agent
 
 Alongside the Plugins card, each agent's **Config** tab also has a **Providers** card. By default it reads **"All providers (default)"** — the agent can use models from every available AI provider. Add one or more providers to restrict the agent to just those: its model dropdown immediately narrows to the allowed providers, and if the agent's current model belongs to a provider you removed, it stays visible marked **"(not allowed)"** so you can pick a replacement. An agent that tries to run on a disallowed provider gets a clear error instead of a response. Clear all the chips to return to the all-providers default.
 
-This is useful when an agent must only ever talk to a specific vendor — for example, keeping a customer-facing agent on Anthropic models only, regardless of which other providers are configured on the gateway.
+This is useful when an agent must only ever talk to a specific vendor — for example, keeping a customer-facing agent on Anthropic models only, regardless of which other providers are configured on the HQ.
 
 ## Marketplaces
 
@@ -364,7 +364,7 @@ Read the ticket below and assign a priority (P1–P4) with a one-line reason.
 }
 ```
 
-**Install it.** From Mission Control's **Settings → Plugins** screen, put the folder's path in the **Source** field (for example `/Users/you/plugins/my-plugin`) and click **Install**. The plugin lands **enabled but untrusted** — the `summarize` skill and `/my-plugin:triage` command work right away. To turn on the provider and hook, click **Trust** and confirm. Then add a key for the provider on the **Settings → AI Providers** screen, and its `myprov/my-fast` model becomes selectable for any agent.
+**Install it.** From Desktop's **Settings → Plugins** screen, put the folder's path in the **Source** field (for example `/Users/you/plugins/my-plugin`) and click **Install**. The plugin lands **enabled but untrusted** — the `summarize` skill and `/my-plugin:triage` command work right away. To turn on the provider and hook, click **Trust** and confirm. Then add a key for the provider on the **Settings → AI Providers** screen, and its `myprov/my-fast` model becomes selectable for any agent.
 
 ## What the errors mean
 

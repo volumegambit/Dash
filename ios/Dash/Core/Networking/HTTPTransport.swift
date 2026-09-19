@@ -192,7 +192,7 @@ actor HTTPTransport {
       throw transportError(for: error, request: descriptor)
     }
     guard let httpResponse = response as? HTTPURLResponse else {
-      throw GatewayError.transport("Gateway returned a non-HTTP response")
+      throw GatewayError.transport("HQ returned a non-HTTP response")
     }
     guard (200..<300).contains(httpResponse.statusCode) else {
       // Body BEFORE status, and only on a speech-scoped request: the codes

@@ -2563,7 +2563,7 @@ export function Chat(): JSX.Element {
         ).filter((ref): ref is ConversationRef => ref !== null);
         if (found.length === 1) await selectConversation(found[0]);
         else if (found.length === 2) {
-          useChatStore.setState({ conversationError: 'Choose Gateway or On this Mac' });
+          useChatStore.setState({ conversationError: 'Choose HQ or On this Mac' });
         } else {
           useChatStore.setState({ conversationError: 'Conversation not found' });
         }
@@ -3125,7 +3125,7 @@ export function Chat(): JSX.Element {
           )}
           {!connectionIssue && !gatewayOnline && selectedConversation?.origin === 'gateway' && (
             <div className="shrink-0 border-b border-border bg-yellow-900/20 px-6 py-2 text-xs text-yellow-200">
-              Gateway offline — cached conversations are read-only.
+              HQ offline — cached conversations are read-only.
             </div>
           )}
           {remoteActive && (

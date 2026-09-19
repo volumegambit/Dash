@@ -18,7 +18,7 @@ When you send a message, the squad member reads it, reasons about what to do, us
 
 ## Squad member configuration
 
-You configure each squad member in Mission Control's **Deploy** wizard (and edit it later from the squad member's **Configuration** tab). Behind the scenes, a squad member's saved configuration looks like this:
+You configure each squad member in Desktop's **Deploy** wizard (and edit it later from the squad member's **Configuration** tab). Behind the scenes, a squad member's saved configuration looks like this:
 
 ```json
 {
@@ -40,7 +40,7 @@ You configure each squad member in Mission Control's **Deploy** wizard (and edit
 | `workspace` | `string` | no | Directory where the agent operates (default: `~/.dash/workspaces/<agent-id>`) |
 | `fallbackModels` | `string[]` | no | Backup models to try if the primary model fails |
 
-Mission Control saves your squad members to `~/.dash/gateway/agents.json` and the gateway restores them on restart.
+Desktop saves your squad members to `~/.dash/gateway/agents.json` and the HQ restores them on restart.
 
 ## Available models
 
@@ -130,7 +130,7 @@ Squad members are deployed as background processes. Each squad member goes throu
 | `stopped` | The squad member has been stopped (manually or by the system) |
 | `error` | Something went wrong during startup or runtime |
 
-You can **start**, **stop**, **restart**, and **remove** squad members at any time from Mission Control's **Squad** page — click a squad member to manage it. For automation, the same operations are available on the [Management API](/api-reference#agents).
+You can **start**, **stop**, **restart**, and **remove** squad members at any time from Desktop's **Squad** page — click a squad member to manage it. For automation, the same operations are available on the [Management API](/api-reference#agents).
 
 ## Sessions
 
@@ -144,7 +144,7 @@ When you send a new message, the squad member loads the session history first. T
 
 ## Multiple squad members
 
-You can run as many squad members as you need. Each one is independent — different model, different instructions, different tools. Deploy each from Mission Control; their configurations look like this:
+You can run as many squad members as you need. Each one is independent — different model, different instructions, different tools. Deploy each from Desktop; their configurations look like this:
 
 ```json
 [
@@ -180,10 +180,10 @@ Each squad member gets its own workspace, session history, and set of tools. Rou
   <Card title="AI Providers" icon="microchip" href="/ai-providers">
     Set up API keys for Anthropic, OpenAI, and Google.
   </Card>
-  <Card title="Mission Control" icon="grid-2" href="/mission-control">
+  <Card title="Desktop" icon="grid-2" href="/mission-control">
     Deploy and manage squad members from the desktop app or CLI.
   </Card>
   <Card title="Configuration" icon="gear" href="/configuration">
-    Squad member settings, the data directory layout, and standalone gateway flags.
+    Squad member settings, the data directory layout, and standalone HQ flags.
   </Card>
 </CardGroup>

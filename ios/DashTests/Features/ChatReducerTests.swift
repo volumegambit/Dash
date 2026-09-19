@@ -1001,7 +1001,7 @@ struct ChatReducerTests {
     // D8: it anchors no card...
     #expect(state.messages.last?.assistant?.subagentCards.isEmpty == true)
     // ...and it is still CHROME, so it never reaches the `.unknown` branch,
-    // which would draw "Gateway event: worker_spawned" on every persisted
+    // which would draw "HQ event: worker_spawned" on every persisted
     // pre-D8 conversation.
     #expect(state.messages.last?.assistant?.statusRows.isEmpty == true)
   }
@@ -1291,7 +1291,7 @@ struct ChatReducerTests {
     let row = state.messages.last?.assistant?.statusRows.last
     #expect(row?.kind == .unknown)
     #expect(row?.unknownType == "future_event")
-    #expect(row?.title == "Gateway event: future_event")
+    #expect(row?.title == "HQ event: future_event")
     #expect(row?.detail == nil)
   }
 

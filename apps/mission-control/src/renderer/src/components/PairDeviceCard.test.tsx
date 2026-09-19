@@ -59,7 +59,7 @@ describe('PairDeviceCard', () => {
       expect(await screen.findByText(/192\.168\.1\.50/)).toBeInTheDocument();
       expect(screen.getByTestId('pairing-mode')).toHaveTextContent('local network');
       expect(screen.queryByText(/mobile-token-secret/)).not.toBeInTheDocument();
-      expect(screen.getByText(/The mobile token and pinned gateway identity/)).toBeInTheDocument();
+      expect(screen.getByText(/The mobile token and pinned HQ identity/)).toBeInTheDocument();
     });
   });
 

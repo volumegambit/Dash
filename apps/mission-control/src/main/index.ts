@@ -11,9 +11,9 @@ let mainWindow: BrowserWindow | undefined;
 function getAppTitle(): string {
   if (!app.isPackaged) {
     const suffix = process.env.MC_DATA_DIR ? '(test)' : '(dev)';
-    return `Mission Control ${suffix}`;
+    return `Desktop ${suffix}`;
   }
-  return 'Mission Control';
+  return 'Desktop';
 }
 
 function createWindow(): void {

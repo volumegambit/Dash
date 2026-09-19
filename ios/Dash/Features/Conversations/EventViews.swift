@@ -944,7 +944,7 @@ struct UnknownEventView: View {
   let type: String
 
   var body: some View {
-    Label("Gateway event: \(type)", systemImage: "questionmark.diamond")
+    Label("HQ event: \(type)", systemImage: "questionmark.diamond")
       .font(.callout)
       .foregroundStyle(.secondary)
       .accessibilityElement(children: .combine)

@@ -11,17 +11,17 @@ Messages flow through a simple chain:
 
 ```mermaid
 graph LR
-    P["Messaging Platform<br/><small>Telegram, WhatsApp</small>"] -->|Bot API| GW["Gateway"]
+    P["Messaging Platform<br/><small>Telegram, WhatsApp</small>"] -->|Bot API| GW["HQ"]
     GW --- A["Squad"]
     A -->|response| GW
     GW -->|Bot API| P
 ```
 
 1. A user sends a message on Telegram (or WhatsApp)
-2. The **Gateway** receives it through the platform's bot API
+2. The **HQ** receives it through the platform's bot API
 3. Routing rules determine which **agent** should handle it
 4. The agent processes the message — thinking, using tools, and building a response
-5. The response flows back through the Gateway to the messaging platform
+5. The response flows back through the HQ to the messaging platform
 
 The user sees a normal chat conversation. Behind the scenes, your agent is doing all the work.
 
@@ -36,7 +36,7 @@ The user sees a normal chat conversation. Behind the scenes, your agent is doing
   </Card>
 </CardGroup>
 
-More platforms are planned. The Gateway uses an adapter pattern, so adding a new platform does not change how routing or agent interaction works.
+More platforms are planned. The HQ uses an adapter pattern, so adding a new platform does not change how routing or agent interaction works.
 
 ## Setting up Telegram
 
@@ -44,21 +44,21 @@ More platforms are planned. The Gateway uses an adapter pattern, so adding a new
   <Step title="Create a bot with BotFather">
     Open Telegram and search for **@BotFather**. Send `/newbot`, follow the prompts, and copy the bot token it gives you. The token looks like `123456789:ABCdefGhIjKlmNoPqRsTuVwXyZ`.
   </Step>
-  <Step title="Add the bot in Mission Control">
-    In Mission Control, open **Settings → Messaging Apps** and click to add a new Telegram connection. Give it a name (e.g. "Support Bot") and paste your bot token. The token is stored in the encrypted secret store.
+  <Step title="Add the bot in Desktop">
+    In Desktop, open **Settings → Messaging Apps** and click to add a new Telegram connection. Give it a name (e.g. "Support Bot") and paste your bot token. The token is stored in the encrypted secret store.
   </Step>
   <Step title="Configure routing rules">
-    Set up rules that tell the Gateway which agent should receive messages from this bot. You can route all messages to a single agent, or create more specific rules based on sender or group.
+    Set up rules that tell the HQ which agent should receive messages from this bot. You can route all messages to a single agent, or create more specific rules based on sender or group.
   </Step>
   <Step title="Enable the connection">
-    Toggle the connection on. The Gateway connects to Telegram's bot API and starts listening for messages. Your agent is now reachable on Telegram.
+    Toggle the connection on. The HQ connects to Telegram's bot API and starts listening for messages. Your agent is now reachable on Telegram.
   </Step>
 </Steps>
 
-<Accordion title="Without Mission Control">
-  Channels aren't configured with a file — they're created at runtime through the gateway's [Management API](/api-reference#channels). Mission Control is just a friendly front-end for that API.
+<Accordion title="Without Desktop">
+  Channels aren't configured with a file — they're created at runtime through the HQ's [Management API](/api-reference#channels). Desktop is just a friendly front-end for that API.
 
-  To set one up against a standalone gateway, `POST /channels` with the adapter, token, routing rules, and access lists, then enable it. See the [Management API](/api-reference#channels) reference.
+  To set one up against a standalone HQ, `POST /channels` with the adapter, token, routing rules, and access lists, then enable it. See the [Management API](/api-reference#channels) reference.
 </Accordion>
 
 ## Setting up WhatsApp
@@ -67,7 +67,7 @@ More platforms are planned. The Gateway uses an adapter pattern, so adding a new
   <Step title="Get your WhatsApp credentials">
     Set up a WhatsApp Business API account and obtain your access credentials.
   </Step>
-  <Step title="Add the connection in Mission Control">
+  <Step title="Add the connection in Desktop">
     Open **Settings → Messaging Apps**, add a new WhatsApp connection, and enter your credentials. They are encrypted and stored securely.
   </Step>
   <Step title="Configure routing rules">
@@ -114,9 +114,9 @@ Each messaging app also has access control lists:
   The global deny list is checked first. If a sender is on the deny list, their messages are ignored regardless of routing rules.
 </Warning>
 
-## The Gateway
+## The HQ
 
-The Gateway is the process that hosts agents and handles all messaging platform connections. It takes care of:
+The HQ is the process that hosts agents and handles all messaging platform connections. It takes care of:
 
 - Connecting to each platform's bot API
 - Receiving incoming messages
@@ -124,26 +124,26 @@ The Gateway is the process that hosts agents and handles all messaging platform 
 - Forwarding messages to the correct agent via the Chat API
 - Sending agent responses back to the platform
 
-The Gateway hosts agents in-process and serves the channel server on port 9200. Mission Control's built-in chat connects to the same channel server over WebSocket.
+The HQ hosts agents in-process and serves the channel server on port 9200. Desktop's built-in chat connects to the same channel server over WebSocket.
 
 <AccordionGroup>
   <Accordion title="How channels are stored">
-    Each channel records its adapter type, bot token, routing rules, and access lists, and which agent to route to. The gateway persists channels to `~/.dash/gateway/channels.json` and connects each adapter on startup. Edits made through Mission Control (or `PUT /channels/:name`) take effect on the next message — no restart needed. Because the gateway hosts agents in-process, there are no separate agent server URLs to wire up.
+    Each channel records its adapter type, bot token, routing rules, and access lists, and which agent to route to. The HQ persists channels to `~/.dash/gateway/channels.json` and connects each adapter on startup. Edits made through Desktop (or `PUT /channels/:name`) take effect on the next message — no restart needed. Because the HQ hosts agents in-process, there are no separate agent server URLs to wire up.
   </Accordion>
-  <Accordion title="Running the Gateway manually">
+  <Accordion title="Running the HQ manually">
     ```bash
     npm run gateway
     ```
 
-    The gateway starts on its data directory (`~/.dash/gateway`), reconnects any saved channels, and begins routing. Create or edit channels through its [Management API](/api-reference#channels), and supply bot tokens the same way (`POST /credentials`). It runs until stopped. See [Configuration](/configuration#running-the-gateway-standalone) for the available flags.
+    The HQ starts on its data directory (`~/.dash/gateway`), reconnects any saved channels, and begins routing. Create or edit channels through its [Management API](/api-reference#channels), and supply bot tokens the same way (`POST /credentials`). It runs until stopped. See [Configuration](/configuration#running-the-hq-standalone) for the available flags.
   </Accordion>
-  <Accordion title="Mission Control integration">
-    When you manage messaging apps through Mission Control, the gateway is handled automatically. Mission Control:
+  <Accordion title="Desktop integration">
+    When you manage messaging apps through Desktop, the HQ is handled automatically. Desktop:
 
-    1. Saves your channel settings to the gateway via the Management API
+    1. Saves your channel settings to the HQ via the Management API
     2. Stores bot tokens in the encrypted credential store
-    3. Keeps the gateway process running
-    4. Routes Mission Control's built-in chat through the gateway
+    3. Keeps the HQ process running
+    4. Routes Desktop's built-in chat through the HQ
 
     There's nothing to configure by hand.
   </Accordion>
@@ -156,12 +156,12 @@ The Gateway hosts agents in-process and serves the channel server on port 9200. 
     Learn how agents are configured and how they process messages.
   </Card>
   <Card title="Chat" icon="messages" href="/chat-with-your-agent">
-    Talk to agents via Mission Control, Telegram, or WebSocket API.
+    Talk to agents via Desktop, Telegram, or WebSocket API.
   </Card>
-  <Card title="Mission Control" icon="grid-2" href="/mission-control">
+  <Card title="Desktop" icon="grid-2" href="/mission-control">
     Deploy agents and manage messaging apps from the desktop app.
   </Card>
   <Card title="Architecture" icon="sitemap" href="/architecture">
-    How the Gateway and Mission Control fit together.
+    How the HQ and Desktop fit together.
   </Card>
 </CardGroup>

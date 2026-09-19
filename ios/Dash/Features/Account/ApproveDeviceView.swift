@@ -12,7 +12,7 @@ enum ApproveDeviceCopy {
   /// signed-in account — Task 3 deliberately makes those indistinguishable,
   /// so this copy stays generic rather than guessing which one happened.
   static let forbidden =
-    "Dash couldn't confirm this device is allowed to approve requests. Try again, or reconnect a gateway from Settings."
+    "Dash couldn't confirm this device is allowed to approve requests. Try again, or reconnect an HQ from Settings."
   static let genericFailure = "Dash couldn't process this approval. Try again."
   static let approved = "Device approved."
   static let denied = "Device request denied."

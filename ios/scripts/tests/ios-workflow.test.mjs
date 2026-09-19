@@ -433,15 +433,15 @@ assert.match(
   'the generated app target must copy PrivacyInfo.xcprivacy into the bundle',
 );
 for (const [source, hint] of [
-  [agentDetailSource, 'Connect to the gateway to start a conversation'],
-  [agentDetailSource, 'Connect to the gateway to edit'],
-  [agentDetailSource, 'Connect to the gateway to manage this agent'],
+  [agentDetailSource, 'Connect to the HQ to start a conversation'],
+  [agentDetailSource, 'Connect to the HQ to edit'],
+  [agentDetailSource, 'Connect to the HQ to manage this agent'],
 ]) {
   assert.match(source, new RegExp(`accessibilityHint\\([\\s\\S]*${hint}`));
 }
 for (const [policyProperty, hint] of [
-  ['renameDisabledHint', 'Connect to the gateway to rename'],
-  ['deleteDisabledHint', 'Connect to the gateway to delete'],
+  ['renameDisabledHint', 'Connect to the HQ to rename'],
+  ['deleteDisabledHint', 'Connect to the HQ to delete'],
 ]) {
   assert.match(
     conversationListSource,
@@ -461,7 +461,7 @@ assert.match(
 );
 assert.match(
   chatFeatureSource,
-  /if connection != \.online \{ return "Connect to the gateway to send" \}/,
+  /if connection != \.online \{ return "Connect to the HQ to send" \}/,
   'the dynamic composer hint must retain actionable offline guidance',
 );
 assert.match(

@@ -45,7 +45,7 @@ describe('GatewayPicker', () => {
     expect(screen.getByText('acme')).toBeTruthy();
   });
 
-  it('renders the Mission Control pointer copy, exactly, when there are no gateways', () => {
+  it('renders the Desktop pointer copy, exactly, when there are no gateways', () => {
     render(
       <GatewayPicker
         gateways={[]}
@@ -60,7 +60,7 @@ describe('GatewayPicker', () => {
     );
     expect(
       screen.getByText(
-        'No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine.',
+        'No HQs linked to your account yet. Open Desktop → Settings → Devices → Remote access to enroll this machine.',
       ),
     ).toBeTruthy();
   });
@@ -132,7 +132,7 @@ describe('GatewayPicker', () => {
     expect(set).not.toHaveBeenCalled();
     expect(onReady).not.toHaveBeenCalled();
     // The gateway list itself is gone while PendingApproval is up.
-    expect(screen.queryByText('Choose a gateway to connect to.')).toBeNull();
+    expect(screen.queryByText('Choose an HQ to connect to.')).toBeNull();
   });
 
   it('claims the credential once a signer-gated pairing activates, stores it, and calls onReady exactly like the immediate path', async () => {
@@ -217,7 +217,7 @@ describe('GatewayPicker', () => {
   it('shows the re-enroll copy, exactly, when pairing 409s because the gateway has no chat token registered', async () => {
     stubUserAgent(SAFARI_UA);
     const createWebPairing = vi.fn(async () => {
-      throw new ControlPlaneApiError(409, 'no web chat token registered for this gateway');
+      throw new ControlPlaneApiError(409, 'no web chat token registered for this HQ');
     });
     const set = vi.fn();
     const onReady = vi.fn();

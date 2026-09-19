@@ -302,8 +302,8 @@ struct PairingPipelineTests {
       (.unauthorized, "Re-pair this device", "credentials"),
       (.capabilityRequired, "Update Dash", "conversation sync"),
       (.updateRequired, "Update Dash", "compatible"),
-      (.gatewayOffline, "Gateway offline", "relay"),
-      (.transport("secret raw failure"), "Gateway offline", "reachable"),
+      (.gatewayOffline, "HQ offline", "relay"),
+      (.transport("secret raw failure"), "HQ offline", "reachable"),
       (.rateLimited(retryAfter: .seconds(30)), "Too many requests", "30 seconds"),
     ]
 
@@ -341,7 +341,7 @@ struct PairingPipelineTests {
     #expect(
       announcements.values
         == [
-          "Gateway offline. Make sure the gateway is running and reachable, then try again."
+          "HQ offline. Make sure the HQ is running and reachable, then try again."
         ]
     )
     #expect(announcements.values.first?.contains("secret raw failure") == false)

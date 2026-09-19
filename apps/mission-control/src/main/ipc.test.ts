@@ -62,7 +62,7 @@ describe('device pairing source selection', () => {
   it('rejects device pairing while Mission Control targets a remote gateway', () => {
     expect(() => assertLocalPairingSource({ mode: 'local' })).not.toThrow();
     expect(() => assertLocalPairingSource({ mode: 'remote' })).toThrow(
-      'Switch to the local gateway before pairing a device',
+      'Switch to the local HQ before pairing a device',
     );
   });
 
@@ -1318,13 +1318,13 @@ describe('resolveSetupStatus', () => {
     const result = await resolveSetupStatus({
       isConfigured: async () => true,
       ensureHealthyClient: async () => {
-        throw new Error('Gateway failed to start within 10s');
+        throw new Error('HQ failed to start within 10s');
       },
       markSetupCompleted: vi.fn(),
     });
     expect(result).toEqual({
       state: 'gateway-failed',
-      error: 'Gateway failed to start within 10s',
+      error: 'HQ failed to start within 10s',
     });
   });
 });

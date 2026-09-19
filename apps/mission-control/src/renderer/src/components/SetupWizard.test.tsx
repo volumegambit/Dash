@@ -140,13 +140,13 @@ describe('SetupWizard', () => {
 
     it('shows gateway error if setupEnsureGateway rejects', async () => {
       const user = userEvent.setup();
-      mockApi.setupEnsureGateway.mockRejectedValue(new Error('Gateway failed to start'));
+      mockApi.setupEnsureGateway.mockRejectedValue(new Error('HQ failed to start'));
       render(<SetupWizard needsSetup={true} onComplete={noop} />);
 
       await clickThroughConsent(user);
 
-      await screen.findByText('Gateway Error');
-      expect(screen.getByText('Gateway failed to start')).toBeInTheDocument();
+      await screen.findByText('HQ Error');
+      expect(screen.getByText('HQ failed to start')).toBeInTheDocument();
     });
   });
 

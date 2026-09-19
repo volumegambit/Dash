@@ -21,7 +21,7 @@ export function createGatewayLifecycle() {
   let completion: Promise<void> | undefined;
   return {
     add(name: string, order: number, close: () => unknown | Promise<unknown>): void {
-      if (stopping) throw new Error('Gateway is stopping; cannot register resources');
+      if (stopping) throw new Error('HQ is stopping; cannot register resources');
       steps.push({ name, order, close });
     },
     stop(): Promise<void> {

@@ -34,7 +34,7 @@ export function GatewayFailedScreen({ onRecovered }: { onRecovered: () => void }
         const next = await window.api.gatewayConnectionGet();
         setConnectionStatus(next);
         if (next.health !== 'healthy') {
-          throw new Error('Gateway is still unreachable');
+          throw new Error('HQ is still unreachable');
         }
       } else {
         await window.api.setupEnsureGateway();
@@ -75,11 +75,11 @@ export function GatewayFailedScreen({ onRecovered }: { onRecovered: () => void }
           <DashSquadMark size={48} />
         </div>
         <h1 className="font-[family-name:var(--font-display)] text-3xl font-extrabold tracking-tight">
-          {savedRemoteGateway ? 'Saved gateway is not reachable' : 'Gateway failed to start'}
+          {savedRemoteGateway ? 'Saved HQ is not reachable' : 'HQ failed to start'}
         </h1>
         <p className="mt-3 text-sm text-muted">
           {savedRemoteGateway
-            ? 'A saved gateway is not reachable. Choose another gateway connection to continue.'
+            ? 'A saved HQ is not reachable. Choose another HQ connection to continue.'
             : "Dash couldn't start its background service. Check the logs for details."}
         </p>
         {error && <p className="mt-2 text-sm text-red">{error}</p>}
@@ -107,7 +107,7 @@ export function GatewayFailedScreen({ onRecovered }: { onRecovered: () => void }
               className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-border px-6 py-3 text-sm font-medium text-muted transition-colors hover:text-foreground disabled:opacity-60"
             >
               <Pencil size={16} />
-              Edit gateway connection
+              Edit HQ connection
             </button>
             <button
               type="button"

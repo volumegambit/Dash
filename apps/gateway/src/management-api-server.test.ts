@@ -1933,7 +1933,7 @@ describe('createGatewayManagementApp', () => {
       expect(response.status).toBe(500);
       expect((await response.json()) as JsonBody).toEqual({
         code: 'gateway_offline',
-        error: 'Internal gateway error',
+        error: 'Internal HQ error',
         retryable: true,
       });
       if (action === 'enable') expect(execution.allowAgent).not.toHaveBeenCalled();
@@ -1990,7 +1990,7 @@ describe('createGatewayManagementApp', () => {
       expect(response.status).toBe(500);
       expect((await response.json()) as JsonBody).toEqual({
         code: 'gateway_offline',
-        error: 'Internal gateway error',
+        error: 'Internal HQ error',
         retryable: true,
       });
       expect(emit).not.toHaveBeenCalledWith({

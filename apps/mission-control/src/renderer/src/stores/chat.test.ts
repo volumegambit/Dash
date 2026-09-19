@@ -665,7 +665,7 @@ describe('canonical chat store', () => {
     const issue = {
       conversation: { id: '*', origin: 'gateway' as const },
       kind: 'repair_required' as const,
-      message: 'Gateway authorization failed. Reconnect this gateway to continue.',
+      message: 'HQ authorization failed. Reconnect this HQ to continue.',
       retryable: false,
     };
 

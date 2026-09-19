@@ -32,7 +32,7 @@ struct OfflineBanner<Content: View>: View {
       Presentation(
         title: "Offline — showing saved content", systemImage: "wifi.slash", color: .orange)
     case .gatewayOffline:
-      Presentation(title: "Gateway unavailable", systemImage: "server.rack", color: .orange)
+      Presentation(title: "HQ unavailable", systemImage: "server.rack", color: .orange)
     case .rateLimited:
       Presentation(title: "Temporarily rate limited", systemImage: "clock", color: .orange)
     case .repairRequired:

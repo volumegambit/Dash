@@ -834,7 +834,7 @@ final class AppModel {
     } catch {
       guard isCurrent(epoch) else { return }
       resetToConnect()
-      banner = .failed("Dash couldn't remove all local gateway data.")
+      banner = .failed("Dash couldn't remove all local HQ data.")
       throw error
     }
     resetToConnect()

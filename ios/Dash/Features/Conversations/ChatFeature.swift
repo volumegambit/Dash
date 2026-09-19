@@ -1267,9 +1267,9 @@ final class ChatFeature {
     if case .remoteActiveTurn? = state.composerBlock, conversationControlAvailable == false {
       return "This conversation is active on another device"
     }
-    if state.composerBlock == .repairRequired { return "Re-pair this gateway to continue" }
+    if state.composerBlock == .repairRequired { return "Re-pair this HQ to continue" }
     if state.composerBlock == .updateRequired { return "Update Dash to continue" }
-    if connection != .online { return "Connect to the gateway to send" }
+    if connection != .online { return "Connect to the HQ to send" }
     if isSending { return "Sending message" }
     if pendingSendReconciliation != nil { return "Confirming whether your message was sent" }
     if state.activeTurnID != nil, conversationControlAvailable == false {
@@ -4269,7 +4269,7 @@ final class ChatFeature {
           accepted: accepted
         )
       } catch {
-        state.errorBanner = "The gateway replied, but the saved message state couldn't be updated."
+        state.errorBanner = "The HQ replied, but the saved message state couldn't be updated."
       }
     }
     guard accepted else {

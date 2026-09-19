@@ -44,7 +44,7 @@ import type { EventLogPayload, EventLogStore } from './event-log-store.js';
 
 /** The report a child that was killed by a restart carries. */
 export const INTERRUPTED_CHILD_REPORT =
-  'The gateway restarted while this agent was running. Its transcript is intact and it can be ' +
+  'The HQ restarted while this agent was running. Its transcript is intact and it can be ' +
   'resumed with send_message.';
 
 type SubagentStartedEvent = Extract<AgentEvent, { type: 'subagent_started' }> & MobileAgentEvent;

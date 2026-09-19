@@ -41,7 +41,7 @@ export const RECONNECTING_COPY = 'Reconnecting…';
 export const RESEND_BLOCKED_COPY = 'Wait for the current response to finish.';
 
 function unreachableCopy(gatewayLabel: string): string {
-  return `Your gateway '${gatewayLabel}' is unreachable.`;
+  return `Your HQ '${gatewayLabel}' is unreachable.`;
 }
 
 function CopyIcon(): ReactNode {

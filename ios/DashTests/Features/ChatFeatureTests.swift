@@ -6209,7 +6209,7 @@ struct ChatFeatureTests {
     await feature.readAloud?.toggle(messageID: "m1", text: "hello")
 
     await expectEventually("the banner") { feature.state.errorBanner != nil }
-    #expect(feature.state.errorBanner == "Speech isn't set up on your gateway yet.")
+    #expect(feature.state.errorBanner == "Speech isn't set up on your HQ yet.")
 
     // Retiring the feature takes ITS banner with it — a dead sentence about a
     // capability the gateway no longer advertises is worse than none.
