@@ -5,12 +5,12 @@ const FEATURES = [
       'Set its instructions, choose a model, and connect the tools it needs for the job.',
   },
   {
-    title: 'Keep useful context',
+    title: 'Remember project details',
     description:
       'Let teammates remember preferences and project details. Review, edit, or remove those memories.',
   },
   {
-    title: 'Keep the work together',
+    title: 'Track tasks in projects',
     description: 'Organize tasks in projects, follow progress, and see what needs your input.',
   },
 ];
@@ -21,7 +21,7 @@ export function DeployAndRun() {
       <div className="mx-auto grid max-w-[1120px] items-center gap-12 lg:grid-cols-2 lg:gap-16">
         <div>
           <p className="font-mono text-[11px] font-semibold uppercase tracking-[3px] text-[#93b4fb]">
-            More than a single chat
+            How your squad works
           </p>
           <h2
             id="delegation-title"
@@ -32,8 +32,8 @@ export function DeployAndRun() {
             Stay in the conversation.
           </h2>
           <p className="mt-5 text-[17px] leading-relaxed text-[#b3b3b3]">
-            Give an agent a bigger brief and it can bring in helpers. Follow their activity, inspect
-            their work, and guide the next step from the conversation.
+            For a bigger task, an agent can delegate parts of the work to helpers. Follow their
+            activity in chat, review their work, and guide the next step.
           </p>
           <dl className="mt-8 space-y-6">
             {FEATURES.map(({ title, description }) => (

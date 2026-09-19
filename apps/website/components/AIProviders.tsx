@@ -46,8 +46,7 @@ export function AIProviders() {
               More models, one key.
             </h3>
             <p className="mt-4 max-w-[360px] text-[17px] leading-relaxed text-[#555]">
-              Connect OpenRouter to choose from a wider model catalog with a single API key. Explore
-              different models as your squad grows.
+              Connect OpenRouter to choose from a wider model catalog with a single API key.
             </p>
             <div className="mt-auto pt-8">
               <p className="border-t border-[#cad6ee] pt-5 text-[14px] leading-relaxed text-[#555]">
