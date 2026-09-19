@@ -12,7 +12,7 @@ const STEPS = [
     description: 'Sign in with a supported AI account or add an API key from your chosen provider.',
   },
   {
-    title: 'Make it yours',
+    title: 'Set up your first teammate',
     description:
       'Give your teammate a name and a role, choose its model and tools, and start a conversation.',
   },
@@ -32,7 +32,7 @@ const QUESTIONS = [
   {
     question: 'Does my Mac need to stay on?',
     answer:
-      'Your squad needs a running host. If you run it on your Mac, keep your Mac awake and online for background work and remote access.',
+      'The computer running your squad needs to stay on. If that’s your Mac, keep it awake and online for background work and remote access.',
   },
   {
     question: 'Where does my data go?',

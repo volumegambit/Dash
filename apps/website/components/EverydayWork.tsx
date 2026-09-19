@@ -1,7 +1,7 @@
 const EXAMPLES = [
   {
     role: 'A research partner',
-    title: 'Find your way through the information.',
+    title: 'Compare your options.',
     description: 'Explore a question, compare options, and pull the useful details into a brief.',
     prompt: 'Compare these options and give me a shortlist with sources.',
   },
@@ -14,7 +14,7 @@ const EXAMPLES = [
   },
   {
     role: 'A project partner',
-    title: 'Give the next step a place to live.',
+    title: 'Turn a brief into tasks.',
     description: 'Break a brief into tasks and keep track of the work that needs your attention.',
     prompt: 'Help me turn this project brief into tasks and next steps.',
   },
@@ -26,7 +26,7 @@ export function EverydayWork() {
       <div className="mx-auto max-w-[1120px]">
         <div className="max-w-[650px]">
           <p className="font-mono text-[11px] font-semibold uppercase tracking-[3px] text-brand">
-            A little more team
+            Put your squad to work
           </p>
           <h2
             id="everyday-work-title"
@@ -35,8 +35,8 @@ export function EverydayWork() {
             For the work already on your plate.
           </h2>
           <p className="mt-5 text-[17px] leading-relaxed text-text-faint">
-            Start with one useful teammate. Build a squad around the things you do often — and the
-            things you could use a hand with.
+            Start with one teammate for a task you do often. Add others when you need a different
+            kind of help.
           </p>
         </div>
         <div className="mt-10 grid gap-5 md:grid-cols-3">

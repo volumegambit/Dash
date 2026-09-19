@@ -11,13 +11,13 @@ export function Hero() {
             A personal AI team · Early access for Mac
           </p>
           <h1 className="font-outfit text-[44px] font-extrabold leading-[1.04] tracking-tight text-white sm:text-[56px] lg:text-[64px]">
-            Your AI team.
+            You bring the ambition.
             <br />
-            Built around you.
+            We bring the squad.
           </h1>
           <p className="mt-6 max-w-[520px] text-lg leading-relaxed text-[#b3b3b3]">
-            Research a decision. Shape a first draft. Move a project forward. Give your AI teammates
-            their own roles, models, and tools — and one place to work with you.
+            Create AI teammates to research a decision, write a first draft, or plan a project. Give
+            each one a role, choose its model and tools, and work together in chat.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-x-7 gap-y-5">
             <Button size="lg" asChild>
