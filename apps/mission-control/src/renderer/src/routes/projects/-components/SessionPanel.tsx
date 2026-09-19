@@ -101,7 +101,7 @@ export function SessionPanel({
     <div className="flex min-h-0 flex-1 flex-col">
       {offline && (
         <div className="border-b border-border bg-yellow-900/20 px-5 py-2 text-xs text-yellow-200">
-          Gateway offline — cached conversations are read-only.
+          HQ offline — cached conversations are read-only.
         </div>
       )}
       {remoteActive && (

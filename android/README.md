@@ -1,17 +1,17 @@
 # Dash Android App
 
 A native Android client for [Dash](../README.md). It's a thin **remote client** to a
-running Dash gateway — it does **not** run agents on-device or spawn the gateway
-(that stays Mission Control's job on the desktop).
+running Dash HQ — it does **not** run agents on-device or spawn the HQ
+(that stays Desktop's job on the desktop).
 
 **v1 scope:** chat with your agents (streaming) and monitor/toggle them over a local or
 already-paired relay connection. Deploying agents, connectors, projects, messaging channels,
-and configuring remote access remain in Mission Control.
+and configuring remote access remain in Desktop.
 
 ## Architecture
 
 Native **Kotlin + Jetpack Compose**, **MVVM + Repository + Flow**. A multi-module
-Gradle project that talks to the gateway's pinned-TLS mobile API
+Gradle project that talks to the HQ's pinned-TLS mobile API
 (`https://<host>:9400/mobile/v1`) and chat WebSocket
 (`wss://<host>:9400/ws/chat`). Streamed `AgentEvent`s arrive as a Kotlin `Flow` from an
 OkHttp WebSocket.
@@ -21,7 +21,7 @@ android/
   core/model          Kotlin DTOs mirroring the TS wire types + kotlinx.serialization
   core/network        GatewayClient (REST) + ChatSocket (WebSocket → Flow<AgentEvent>)
   core/connection     ConnectionProfile, pairing-payload parser, encrypted ProfileStore
-  core/designsystem    Compose theme mirroring Mission Control's palette
+  core/designsystem    Compose theme mirroring Desktop's palette
   feature/agents      Agents list + detail + enable/disable (ViewModels + screens)
   feature/chat        Streaming chat: reducer + ViewModel + screen
   feature/pairing     Manual entry + CameraX/ML Kit QR scanner
@@ -43,7 +43,7 @@ keep them in sync:
 - `apps/gateway/src/agent-registry.ts` — `RegisteredAgent`
 
 Unknown `AgentEvent` variants decode to `AgentEvent.Unknown` rather than throwing, so a
-newer gateway won't break the chat stream.
+newer HQ won't break the chat stream.
 
 ## Prerequisites
 
@@ -74,25 +74,25 @@ pairing parser + encrypted store, and every ViewModel/reducer. **Instrumented Co
 tests require a device/emulator and are not part of `./gradlew test`.**
 
 CI runs `./gradlew test` + `assembleDebug` via `.github/workflows/android.yml`. It runs for Android
-changes and for gateway, agent-event, or pairing-wire changes that can affect this legacy client
+changes and for HQ, agent-event, or pairing-wire changes that can affect this legacy client
 (separate from the Node CI so each toolchain stays isolated).
 
 ## Connecting
 
-The app needs a gateway **host + phone-scoped Mobile token**. Local pairing also pins the
-gateway certificate; relay pairing adds a revocable device credential. Two ways to connect:
+The app needs an HQ **host + phone-scoped Mobile token**. Local pairing also pins the
+HQ certificate; relay pairing adds a revocable device credential. Two ways to connect:
 
-1. **Pair via QR (recommended).** In Mission Control, open **Settings → Devices** and scan
+1. **Pair via QR (recommended).** In Desktop, open **Settings → Devices** and scan
    the QR in the **Pair Device** card with the app. LAN pairing payloads use version 3 and
    include the desktop's LAN IP, Mobile token, port 9400, and exact SHA-256
    leaf-certificate fingerprint.
 2. **Manual entry (advanced local recovery).** Type the host/IP, Mobile token, and certificate
-   SHA-256 fingerprint. The local port is fixed at 9400. Mission Control deliberately keeps the
+   SHA-256 fingerprint. The local port is fixed at 9400. Desktop deliberately keeps the
    token and fingerprint inside the QR instead of displaying copyable values, so the normal user
    flow is QR scanning; manual entry is for operators who already obtained those values through
    trusted local development tooling.
 
-For a device/emulator that should reach a gateway on *this* machine:
+For a device/emulator that should reach an HQ on *this* machine:
 
 ```bash
 # Same Wi-Fi: use the Mac's LAN IP shown in Settings → Devices, or tunnel the
@@ -106,7 +106,7 @@ Connection details are stored in an encrypted DataStore (Android Keystore-backed
 connections require HTTPS/WSS and accept only the exact leaf certificate fingerprint from
 the v3 pairing payload. HTTP and WebSocket requests send the Mobile token in the encrypted
 `Authorization` header, never in the URL. Legacy v1 plaintext or split-token profiles route back
-to pairing; scan a current Mission Control QR instead. Relay profiles use the public relay's normal
+to pairing; scan a current Desktop QR instead. Relay profiles use the public relay's normal
 TLS validation.
 
 ## Roadmap

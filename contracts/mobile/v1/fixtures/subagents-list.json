@@ -25,7 +25,7 @@
       "startedAt": "2026-09-06T09:01:10.000Z",
       "endedAt": "2026-09-06T09:04:00.000Z",
       "toolCallCount": 3,
-      "report": "The gateway restarted while this agent was running. Its transcript is intact and it can be resumed with send_message.",
+      "report": "The HQ restarted while this agent was running. Its transcript is intact and it can be resumed with send_message.",
       "oneShot": false
     },
     {

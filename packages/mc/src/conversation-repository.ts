@@ -56,7 +56,7 @@ export interface ConversationRepository {
 }
 
 export class ConversationRepositoryOfflineError extends Error {
-  constructor(message = 'Gateway offline — cached conversations are read-only') {
+  constructor(message = 'HQ offline — cached conversations are read-only') {
     super(message);
     this.name = 'ConversationRepositoryOfflineError';
   }

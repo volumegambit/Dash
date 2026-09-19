@@ -11,17 +11,17 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="Missing API key">
     **Symptom:** An agent fails its first message with an authentication error.
 
-    **Fix:** Add the provider's API key on Mission Control's **AI Providers** page — it's saved to the encrypted credential store and picked up on the agent's next message. Running the gateway standalone? Set the provider's environment variable (e.g. `ANTHROPIC_API_KEY`) instead. See [AI Providers](/ai-providers#configuring-credentials).
+    **Fix:** Add the provider's API key on Desktop's **AI Providers** page — it's saved to the encrypted credential store and picked up on the agent's next message. Running the HQ standalone? Set the provider's environment variable (e.g. `ANTHROPIC_API_KEY`) instead. See [AI Providers](/ai-providers#configuring-credentials).
   </Accordion>
 
   <Accordion title="Chat connection refused">
     **Symptom:** WebSocket connection to `ws://localhost:9200/ws/chat` is refused.
 
-    **Fix:** Make sure the gateway is running. If using Mission Control, check that the gateway process is healthy from the app. If running standalone, check the server logs for "Gateway channel server listening on port 9200".
+    **Fix:** Make sure the HQ is running. If using Desktop, check that the HQ process is healthy from the app. If running standalone, check the server logs for "HQ channel server listening on port 9200".
   </Accordion>
 
   <Accordion title="Desktop loopback chat unauthorized (4001)">
-    **Symptom:** A Mission Control or other loopback WebSocket connection closes immediately with
+    **Symptom:** A Desktop or other loopback WebSocket connection closes immediately with
     code `4001`.
 
     **Fix:** Include the desktop chat token as a query parameter:
@@ -36,7 +36,7 @@ Something not working? Here are the most common issues and how to fix them.
     { "type": "error", "id": "...", "error": "Unknown agent: myagent" }
     ```
 
-    **Fix:** The message references a squad member that doesn't exist. Open Mission Control's **Squad** page (or call `GET /agents` on the [Management API](/api-reference#agents)) and make sure the name matches a deployed squad member.
+    **Fix:** The message references a squad member that doesn't exist. Open Desktop's **Squad** page (or call `GET /agents` on the [Management API](/api-reference#agents)) and make sure the name matches a deployed squad member.
   </Accordion>
 </AccordionGroup>
 
@@ -53,7 +53,7 @@ Something not working? Here are the most common issues and how to fix them.
     active turn before retrying the mutation or starting another turn. Do not work around the
     lease by sending the prompt again with a new ID; that can duplicate model work.
 
-    If the error says **The previous turn is still settling**, the gateway is waiting for the
+    If the error says **The previous turn is still settling**, the HQ is waiting for the
     previous provider run to finish. After cancellation, cleanup can continue even when the
     conversation summary no longer has an active turn. Wait briefly before retrying. Legacy
     chat also rejects a second response while the same conversation is running on another
@@ -102,7 +102,7 @@ Something not working? Here are the most common issues and how to fix them.
     **Fix:** Both native routes use the same phone-scoped Mobile bearer. Send it in the
     `Authorization` header for both `/mobile/v1` and `/ws/chat`; never put it in the URL. A hosted
     relay additionally requires `x-dash-relay-credential`, but that credential does not replace the
-    Mobile bearer enforced by the gateway. Pair the phone again if either credential was revoked.
+    Mobile bearer enforced by the HQ. Pair the phone again if either credential was revoked.
     Never paste tokens into logs or support messages.
   </Accordion>
 
@@ -116,11 +116,11 @@ Something not working? Here are the most common issues and how to fix them.
     applied sequence so the eventual reconnect replays the gap instead of resending prompts.
   </Accordion>
 
-  <Accordion title="Relay cannot reach the gateway (502 or gateway_offline)">
+  <Accordion title="Relay cannot reach the HQ (502 or gateway_offline)">
     **Symptom:** The relay returns HTTP `502`, chat reports `gateway_offline`, or the phone can
-    reach Dash but not the paired gateway.
+    reach Dash but not the paired HQ.
 
-    **Fix:** Bring the gateway machine online and make sure the Dash gateway is running, then let
+    **Fix:** Bring the HQ machine online and make sure the Dash HQ is running, then let
     its outbound relay connection re-establish. Until health succeeds, show cached conversation
     history as read-only: do not queue metadata mutations, deletes, or prompts as though they were
     accepted. Once connected, refresh summaries and replay from the last sequence. Re-pair only
@@ -128,9 +128,9 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 
   <Accordion title="My synced conversations are read-only">
-    **Fix:** Confirm that the saved gateway is reachable. Previously synced conversations stay
-    visible from cache while the gateway is offline, but cached history intentionally blocks
-    creating, sending, renaming, and deleting until that gateway reconnects.
+    **Fix:** Confirm that the saved HQ is reachable. Previously synced conversations stay
+    visible from cache while the HQ is offline, but cached history intentionally blocks
+    creating, sending, renaming, and deleting until that HQ reconnects.
   </Accordion>
 
   <Accordion title="Message saved for recovery">
@@ -148,32 +148,31 @@ Something not working? Here are the most common issues and how to fix them.
 
   <Accordion title="A conversation says Active on another device">
     **Fix:** Another paired client owns the canonical active turn. Wait for it to finish, watch the
-    shared stream in Mission Control, or explicitly stop it. Sending a second turn, renaming, and
+    shared stream in Desktop, or explicitly stop it. Sending a second turn, renaming, and
     deleting are blocked until the active turn ends.
   </Accordion>
 
   <Accordion title="Older conversations appear under On this Mac">
-    **Fix:** This is intentional. These conversations were stored locally by an older Mission
-    Control version. No automatic upload exists, and reconnecting a gateway does not move them.
+    **Fix:** This is intentional. These conversations were stored locally by an older Desktop version. No automatic upload exists, and reconnecting an HQ does not move them.
     They remain readable on that computer under **On this Mac**.
   </Accordion>
 
   <Accordion title="Rename or delete says the conversation changed">
-    **Fix:** Mission Control refreshed a revision conflict because another client changed the
+    **Fix:** Desktop refreshed a revision conflict because another client changed the
     canonical conversation first. Review the current title and state, then retry your rename or
     delete.
   </Accordion>
 
   <Accordion title="Update Dash appears in chat">
-    **Fix:** The gateway returned a required contract shape this desktop version cannot decode.
-    Update Mission Control rather than clearing history. Your canonical conversation remains on
-    the gateway.
+    **Fix:** The HQ returned a required contract shape this desktop version cannot decode.
+    Update Desktop rather than clearing history. Your canonical conversation remains on
+    the HQ.
   </Accordion>
 
   <Accordion title="A project session does not open">
-    **Fix:** Refresh the task and confirm its gateway is reachable. Mission Control fetches linked
+    **Fix:** Refresh the task and confirm its HQ is reachable. Desktop fetches linked
     sessions by their canonical ID, including sessions beyond the first conversation page. A
-    deleted canonical conversation stays deleted, and Mission Control will not create an empty
+    deleted canonical conversation stays deleted, and Desktop will not create an empty
     replacement.
   </Accordion>
 </AccordionGroup>
@@ -184,7 +183,7 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="Provider key not taking effect">
     After adding or changing a key on the **AI Providers** page, the agent still hits an auth error.
 
-    **Fix:** The gateway reads credentials fresh on each message, so a new key takes effect on the agent's *next* message — send another one. If it still fails, confirm the key is valid with the provider and that you selected the right provider for the model the agent uses.
+    **Fix:** The HQ reads credentials fresh on each message, so a new key takes effect on the agent's *next* message — send another one. If it still fails, confirm the key is valid with the provider and that you selected the right provider for the model the agent uses.
   </Accordion>
 
   <Accordion title="Credentials unreadable after copying ~/.dash elsewhere">
@@ -198,39 +197,39 @@ Something not working? Here are the most common issues and how to fix them.
 
 <AccordionGroup>
   <Accordion title="Dash for iOS can't reach your Dash account service">
-    **Symptom:** The gateway picker on Dash for iOS shows:
+    **Symptom:** The HQ picker on Dash for iOS shows:
 
     > Couldn't reach your Dash account service. Check your connection and try again.
 
-    **Fix:** This means loading your enrolled gateways failed — the app never confuses this with
-    "no gateways enrolled," so seeing this message doesn't mean your account is empty. Check the
+    **Fix:** This means loading your enrolled HQs failed — the app never confuses this with
+    "no HQs enrolled," so seeing this message doesn't mean your account is empty. Check the
     phone's connection and tap **Retry**. If it persists, confirm the machine that hosts your Dash
     account service is reachable from the internet.
   </Accordion>
 
-  <Accordion title="Dash for iOS shows no gateways linked to your account">
-    **Symptom:** The gateway picker on Dash for iOS shows:
+  <Accordion title="Dash for iOS shows no HQs linked to your account">
+    **Symptom:** The HQ picker on Dash for iOS shows:
 
-    > No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine.
+    > No HQs linked to your account yet. Open Desktop → Settings → Devices → Remote access to enroll this machine.
 
-    **Fix:** Open **Settings → Devices → Remote access** in Mission Control on the machine running
-    your gateway, sign in with the same Dash account, and click **Create gateway**. Then tap
-    **Refresh** on that same empty screen in the app — the new gateway appears without signing out
-    or restarting. (Once the list has gateways in it, pull down on the list to refresh instead.)
+    **Fix:** Open **Settings → Devices → Remote access** in Desktop on the machine running
+    your HQ, sign in with the same Dash account, and click **Create HQ**. Then tap
+    **Refresh** on that same empty screen in the app — the new HQ appears without signing out
+    or restarting. (Once the list has HQs in it, pull down on the list to refresh instead.)
   </Accordion>
 
-  <Accordion title="Dash for iOS says a gateway needs to be re-enrolled">
-    **Symptom:** Tapping a gateway in the picker shows:
+  <Accordion title="Dash for iOS says an HQ needs to be re-enrolled">
+    **Symptom:** Tapping an HQ in the picker shows:
 
-    > This gateway needs to be re-enrolled from Mission Control before app access works.
+    > This HQ needs to be re-enrolled from Desktop before app access works.
 
-    **Fix:** This gateway's Remote access setup on Mission Control predates this app's account
-    sign-in support, so it never registered the app's chat capability. Open Mission Control on
-    the machine that runs this gateway — it updates the gateway's app access automatically on
-    launch — then try the gateway again in Dash for iOS.
+    **Fix:** This HQ's Remote access setup on Desktop predates this app's account
+    sign-in support, so it never registered the app's chat capability. Open Desktop on
+    the machine that runs this HQ — it updates the HQ's app access automatically on
+    launch — then try the HQ again in Dash for iOS.
   </Accordion>
 
-  <Accordion title="Mission Control cannot create a local pairing code">
+  <Accordion title="Desktop cannot create a local pairing code">
     **Symptom:** **Pair Device** shows **No usable LAN IPv4 address is available. Connect this Mac
     to the same network as the phone and try again.** Or it shows **Could not determine which LAN
     IPv4 address to use** when the computer has several active network connections.
@@ -242,32 +241,32 @@ Something not working? Here are the most common issues and how to fix them.
     unavailable, configure **Remote access** and use its relay pairing code instead.
   </Accordion>
 
-  <Accordion title="Pair Device asks to switch to the local gateway">
-    **Symptom:** **Pair Device** shows **Switch to the local gateway before pairing a device**
-    while Mission Control is connected to a gateway on another machine.
+  <Accordion title="Pair Device asks to switch to the local HQ">
+    **Symptom:** **Pair Device** shows **Switch to the local HQ before pairing a device**
+    while Desktop is connected to an HQ on another machine.
 
-    **Fix:** Open **Settings → General → Gateway** and click **Use this computer**. Wait for the
-    gateway row to show **This computer**, then return to **Settings → Devices** and request a fresh
-    pairing code. Mission Control only generates phone pairing codes for the local gateway it can
+    **Fix:** Open **Settings → General → HQ** and click **Use this computer**. Wait for the
+    HQ row to show **This computer**, then return to **Settings → Devices** and request a fresh
+    pairing code. Desktop only generates phone pairing codes for the local HQ it can
     provision safely.
   </Accordion>
 
   <Accordion title="Sign-in failed">
-    **Symptom:** Clicking **Sign in to Dash** on **Settings → Devices → Remote access** opens the browser but Mission Control shows **Sign-in failed**.
+    **Symptom:** Clicking **Sign in to Dash** on **Settings → Devices → Remote access** opens the browser but Desktop shows **Sign-in failed**.
 
-    **Fix:** Finish signing in within the browser tab that opened — Mission Control is waiting for it to hand control back. If you closed the tab, dismissed it, or it timed out, click **Sign in to Dash** again to start over. Make sure the machine running Mission Control has internet access.
+    **Fix:** Finish signing in within the browser tab that opened — Desktop is waiting for it to hand control back. If you closed the tab, dismissed it, or it timed out, click **Sign in to Dash** again to start over. Make sure the machine running Desktop has internet access.
   </Accordion>
 
   <Accordion title="Select an organization">
-    **Symptom:** You're signed in, but Mission Control asks you to **select an organization** before you can create a gateway.
+    **Symptom:** You're signed in, but Desktop asks you to **select an organization** before you can create an HQ.
 
-    **Fix:** Gateways are owned by an organization, not by you personally. On the Dash sign-in page, create or choose an organization, then return to **Settings → Devices → Remote access** and try again. If you belong to more than one organization, make sure you're signed in to the one that should own this gateway.
+    **Fix:** HQs are owned by an organization, not by you personally. On the Dash sign-in page, create or choose an organization, then return to **Settings → Devices → Remote access** and try again. If you belong to more than one organization, make sure you're signed in to the one that should own this HQ.
   </Accordion>
 
-  <Accordion title="Create gateway is missing or fails">
-    **Symptom:** You don't see **Create gateway**, or clicking it shows **Could not enroll a gateway**.
+  <Accordion title="Create HQ is missing or fails">
+    **Symptom:** You don't see **Create HQ**, or clicking it shows **Could not enroll an HQ**.
 
-    **Fix:** **Create gateway** only appears once you're signed in — if you see **Sign in to Dash** instead, sign in first. If it fails because the address you chose is taken, pick a different name (see "The address I want is already taken" below). Otherwise it's usually a temporary network problem: wait a moment and try again. The gateway needs to be running for it to connect out.
+    **Fix:** **Create HQ** only appears once you're signed in — if you see **Sign in to Dash** instead, sign in first. If it fails because the address you chose is taken, pick a different name (see "The address I want is already taken" below). Otherwise it's usually a temporary network problem: wait a moment and try again. The HQ needs to be running for it to connect out.
   </Accordion>
 
   <Accordion title="Remote access stopped working after a while">
@@ -275,12 +274,12 @@ Something not working? Here are the most common issues and how to fix them.
     couldn't connect anymore — typically after the machine was asleep or powered off
     for an extended period.
 
-    **Fix:** Usually none needed — the gateway renews its own relay connection in the
+    **Fix:** Usually none needed — the HQ renews its own relay connection in the
     background and reconnects on its own, even after being offline for weeks. Just give
-    it a moment after the machine wakes up. You do **not** need to re-create the gateway
+    it a moment after the machine wakes up. You do **not** need to re-create the HQ
     or re-pair your phone. If it still hasn't recovered after a few minutes, confirm the
     machine running Dash is online, then open **Settings → Devices → Remote access** and check that
-    you see **Gateway ready at** with your address. The gateway must be running for it to
+    you see **HQ ready at** with your address. The HQ must be running for it to
     reconnect.
   </Accordion>
 
@@ -288,7 +287,7 @@ Something not working? Here are the most common issues and how to fix them.
     **Symptom:** The **Pair Device** section on **Settings → Devices** — used by the Dash Android
     app — says it connects over your **local network** even though you want remote access.
 
-    **Fix:** The QR code only switches to remote access after you've created a gateway. On **Settings → Devices**, confirm the **Remote access** section shows **Gateway ready at** with an address, then check the **Pair Device** section above it — the code now carries your relay address.
+    **Fix:** The QR code only switches to remote access after you've created an HQ. On **Settings → Devices**, confirm the **Remote access** section shows **HQ ready at** with an address, then check the **Pair Device** section above it — the code now carries your relay address.
   </Accordion>
 
   <Accordion title="Phone can no longer connect after a revoke">
@@ -298,16 +297,16 @@ Something not working? Here are the most common issues and how to fix them.
     from another machine), its credential no longer works — this is expected. On Android, pair it
     again: open **Settings → Devices**, scan a fresh QR code on the phone, and it gets a new
     credential. On iOS, open **Settings** on the phone, choose **Disconnect & Forget**, then sign
-    back in and tap the gateway again in the picker — no QR code needed.
+    back in and tap the HQ again in the picker — no QR code needed.
   </Accordion>
 
   <Accordion title="The address I want is already taken">
-    **Symptom:** When creating a gateway, the address (hostname) you typed is rejected
+    **Symptom:** When creating an HQ, the address (hostname) you typed is rejected
     as unavailable.
 
     **Fix:** Relay addresses are globally unique and permanent — once a name is claimed
-    it belongs to that gateway forever and is **never** released for reuse, even if the
-    original gateway was later removed. Pick a different, more specific name (for example
+    it belongs to that HQ forever and is **never** released for reuse, even if the
+    original HQ was later removed. Pick a different, more specific name (for example
     add your initials or your machine's name) and try again. The availability indicator
     in the picker tells you live whether a name is free before you commit to it.
   </Accordion>
@@ -317,15 +316,15 @@ Something not working? Here are the most common issues and how to fix them.
     "Waiting for approval — scan this code with the Dash app on your phone." and a QR
     code, then instead of continuing to chat it settles on one of:
 
-    > Approval declined. You can try again from the gateway list.
+    > Approval declined. You can try again from the HQ list.
 
-    > The code expired. Try again from the gateway list.
+    > The code expired. Try again from the HQ list.
 
     **Fix:** This screen only appears on accounts that already have a Dash for iOS
     device signed in — new browser sessions need one of those devices to approve them.
     **Approval declined** means someone tapped **Deny** on the phone; **The code
     expired** means nobody approved it within the time limit. Either way, go back to
-    the gateway list and sign in again to get a fresh code, then open Dash on the
+    the HQ list and sign in again to get a fresh code, then open Dash on the
     phone, go to **Settings → Approve a device**, and scan it before it expires.
   </Accordion>
 
@@ -336,32 +335,32 @@ Something not working? Here are the most common issues and how to fix them.
     > This code has expired. Ask the device to try again.
 
     **Fix:** Approval codes expire a few minutes after they're generated. Ask whoever
-    is waiting on the browser to reload the gateway list (or sign in again) to get a
+    is waiting on the browser to reload the HQ list (or sign in again) to get a
     fresh code, then scan the new one right away. A code that's still valid instead
-    shows a confirm sheet reading `Allow "<device>" to access <gateway>?` — tap
+    shows a confirm sheet reading `Allow "<device>" to access <HQ>?` — tap
     **Approve** or **Deny** there.
   </Accordion>
 </AccordionGroup>
 
-## Remote gateways
+## Remote HQs
 
 <AccordionGroup>
-  <Accordion title="Mission Control is still using the local gateway">
-    **Symptom:** You deployed or entered a remote gateway, but Mission Control still
+  <Accordion title="Desktop is still using the local HQ">
+    **Symptom:** You deployed or entered a remote HQ, but Desktop still
     shows agents from the local machine.
 
-    **Fix:** Open **Settings → General → Gateway** and check the active gateway
-    status. If it says **This computer**, click **Change gateway**, choose
-    **Connect existing gateway**, test the connection, then click **Use this gateway**.
+    **Fix:** Open **Settings → General → HQ** and check the active HQ
+    status. If it says **This computer**, click **Change HQ**, choose
+    **Connect existing HQ**, test the connection, then click **Use this HQ**.
     If you want to return to local mode, click **Use this computer**.
   </Accordion>
 
-  <Accordion title="Remote gateway is unhealthy">
-    **Symptom:** **Settings → General → Gateway** shows an existing gateway
+  <Accordion title="Remote HQ is unhealthy">
+    **Symptom:** **Settings → General → HQ** shows an existing HQ
     with an unhealthy status.
 
     **Fix:** Confirm the management URL is reachable, the management token is
-    correct, and the relay credential is still valid. Click **Change gateway** and
+    correct, and the relay credential is still valid. Click **Change HQ** and
     test the connection again before using it. For a VPS deployment, SSH to the
     server and run:
 
@@ -371,21 +370,21 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 
   <Accordion title="VPS deployment fails">
-    **Symptom:** **Deploy and connect** fails before the gateway is saved.
+    **Symptom:** **Deploy and connect** fails before the HQ is saved.
 
-    **Fix:** Open **Settings → General → Gateway**, click **Change gateway**, then
+    **Fix:** Open **Settings → General → HQ**, click **Change HQ**, then
     choose **Self-host on a VPS**. Make sure the SSH host, user, port, and key are
     correct. The VPS must have `git`, `node`, `npm`, and `systemctl --user`
-    available. If the relay URL or gateway id is wrong, fix those fields and
+    available. If the relay URL or HQ id is wrong, fix those fields and
     deploy again.
   </Accordion>
 
   <Accordion title="Chat opens but messages do not stream">
-    **Symptom:** Mission Control can list agents, but chat messages hang or fail.
+    **Symptom:** Desktop can list agents, but chat messages hang or fail.
 
-    **Fix:** Open **Settings → General → Gateway**, click **Change gateway**, choose
-    **Connect existing gateway**, and test the connection again. The chat URL should
-    use `wss://` for HTTPS relays and point at the same gateway host as the
+    **Fix:** Open **Settings → General → HQ**, click **Change HQ**, choose
+    **Connect existing HQ**, and test the connection again. The chat URL should
+    use `wss://` for HTTPS relays and point at the same HQ host as the
     management URL.
   </Accordion>
 </AccordionGroup>
@@ -426,7 +425,7 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="Plugin not loading">
     A plugin you installed isn't showing its skills or commands.
 
-    **Fix:** Open Mission Control's **Plugins** screen and check the plugin's status badge. **Disabled** means it's turned off — click **Enable**. **Error** means it failed to load — the card shows the failure message (usually a bad manifest or a missing `SKILL.md`). If hand-editing, make sure the plugin has an entry in `~/.dash/gateway/plugins/config.json` with `"enabled": true`. See [Plugins](/plugins#managing-plugins-in-mission-control).
+    **Fix:** Open Desktop's **Plugins** screen and check the plugin's status badge. **Disabled** means it's turned off — click **Enable**. **Error** means it failed to load — the card shows the failure message (usually a bad manifest or a missing `SKILL.md`). If hand-editing, make sure the plugin has an entry in `~/.dash/gateway/plugins/config.json` with `"enabled": true`. See [Plugins](/plugins#managing-plugins-in-desktop).
   </Accordion>
 
   <Accordion title="Code components inert until trusted">
@@ -442,9 +441,9 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 
   <Accordion title="OpenRouter model list looks outdated">
-    Open the model picker again after updating your gateway. The gateway refreshes
+    Open the model picker again after updating your HQ. The HQ refreshes
     its provider list on the first request after six hours, and sooner when its
-    bundled catalog changes. Mission Control's refresh action can fetch it immediately.
+    bundled catalog changes. Desktop's refresh action can fetch it immediately.
 
     Dash curates models for chat and tool use. A newly released model may need a
     catalog update before it appears. Free/batch variants and unreviewed previews
@@ -470,7 +469,7 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="Removed plugin still listed">
     A plugin you removed still appears, or a hand-dropped plugin doesn't show up.
 
-    **Fix:** The gateway hot-reloads on changes made through Mission Control or the management API, but it doesn't watch the folder for files you add or delete by hand. After editing `~/.dash/gateway/plugins/` directly, trigger a rescan with **POST /plugins/reload** (or restart the gateway). Note that removing a plugin only deletes its directory when it was installed by the management API — a hand-dropped or `path`-linked plugin is left on disk by design.
+    **Fix:** The HQ hot-reloads on changes made through Desktop or the management API, but it doesn't watch the folder for files you add or delete by hand. After editing `~/.dash/gateway/plugins/` directly, trigger a rescan with **POST /plugins/reload** (or restart the HQ). Note that removing a plugin only deletes its directory when it was installed by the management API — a hand-dropped or `path`-linked plugin is left on disk by design.
   </Accordion>
 </AccordionGroup>
 
@@ -484,9 +483,9 @@ Something not working? Here are the most common issues and how to fix them.
 
     - `too many workers running at once (max N) — wait for workers to finish` — the agent's **concurrent** limit.
     - `swarm run reached its worker limit (N workers per run)` — the **total-per-turn** limit.
-    - `the gateway is at its global worker limit (N) — wait for workers to finish` — the gateway-wide ceiling across **all** agents.
+    - `the HQ is at its global worker limit (N) — wait for workers to finish` — the HQ-wide ceiling across **all** agents.
 
-    Raise the relevant cap in the agent's `subagents` block if the work genuinely needs more — see [Configuration → Sub-agents](/configuration#sub-agents). The change takes effect on the agent's next message. The gateway-wide ceiling (default `16`) is raised by setting `SUBAGENTS_MAX_CONCURRENT_GLOBAL` where the gateway runs and restarting it — see [Configuration → Gateway defaults](/configuration#gateway-defaults).
+    Raise the relevant cap in the agent's `subagents` block if the work genuinely needs more — see [Configuration → Sub-agents](/configuration#sub-agents). The change takes effect on the agent's next message. The HQ-wide ceiling (default `16`) is raised by setting `SUBAGENTS_MAX_CONCURRENT_GLOBAL` where the HQ runs and restarting it — see [Configuration → HQ defaults](/configuration#hq-defaults).
   </Accordion>
 
   <Accordion title="Agent would be spawned with zero tools">
@@ -497,7 +496,7 @@ Something not working? Here are the most common issues and how to fix them.
 
     A sub-agent type asked for tools that its parent does not have, so the intersection came out empty — and Dash refuses to run a tool-less agent rather than launching one that can do nothing. The message names the entries that resolved to nothing.
 
-    **Fix:** either give the parent agent those tools (Mission Control → the agent's **Configuration** tab → **Tools**, and its assigned MCP servers for `mcp__…` entries), or edit the type's `tools:` frontmatter to ask for something the parent has. A sub-agent can never hold a tool or MCP server its parent lacks — see [Configuration → Sub-agent types](/configuration#sub-agent-types).
+    **Fix:** either give the parent agent those tools (Desktop → the agent's **Configuration** tab → **Tools**, and its assigned MCP servers for `mcp__…` entries), or edit the type's `tools:` frontmatter to ask for something the parent has. A sub-agent can never hold a tool or MCP server its parent lacks — see [Configuration → Sub-agent types](/configuration#sub-agent-types).
   </Accordion>
 
   <Accordion title="depth limit reached">
@@ -544,29 +543,29 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="My sub-agent's worktree wasn't removed">
     A directory is still sitting under `~/.dash/gateway/worktrees/<agent-name>/<subagent-id>/` after the sub-agent finished.
 
-    **This is by design when the worktree holds work.** Cleanup removes a worktree only when there is nothing to lose: uncommitted changes, untracked files, and commits that no branch or tag would keep alive all keep it. (Regenerable litter — `node_modules/`, `dist/`, `build/`, `.next/`, `coverage/`, `*.log`, `.DS_Store` — does not count.) The path is not handed back to you in the chat: to find it, either fill in the template above with the sub-agent's id, or look in the gateway log, where every kept worktree is recorded with a line containing `keeping` and the path, and why it was kept.
+    **This is by design when the worktree holds work.** Cleanup removes a worktree only when there is nothing to lose: uncommitted changes, untracked files, and commits that no branch or tag would keep alive all keep it. (Regenerable litter — `node_modules/`, `dist/`, `build/`, `.next/`, `coverage/`, `*.log`, `.DS_Store` — does not count.) The path is not handed back to you in the chat: to find it, either fill in the template above with the sub-agent's id, or look in the HQ log, where every kept worktree is recorded with a line containing `keeping` and the path, and why it was kept.
 
     **Fix:** look at what's inside and keep or merge what you want. Once the checkout is clean, `git worktree remove <path>` from the parent repository takes it down; git refuses while there are changes in it, so commit or discard them first (or pass `--force` if you are sure).
   </Accordion>
 
-  <Accordion title="The gateway restarted while sub-agents were running">
-    The gateway process died (crash, force-quit, machine reboot) while sub-agents were still working.
+  <Accordion title="The HQ restarted while sub-agents were running">
+    The HQ process died (crash, force-quit, machine reboot) while sub-agents were still working.
 
-    **Recovery is automatic.** On its next start the gateway marks every sub-agent that was still running as **interrupted**, keeps its transcript, and tells its parent agent — as a notification turn delivered as soon as the gateway is serving again (or with the parent's next turn, if it's busy). The rows stop spinning and show `interrupted`.
+    **Recovery is automatic.** On its next start the HQ marks every sub-agent that was still running as **interrupted**, keeps its transcript, and tells its parent agent — as a notification turn delivered as soon as the HQ is serving again (or with the parent's next turn, if it's busy). The rows stop spinning and show `interrupted`.
 
-    Unlike earlier releases, an interrupted sub-agent is **not lost**: press **Resume** on its row — from the web tasks panel, the iOS tasks sheet, or `POST /subagents/:id/resume`; Mission Control greys the button once a sub-agent is terminal — or have the parent `send_message` it, and it picks up with its context intact. Orphaned worktrees are swept at the same time, except ones holding work.
+    Unlike earlier releases, an interrupted sub-agent is **not lost**: press **Resume** on its row — from the web tasks panel, the iOS tasks sheet, or `POST /subagents/:id/resume`; Desktop greys the button once a sub-agent is terminal — or have the parent `send_message` it, and it picks up with its context intact. Orphaned worktrees are swept at the same time, except ones holding work.
   </Accordion>
 
   <Accordion title="Resume is refused or greyed out">
     A **Resume** — from a row, from the tasks list, or from the parent's own `send_message` — comes back with an error instead. There are three common reasons, and a resume also counts against the launch caps, so the two cap messages described under *"A sub-agent didn't start (cap reached)"* above can arrive here too:
 
     - `Agent "..." is a one-shot Explore agent and cannot be resumed.` — `Explore` and `Plan` are read-only, one-shot types, so they cannot be given a new task. **Fix:** launch a new one with the follow-up task. (If the agent is still running and asking a question, that is an *answer*, not a resume, and it goes through: the parent's `send_message`, the reply box on its row and the legacy `send_to_worker` all reach a paused one-shot.)
-    - `steer cap reached for "..." (max 10 per agent).` — you've hit the per-child message cap, which counts across resumes for as long as the gateway holds that child in memory (a restart resets it to zero). **Fix:** raise `swarm.maxSteersPerWorker` for the agent, or start a fresh sub-agent.
-    - `Agent "..." cannot be resumed: its grant cannot be rebuilt.` — the parent's grant could not be re-established. Either **sub-agents have been turned off** on the parent agent (or the agent itself was **deleted** — its conversations survive the delete, but nothing under them can run again), or the parent conversation (or one above it) was **deleted** — deleting a conversation stops everything under it from running again. A sub-agent created by an **older gateway build**, before the grant was stored beside the row, has the same symptom. **Fix:** re-enable sub-agents on the parent agent — see [Configuration → Per-agent settings](/configuration#per-agent-settings). A deleted parent, a deleted agent and a grant that was never stored cannot be recovered, so launch a new sub-agent instead.
+    - `steer cap reached for "..." (max 10 per agent).` — you've hit the per-child message cap, which counts across resumes for as long as the HQ holds that child in memory (a restart resets it to zero). **Fix:** raise `swarm.maxSteersPerWorker` for the agent, or start a fresh sub-agent.
+    - `Agent "..." cannot be resumed: its grant cannot be rebuilt.` — the parent's grant could not be re-established. Either **sub-agents have been turned off** on the parent agent (or the agent itself was **deleted** — its conversations survive the delete, but nothing under them can run again), or the parent conversation (or one above it) was **deleted** — deleting a conversation stops everything under it from running again. A sub-agent created by an **older HQ build**, before the grant was stored beside the row, has the same symptom. **Fix:** re-enable sub-agents on the parent agent — see [Configuration → Per-agent settings](/configuration#per-agent-settings). A deleted parent, a deleted agent and a grant that was never stored cannot be recovered, so launch a new sub-agent instead.
 
     A resume also **silently** re-intersects the child's tools and MCP servers with what its parent holds now, so a resumed sub-agent can come back with fewer tools than it had, without any message saying so. Its **model** is not re-checked: a child keeps the model it was launched with even if that model has since been removed from the parent's allowed set.
 
-    Mission Control's panel also greys **Resume** out for a sub-agent that has already finished; use the web tasks panel or `POST /subagents/:id/resume` to resume one from there.
+    Desktop's panel also greys **Resume** out for a sub-agent that has already finished; use the web tasks panel or `POST /subagents/:id/resume` to resume one from there.
   </Accordion>
 
   <Accordion title="Where are the sub-agent transcripts?">
@@ -582,7 +581,7 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="No sub-agent progress on Telegram / WhatsApp">
     You chat with an agent over a messaging app and see only the final answer — no per-sub-agent updates.
 
-    **This is by design.** Sub-agent rows, the tasks panel and sheet, and Mission Control's **Sub-agents** panel are chat-app features (iOS, the web client, and Mission Control). Messaging channels deliver only the agent's **final response**, not the intermediate sub-agent events. To watch and steer sub-agents in real time, chat with the agent in one of those clients.
+    **This is by design.** Sub-agent rows, the tasks panel and sheet, and Desktop's **Sub-agents** panel are chat-app features (iOS, the web client, and Desktop). Messaging channels deliver only the agent's **final response**, not the intermediate sub-agent events. To watch and steer sub-agents in real time, chat with the agent in one of those clients.
   </Accordion>
 
   <Accordion title="An old conversation's cancelled worker lost its reason">
@@ -595,7 +594,7 @@ Something not working? Here are the most common issues and how to fix them.
 <AccordionGroup>
   <Accordion title="Provider session JSONL is corrupt">
     Provider session JSONL stores the model's working context separately from the canonical
-    conversation that Mission Control and paired phones display. If a provider session file has an
+    conversation that Desktop and paired phones display. If a provider session file has an
     invalid line after a crash, the agent may fail to restore model context even though canonical
     history remains visible. To recover:
 
@@ -621,12 +620,12 @@ Something not working? Here are the most common issues and how to fix them.
     rm -rf ~/.dash/gateway/sessions
     ```
 
-    These commands do not delete canonical conversations shown by Mission Control or paired phone
-    apps. To remove shared history, reconnect the gateway and delete the conversation in Dash.
+    These commands do not delete canonical conversations shown by Desktop or paired phone
+    apps. To remove shared history, reconnect the HQ and delete the conversation in Dash.
   </Accordion>
 
   <Accordion title="My data moved after updating">
-    Dash now keeps everything under `~/.dash` (gateway data, desktop app data, logs, and agent workspaces). The first time a newer version starts, it automatically moves data from the old locations into `~/.dash` — your credentials, agents, and conversations come along.
+    Dash now keeps everything under `~/.dash` (HQ data, desktop app data, logs, and agent workspaces). The first time a newer version starts, it automatically moves data from the old locations into `~/.dash` — your credentials, agents, and conversations come along.
 
     If something looks missing, check the old locations:
 
@@ -657,9 +656,9 @@ Something not working? Here are the most common issues and how to fix them.
 
 ## Debug logging
 
-Mission Control and the gateway write logs to `~/.dash/logs/` (`mc.log` and `gateway.log`) — check there first when something goes wrong.
+Desktop and the HQ write logs to `~/.dash/logs/` (`mc.log` and `gateway.log`) — check there first when something goes wrong.
 
-For a standalone gateway, add the `--verbose` flag to get debug-level output:
+For a standalone HQ, add the `--verbose` flag to get debug-level output:
 
 ```bash
 npm run gateway -- --verbose

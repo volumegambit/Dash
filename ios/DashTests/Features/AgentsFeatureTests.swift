@@ -1373,7 +1373,7 @@ struct AgentDetailPresentationTests {
     )
     #expect(
       AgentDetailPresentation.startChatHint(status: .disabled, online: false)
-        == "Connect to the gateway to start a conversation"
+        == "Connect to the HQ to start a conversation"
     )
   }
 

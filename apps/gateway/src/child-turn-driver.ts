@@ -80,10 +80,7 @@ export function createChildTurnDriver(options: ChildTurnDriverOptions): ChildTur
     startTurn({ agentId, conversationId, text, requestId }): { turnId: string } {
       const execution = options.execution();
       if (!execution) {
-        throw new ChildTurnStartError(
-          'stopped',
-          'the gateway execution coordinator is not running',
-        );
+        throw new ChildTurnStartError('stopped', 'the HQ execution coordinator is not running');
       }
       try {
         return execution.startSystemTurn({

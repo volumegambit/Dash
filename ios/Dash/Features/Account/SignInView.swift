@@ -30,7 +30,7 @@ struct SignInView: View {
               Text("Sign in to Dash")
                 .font(.largeTitle.bold())
                 .multilineTextAlignment(.center)
-              Text("Sign in with your Dash account to reach the gateways you've enrolled.")
+              Text("Sign in with your Dash account to reach the HQs you've enrolled.")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

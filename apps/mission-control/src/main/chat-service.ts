@@ -656,7 +656,7 @@ export class ChatService {
         if (!conversation) throw new Error(`Conversation "${ref.id}" not found`);
         if (conversation.offline || conversation.readOnly) {
           throw new ConversationRepositoryOfflineError(
-            'On this Mac conversations are read-only with this gateway',
+            'On this Mac conversations are read-only with this HQ',
           );
         }
       }
@@ -745,7 +745,7 @@ export class ChatService {
       this.runInBackground(this.titleAndFileTask(legacyView(conversation), text));
     }
 
-    if (!this.gatewayConnection) throw new Error('Gateway connection not configured');
+    if (!this.gatewayConnection) throw new Error('HQ connection not configured');
     const url = this.chatWebSocketUrl(this.gatewayConnection);
     const msgId = randomUUID();
     const agentId = conversation.agentId;
@@ -909,7 +909,7 @@ export class ChatService {
       return;
     }
     if (!this.conversations || !this.resumable || !turnId) {
-      throw new Error('Conversation sync unavailable for gateway cancel');
+      throw new Error('Conversation sync unavailable for HQ cancel');
     }
     const conversation = await this.conversations.find(ref);
     if (!conversation || conversation.origin !== 'gateway') {
@@ -966,7 +966,7 @@ export class ChatService {
   ): Promise<void> {
     if (ref.origin === 'gateway') {
       if (!this.conversations || !this.resumable || !turnId) {
-        throw new Error('Conversation sync unavailable for gateway answer');
+        throw new Error('Conversation sync unavailable for HQ answer');
       }
       const conversation = await this.conversations.find(ref);
       if (!conversation || conversation.origin !== 'gateway') {

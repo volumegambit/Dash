@@ -186,7 +186,7 @@ describe('ChatView', () => {
       </WebAppStoreContext.Provider>,
     );
 
-    expect(screen.queryByText("Your gateway 'acme' is unreachable.")).toBeNull();
+    expect(screen.queryByText("Your HQ 'acme' is unreachable.")).toBeNull();
     expect(screen.getByText('Select a conversation to get started.')).toBeTruthy();
   });
 
@@ -390,15 +390,13 @@ describe('ChatView', () => {
     await waitFor(() => expect(screen.getByText(RECONNECTING_COPY)).toBeTruthy());
   });
 
-  it('renders "Your gateway \'acme\' is unreachable." once the store gives up and goes offline', async () => {
+  it('renders "Your HQ \'acme\' is unreachable." once the store gives up and goes offline', async () => {
     // maxAttempts: 0 makes the very first drop exhaust the retry budget
     // immediately, so `connection` goes straight to `'offline'`.
     const { onCloses } = await renderConnected({ maxAttempts: 0 });
     act(() => onCloses[0]('error'));
 
-    await waitFor(() =>
-      expect(screen.getByText("Your gateway 'acme' is unreachable.")).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByText("Your HQ 'acme' is unreachable.")).toBeTruthy());
   });
 
   // Cross-client composer key contract (UI-quality goal, Phase D). Driven by
@@ -565,7 +563,7 @@ describe('ChatView', () => {
 
     await waitFor(() => expect(screen.queryByText('Ping')).toBeNull());
     expect(screen.queryByText(RECONNECTING_COPY)).toBeNull();
-    expect(screen.queryByText("Your gateway 'acme' is unreachable.")).toBeNull();
+    expect(screen.queryByText("Your HQ 'acme' is unreachable.")).toBeNull();
   });
 });
 

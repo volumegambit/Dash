@@ -37,7 +37,7 @@ export async function buildPairingInfo(
   if (inputs.mode === 'relay') {
     const { relay } = inputs;
     if (!relay.gatewayId || !relay.host) {
-      throw new Error('Relay pairing requires an enrolled gateway and relay host');
+      throw new Error('Relay pairing requires an enrolled HQ and relay host');
     }
     const host = `${relay.gatewayId}.${relay.host}`;
     let relayCredential: string;

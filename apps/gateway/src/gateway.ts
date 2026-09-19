@@ -321,7 +321,7 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
           `[gateway] agent "${matched.agentId}" stream threw channel=${channelName} conversationId=${msg.conversationId}:`,
           streamError.stack ?? streamError.message,
         );
-        fullResponse = 'Error: internal agent failure (see gateway logs)';
+        fullResponse = 'Error: internal agent failure (see HQ logs)';
       }
 
       if (streamError) {

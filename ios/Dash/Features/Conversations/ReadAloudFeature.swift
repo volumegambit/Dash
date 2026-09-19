@@ -38,8 +38,8 @@ final class ReadAloudFeature {
   /// JavaScript's `String.length` counts.
   static let maxCharacters = 4_000
   static let failureMessage = "Couldn't read this message aloud. Try again."
-  static let unavailableMessage = "Speech isn't set up on your gateway yet."
-  static let unauthorizedMessage = "Your gateway's speech provider key was rejected."
+  static let unavailableMessage = "Speech isn't set up on your HQ yet."
+  static let unauthorizedMessage = "Your HQ's speech provider key was rejected."
 
   /// The message currently being read — from the moment `toggle` starts,
   /// through synthesis, until playback ends for any reason.

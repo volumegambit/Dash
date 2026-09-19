@@ -288,7 +288,7 @@ describe('Shell', () => {
     await waitFor(() =>
       expect(
         screen.getByText(
-          'No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine.',
+          'No HQs linked to your account yet. Open Desktop → Settings → Devices → Remote access to enroll this machine.',
         ),
       ).toBeTruthy(),
     );

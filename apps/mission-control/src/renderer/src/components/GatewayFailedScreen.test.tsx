@@ -7,9 +7,7 @@ import { GatewayFailedScreen } from './GatewayFailedScreen.js';
 describe('GatewayFailedScreen', () => {
   it('renders the failure message', async () => {
     render(<GatewayFailedScreen onRecovered={() => {}} />);
-    expect(
-      await screen.findByRole('heading', { name: /Gateway failed to start/i }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: /HQ failed to start/i })).toBeInTheDocument();
   });
 
   it('calls setupEnsureGateway on Retry and onRecovered on success', async () => {
@@ -61,7 +59,7 @@ describe('GatewayFailedScreen', () => {
     render(<GatewayFailedScreen onRecovered={onRecovered} />);
 
     expect(
-      await screen.findByRole('heading', { name: /saved gateway is not reachable/i }),
+      await screen.findByRole('heading', { name: /saved HQ is not reachable/i }),
     ).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /use this computer/i }));
 
@@ -83,8 +81,8 @@ describe('GatewayFailedScreen', () => {
 
     render(<GatewayFailedScreen onRecovered={() => {}} />);
 
-    await user.click(await screen.findByRole('button', { name: /edit gateway connection/i }));
+    await user.click(await screen.findByRole('button', { name: /edit HQ connection/i }));
 
-    expect(screen.getByRole('heading', { name: /choose a gateway/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /choose an HQ/i })).toBeInTheDocument();
   });
 });

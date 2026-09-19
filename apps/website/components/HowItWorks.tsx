@@ -22,7 +22,7 @@ function MCInlineVisual() {
 const STEPS = [
   {
     visual: <MCInlineVisual />,
-    title: 'Deploy from Mission Control',
+    title: 'Deploy from Desktop',
     desc: 'Configure and launch agents with the visual deploy wizard. Select models, set tools, and deploy in seconds.',
     hasConnector: true,
   },

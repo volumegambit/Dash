@@ -99,7 +99,7 @@ export function GatewayConnectionWizard({
     try {
       onConnected(await fn());
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gateway update failed');
+      setError(err instanceof Error ? err.message : 'HQ update failed');
     } finally {
       setBusy(null);
     }
@@ -119,7 +119,7 @@ export function GatewayConnectionWizard({
         setError(result.message);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gateway connection test failed');
+      setError(err instanceof Error ? err.message : 'HQ connection test failed');
     } finally {
       setBusy(null);
     }
@@ -148,7 +148,7 @@ export function GatewayConnectionWizard({
     <div className="grid gap-4">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-foreground">Choose a gateway</h3>
+          <h3 className="text-sm font-semibold text-foreground">Choose an HQ</h3>
         </div>
         {onCancel && (
           <button type="button" onClick={onCancel} className={button}>
@@ -163,7 +163,7 @@ export function GatewayConnectionWizard({
             <Server size={18} className="shrink-0 text-accent" />
             <span className="grid gap-0.5">
               <span className="text-sm font-medium text-foreground">Use this computer</span>
-              <span className="text-xs text-muted">Local gateway</span>
+              <span className="text-xs text-muted">Local HQ</span>
             </span>
           </button>
           <button
@@ -174,7 +174,7 @@ export function GatewayConnectionWizard({
           >
             <PlugZap size={18} className="shrink-0 text-accent" />
             <span className="grid gap-0.5">
-              <span className="text-sm font-medium text-foreground">Connect existing gateway</span>
+              <span className="text-sm font-medium text-foreground">Connect existing HQ</span>
               <span className="text-xs text-muted">Relay URL and tokens</span>
             </span>
           </button>
@@ -201,12 +201,12 @@ export function GatewayConnectionWizard({
           </button>
           <div className="grid gap-3 md:grid-cols-2">
             <label className={label}>
-              Gateway name
+              HQ name
               <input
                 value={relayForm.name ?? ''}
                 onChange={(e) => updateRelay({ name: e.target.value })}
                 className={field}
-                placeholder="production-gateway"
+                placeholder="production-hq"
               />
             </label>
             <label className={label}>
@@ -271,7 +271,7 @@ export function GatewayConnectionWizard({
               className={primary}
             >
               <CheckCircle2 size={14} />
-              Use this gateway
+              Use this HQ
             </button>
           </div>
           {relayTested && <p className="text-xs font-medium text-green">Connection looks good</p>}
@@ -329,7 +329,7 @@ export function GatewayConnectionWizard({
               />
             </label>
             <label className={label}>
-              Gateway id
+              HQ id
               <input
                 value={vpsForm.gatewayId}
                 onChange={(e) => setVpsForm((form) => ({ ...form, gatewayId: e.target.value }))}

@@ -1,50 +1,50 @@
 ---
 title: Dash for iPhone and iPad
-description: Sign in to reach your gateway, share conversations with Mission Control, and manage agents from iOS.
+description: Sign in to reach your HQ, share conversations with Desktop, and manage agents from iOS.
 ---
 
-Dash for iOS is a native companion for your gateway. It lets you continue the same conversations
-you see in Mission Control and manage agents without running an agent on the phone itself.
+Dash for iOS is a native companion for your HQ. It lets you continue the same conversations
+you see in Desktop and manage agents without running an agent on the phone itself.
 
 <Note>
-  Your gateway remains the source of truth. The app keeps a local cache for reading and drafting
-  while offline, then reconciles with the gateway when the connection returns.
+  Your HQ remains the source of truth. The app keeps a local cache for reading and drafting
+  while offline, then reconciles with the HQ when the connection returns.
 </Note>
 
 ## Sign in
 
-Dash for iOS connects to your gateway through your Dash account, not a pairing code.
+Dash for iOS connects to your HQ through your Dash account, not a pairing code.
 
 <Steps>
-  <Step title="Enroll your gateway in Mission Control">
-    Open **Settings → Devices → Remote access**, sign in to Dash, and create a gateway if you
-    haven't already. Enrolling here is also what makes the gateway visible to the app.
+  <Step title="Enroll your HQ in Desktop">
+    Open **Settings → Devices → Remote access**, sign in to Dash, and create an HQ if you
+    haven't already. Enrolling here is also what makes the HQ visible to the app.
   </Step>
   <Step title="Sign in on iOS">
     Open Dash and tap **Sign In**. A browser opens to the Dash sign-in page — sign in with the
-    same account you used in Mission Control, then the browser hands you back to the app.
+    same account you used in Desktop, then the browser hands you back to the app.
   </Step>
-  <Step title="Choose your gateway">
-    Dash lists every gateway enrolled in your account, by its address. Tap one to connect. The
-    Conversations tab opens once the gateway accepts the connection.
+  <Step title="Choose your HQ">
+    Dash lists every HQ enrolled in your account, by its address. Tap one to connect. The
+    Conversations tab opens once the HQ accepts the connection.
   </Step>
 </Steps>
 
 Dash for iOS always connects through Dash's hosted relay, so it works the same way at home, at
-the office, or on cellular — there's no local-network step and no QR code to scan. The gateway
+the office, or on cellular — there's no local-network step and no QR code to scan. The HQ
 picker's toolbar also has **Sign Out**, which disconnects this device and returns to Sign In.
 
-If something goes wrong, the gateway picker tells you exactly what:
+If something goes wrong, the HQ picker tells you exactly what:
 
 - **Couldn't reach your Dash account service. Check your connection and try again.** — check your connection and tap **Retry**.
-- **No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine.** — open Remote access in Mission Control and enroll this machine.
-- **This gateway needs to be re-enrolled from Mission Control before app access works.** — its Remote access setup predates this app's sign-in support; open Mission Control on that computer once and it updates the gateway's app access automatically.
+- **No HQs linked to your account yet. Open Desktop → Settings → Devices → Remote access to enroll this machine.** — open Remote access in Desktop and enroll this machine.
+- **This HQ needs to be re-enrolled from Desktop before app access works.** — its Remote access setup predates this app's sign-in support; open Desktop on that computer once and it updates the HQ's app access automatically.
 
 ## Approve a device
 
 As soon as you sign in, this iPhone or iPad becomes a signer for your account
 automatically — there's nothing to turn on. From then on, whenever a new browser
-tries to reach one of your gateways for the first time, it waits for one of your
+tries to reach one of your HQs for the first time, it waits for one of your
 signer devices to approve it instead of connecting right away.
 
 To approve one:
@@ -59,7 +59,7 @@ To approve one:
     with the camera.
   </Step>
   <Step title="Confirm">
-    Dash shows `Allow "<device>" to access <gateway>?`. Tap **Approve** to let it in,
+    Dash shows `Allow "<device>" to access <HQ>?`. Tap **Approve** to let it in,
     or **Deny** to turn it away.
   </Step>
 </Steps>
@@ -75,13 +75,13 @@ signer devices.
 
 ## Use shared conversations
 
-The **Conversations** tab shows the gateway's canonical conversation list. Changes made here also
-appear in Mission Control.
+The **Conversations** tab shows the HQ's canonical conversation list. Changes made here also
+appear in Desktop.
 
 - Start a conversation by choosing an agent.
 - Open existing and archived conversations, including messages created on another paired device.
 - Rename or delete an idle conversation from its context menu.
-- Pull to refresh when you want to check the gateway immediately.
+- Pull to refresh when you want to check the HQ immediately.
 
 When a conversation changed elsewhere before your edit completed, Dash refreshes the canonical
 version and asks you to retry instead of overwriting it.
@@ -89,7 +89,7 @@ version and asks you to retry instead of overwriting it.
 ## Chat from your phone
 
 Open a conversation, enter a message, and tap **Send**. Dash shows thinking, tool activity,
-[sub-agent](/tools#sub-agents) rows, questions, and response text as the gateway streams them. Tool
+[sub-agent](/tools#sub-agents) rows, questions, and response text as the HQ streams them. Tool
 calls and thinking are collected into a compact **Activity** row. Tap it to inspect each step and
 its available output. Thinking appears only when the model supplies it. Long responses stay compact
 in the transcript and offer **Continue reading** for the complete response. You can attach supported
@@ -102,7 +102,7 @@ updates arrived and returns to the live response. If you send while reading earl
 briefly reveals your new message and offers **Back to reading** so you can return to the same place.
 
 With a hardware keyboard, **Return** inserts a line break and **Cmd+Return** sends — matching the
-Send button. This differs from Mission Control and the web client, where Return sends; see
+Send button. This differs from Desktop and the web client, where Return sends; see
 [Composer keys](/chat-with-your-agent#composer-keys).
 
 While an agent is working, the send button becomes **Follow Up**. It adds your message to a shared
@@ -115,10 +115,10 @@ Every paired client sees the same admitted turns, activity, command outcomes, an
 Each window keeps its own text draft and reading position. If the connection drops, Dash keeps the
 partial response visible and resumes from the last durable event after reconnecting. New mutations
 wait for a connection, while the draft and cached conversation remain readable. If the connection
-fails before Dash can confirm that a new message was admitted, the app checks the gateway's
+fails before Dash can confirm that a new message was admitted, the app checks the HQ's
 canonical conversation before doing anything else. An ambiguous message stays saved across app
 restarts and is never resent automatically. When the conversation still exists, **Retry** reuses the
-exact original request ID so the gateway can resume or deduplicate the same turn instead of creating
+exact original request ID so the HQ can resume or deduplicate the same turn instead of creating
 a second one.
 
 If another client deleted that conversation, Dash never recreates or resends the saved message.
@@ -138,14 +138,14 @@ Recovery items survive app restarts and never include a Retry action.
 
 ## Talk to your agent
 
-When your gateway has a speech provider configured, Dash can turn your voice into a message, read
+When your HQ has a speech provider configured, Dash can turn your voice into a message, read
 an agent's replies back to you, or hold a full hands-free conversation in voice mode.
 
 <Note>
-  This needs a gateway running the version that adds speech, installed at the same time as (or
+  This needs an HQ running the version that adds speech, installed at the same time as (or
   before) an app build that expects it. An older app can't decode the capability an updated
-  gateway advertises, and an older gateway rejects the settings a newer app sends — pair the app
-  and gateway updates together.
+  HQ advertises, and an older HQ rejects the settings a newer app sends — pair the app
+  and HQ updates together.
 </Note>
 
 ### Dictate a message
@@ -169,7 +169,7 @@ whichever one was already reading. Only the first 4,000 characters of a reply ar
 ### Voice mode
 
 Tap the waveform button to the right of Send to start a hands-free conversation. It appears once
-your gateway's speech is available and microphone access hasn't been denied. If you haven't
+your HQ's speech is available and microphone access hasn't been denied. If you haven't
 decided on microphone access yet, iOS asks the first time you tap it.
 
 A full-screen orb opens with a line underneath naming what's happening — Listening, Thinking,
@@ -186,7 +186,7 @@ sentences. If a reply would include code, a table, or something long, the agent 
 the transcript rather than reading it aloud.
 
 Voice mode always tells you why it stopped, then closes the cover: **Connection lost** if the
-gateway connection drops, **Microphone stopped** if a phone call or other interruption takes the
+HQ connection drops, **Microphone stopped** if a phone call or other interruption takes the
 microphone away, or **Voice mode ended** if you close it yourself or send the app to the
 background. Either way, nothing is lost — every turn from the conversation stays in your chat
 afterward like any other message. Voice mode also works over Dash's hosted relay, so it behaves
@@ -196,18 +196,18 @@ the same way on cellular as it does on Wi-Fi.
 
 ### Settings → Speech
 
-Open **Settings → Speech** to see and change what the gateway hears and speaks with: the
+Open **Settings → Speech** to see and change what the HQ hears and speaks with: the
 speech-to-text model, the text-to-speech model and voice (with a **Preview voice** button that
 speaks a short sample), and the language dictation expects — **Auto** lets the provider detect
 what you're speaking. A **Realtime** row explains that live back-and-forth conversation isn't
 available yet on any configured provider.
 
-This row only appears once your gateway has a speech provider configured; otherwise the **Speech**
-section in Settings reads **Update your gateway to use speech.**
+This row only appears once your HQ has a speech provider configured; otherwise the **Speech**
+section in Settings reads **Update your HQ to use speech.**
 
 ## Manage agents
 
-Open **Squad** to inspect gateway-owned squad member status and configuration.
+Open **Squad** to inspect HQ-owned squad member status and configuration.
 
 - Create an agent by choosing a name, model, and system prompt.
 - Edit the model or prompt for an existing agent.
@@ -215,27 +215,27 @@ Open **Squad** to inspect gateway-owned squad member status and configuration.
 - Start a shared conversation directly from an agent's detail screen.
 - Delete an agent by typing its exact name. Its conversations remain in history as archived chats.
 
-Provider credentials, connectors, projects, gateway shutdown, and other host administration remain
-in Mission Control.
+Provider credentials, connectors, projects, HQ shutdown, and other host administration remain
+in Desktop.
 
 ## Work through connection changes
 
-Previously synced conversations and agents remain readable when the gateway is offline. You can
+Previously synced conversations and agents remain readable when the HQ is offline. You can
 keep a local draft, but creating, sending, renaming, deleting, and agent changes wait until the
-gateway reconnects. A banner distinguishes an offline gateway, a temporary relay failure, a rate
-limit, rejected credentials, and an incompatible app or gateway version.
+HQ reconnects. A banner distinguishes an offline HQ, a temporary relay failure, a rate
+limit, rejected credentials, and an incompatible app or HQ version.
 
-Use **Settings → Reconnect** after fixing connectivity. If the gateway rejected the saved
+Use **Settings → Reconnect** after fixing connectivity. If the HQ rejected the saved
 credentials or its identity changed, open **Settings** and choose **Disconnect & Forget**, then
-sign back in and tap the gateway again in the picker — no QR code needed.
+sign back in and tap the HQ again in the picker — no QR code needed.
 
-## Remove a gateway from the device
+## Remove an HQ from the device
 
 Open **Settings** and choose **Disconnect & Forget**. After confirmation, Dash stops its connections
-and removes that gateway's credentials, cached conversations, agents, attachments, and drafts from
-the device. The canonical gateway data is not deleted.
+and removes that HQ's credentials, cached conversations, agents, attachments, and drafts from
+the device. The canonical HQ data is not deleted.
 
 <Warning>
   **Disconnect & Forget** cannot restore local drafts or cached attachments. Make sure anything you
-  need has synced before removing the gateway.
+  need has synced before removing the HQ.
 </Warning>

@@ -310,7 +310,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     }));
   };
 
-  const markOffline = (message = 'Gateway offline — cached conversations are read-only'): void => {
+  const markOffline = (message = 'HQ offline — cached conversations are read-only'): void => {
     set((state) => ({
       gatewayOnline: false,
       conversations: state.conversations.map((conversation) =>
@@ -868,7 +868,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     async createConversation(agentId) {
       if (!get().gatewayOnline || get().conversationAuthority === 'unresolved') {
-        throw new Error('Gateway offline — cached conversations are read-only');
+        throw new Error('HQ offline — cached conversations are read-only');
       }
       const requestId = crypto.randomUUID();
       const conversation = await window.api.chatCreateConversation(agentId, requestId);

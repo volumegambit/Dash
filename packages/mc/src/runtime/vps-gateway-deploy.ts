@@ -48,7 +48,7 @@ export function deriveRelayConnectionUrls(
     throw new Error('Relay URL must use ws, wss, http, or https');
   }
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(gatewayId)) {
-    throw new Error('Gateway id must be a DNS-safe label');
+    throw new Error('HQ id must be a DNS-safe label');
   }
 
   const secure = parsed.protocol === 'wss:' || parsed.protocol === 'https:';
@@ -76,7 +76,7 @@ export function buildVpsGatewayDeployScript(req: VpsGatewayDeployRequest): strin
   const gatewayId = req.gatewayId.trim();
 
   if (!req.host.trim()) throw new Error('VPS host is required');
-  if (!gatewayId) throw new Error('Gateway id is required');
+  if (!gatewayId) throw new Error('HQ id is required');
   if (!relayUrl) throw new Error('Relay URL is required');
   if (!req.relayToken) throw new Error('Relay token is required');
   if (!req.managementToken) throw new Error('Management token is required');
@@ -115,7 +115,7 @@ npm run build
 
 cat > "$HOME/.config/systemd/user/dash-gateway.service" <<UNIT
 [Unit]
-Description=Dash Gateway
+Description=Dash HQ
 After=network-online.target
 
 [Service]

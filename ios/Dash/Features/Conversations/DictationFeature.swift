@@ -224,9 +224,9 @@ final class DictationFeature {
     }
     switch code {
     case "unavailable":
-      return "Speech isn't set up on your gateway yet."
+      return "Speech isn't set up on your HQ yet."
     case "unauthorized":
-      return "Your gateway's speech provider key was rejected."
+      return "Your HQ's speech provider key was rejected."
     default:
       // The gateway's own sentence: it is the only party that knows what the
       // provider actually said.

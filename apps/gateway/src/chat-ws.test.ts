@@ -1402,7 +1402,7 @@ describe('mountChatWs protocol ownership', () => {
       expect(sentFrames(connection.socket)).toContainEqual({
         type: 'error',
         id: 'turn-answer',
-        error: 'Internal gateway error',
+        error: 'Internal HQ error',
         code: 'gateway_offline',
         retryable: true,
       });

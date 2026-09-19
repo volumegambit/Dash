@@ -1,14 +1,14 @@
 ---
 title: "Management API"
-description: "HTTP API for monitoring and controlling a running Dash gateway."
+description: "HTTP API for monitoring and controlling a running Dash HQ."
 ---
 
-The Management API lets you monitor and control the gateway programmatically. It's the same API
-Mission Control uses to deploy agents, connect messaging apps, and store credentials. Its
+The Management API lets you monitor and control the HQ programmatically. It's the same API
+Desktop uses to deploy agents, connect messaging apps, and store credentials. Its
 unprefixed administrative surface binds to `127.0.0.1` on port `9300` by default.
 
 Native clients do not receive that administrative access. On a local network they use the
-gateway's pinned HTTPS/WSS listener on the configured mobile port, which defaults to `9400`.
+HQ's pinned HTTPS/WSS listener on the configured mobile port, which defaults to `9400`.
 Both frozen pairing port fields carry that same listener port. The listener exposes only
 `/mobile/v1` and `/ws/chat`. Paths in the **Conversations** section are relative to `/mobile/v1`.
 A relay exposes the same native surface over TLS on port `443`.
@@ -37,13 +37,13 @@ Authorization: Bearer <your-mobile-token>
 Native WebSocket clients send that same bearer in the `Authorization` header, never in the URL.
 When a request travels through the hosted relay, the device additionally sends
 `x-dash-relay-credential`. The relay credential authorizes that device at the relay; it does not
-replace the Mobile bearer enforced by the gateway.
+replace the Mobile bearer enforced by the HQ.
 
 ## Health
 
 ### GET /health
 
-Returns gateway status and supported mobile capabilities. No authentication is required. The same
+Returns HQ status and supported mobile capabilities. No authentication is required. The same
 response is available from `GET /mobile/v1/health`.
 
 ```bash
@@ -66,15 +66,15 @@ curl http://localhost:9300/health
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `status` | `"healthy"` | Always `"healthy"` while the gateway is serving requests |
-| `startedAt` | `string` | ISO timestamp for this gateway process |
-| `pid` | `number` | Gateway process ID |
+| `status` | `"healthy"` | Always `"healthy"` while the HQ is serving requests |
+| `startedAt` | `string` | ISO timestamp for this HQ process |
+| `pid` | `number` | HQ process ID |
 | `agents` | `number` | Number of registered agents |
 | `channels` | `number` | Number of configured messaging channels |
 | `apiVersion` | `1` | Mobile API version |
 | `capabilities` | `string[]` | Features the client may use |
 
-Use `conversation-sync-v1` to enable gateway-authoritative conversation lists and messages. Use
+Use `conversation-sync-v1` to enable HQ-authoritative conversation lists and messages. Use
 `chat-resume-v1` to enable durable sequences, replay, and resumable WebSocket turns.
 
 ## Runtime status
@@ -109,7 +109,7 @@ credentials, conversation text, or pending-message contents.
 
 ### GET /identity
 
-Returns the gateway's stable ID and Ed25519 public key. Native clients call
+Returns the HQ's stable ID and Ed25519 public key. Native clients call
 `GET /mobile/v1/identity` with their phone-scoped Mobile bearer. The unprefixed loopback
 `GET /identity` alias requires the administrative management bearer instead.
 
@@ -125,8 +125,8 @@ curl "$MOBILE_URL/mobile/v1/identity" \
 }
 ```
 
-The public key identifies the gateway and is safe to return to clients. The corresponding private
-key never leaves the gateway machine.
+The public key identifies the HQ and is safe to return to clients. The corresponding private
+key never leaves the HQ machine.
 
 ## Agents
 
@@ -145,7 +145,7 @@ Create and manage agents. New and updated agents are persisted to
 
 Native clients use these routes beneath `/mobile/v1`. Mobile create accepts `name`, `model`, and
 `systemPrompt`; mobile update accepts `model` and/or `systemPrompt`. Agent responses never include
-provider API keys. The unprefixed routes remain available for Mission Control and support its full
+provider API keys. The unprefixed routes remain available for Desktop and support its full
 configuration fields.
 
 Agent skills are managed under the unprefixed agent routes — `GET/POST /agents/:id/skills`,
@@ -167,7 +167,7 @@ curl -X POST "$MOBILE_URL/mobile/v1/agents" \
 
 ## Conversations
 
-The gateway is the authority for capable clients' conversation metadata, messages, active turn,
+The HQ is the authority for capable clients' conversation metadata, messages, active turn,
 revision, and replay sequence. All routes below use the `/mobile/v1` native base and require the
 phone-scoped Mobile bearer.
 
@@ -222,7 +222,7 @@ curl -i -X PATCH "$MOBILE_URL/mobile/v1/conversations/$CONVERSATION_ID" \
 ```
 
 A successful change increments the revision and returns a new ETag. If another client changed the
-conversation first, the gateway returns HTTP `409` with `revision_conflict`. Replace the cached
+conversation first, the HQ returns HTTP `409` with `revision_conflict`. Replace the cached
 summary with `details.current`, then retry deliberately with that current revision.
 
 ```json
@@ -265,11 +265,11 @@ If a turn is active, deleting returns HTTP `409` with `conversation_busy` and th
 ### Deletion and archived history
 
 Successful `DELETE /conversations/:id` immediately removes its messages and replay entries, then
-returns a summary whose `status` is `deleted` and whose revision has advanced. The gateway retains
+returns a summary whose `status` is `deleted` and whose revision has advanced. The HQ retains
 that tombstone so `GET` remains deterministic. A later `PATCH` or repeated `DELETE` returns HTTP
 `410` with a non-retryable `not_found` error.
 
-Deleting an **agent** behaves differently: the gateway archives its conversations instead of
+Deleting an **agent** behaves differently: the HQ archives its conversations instead of
 deleting them. Their saved summaries, messages, and replay entries remain readable through the
 conversation routes even though the agent can no longer start a turn.
 
@@ -284,7 +284,7 @@ ws://localhost:9200/ws/chat?token=<your-chat-token>
 
 Native clients connect to the same unprefixed path on the pinned mobile listener and keep the
 Mobile bearer out of the URL. This example uses the default port; use the port from the pairing
-payload when the gateway configured an override:
+payload when the HQ configured an override:
 
 ```text
 wss://<gateway-host>:9400/ws/chat
@@ -332,12 +332,12 @@ are conversation-global and increase across turns. After a connection gap, call
 management API, apply entries in ascending sequence order, then send `resume` with the **same** turn
 ID and last durable sequence. Do not resend the message with a new turn ID.
 
-Closing a socket only detaches that resumable subscriber; provider work continues at the gateway.
+Closing a socket only detaches that resumable subscriber; provider work continues at the HQ.
 Send `cancel` to stop it. Messages without `resumable: true` retain the legacy connection-owned
 behavior and are cancelled when their socket closes. Clients must preserve or safely ignore
-unknown `event` variants so newer gateways remain compatible.
+unknown `event` variants so newer HQs remain compatible.
 
-`message` also accepts an optional `modality: 'text' | 'voice'`. The gateway sets this to `'voice'`
+`message` also accepts an optional `modality: 'text' | 'voice'`. The HQ sets this to `'voice'`
 only for the turn that its own hands-free voice session starts on the user's behalf (see
 [Voice frames](#voice-frames) below) — it appends the spoken-mode system prompt for that turn only.
 A dictated message is still ordinary typed text once transcribed: a client sending it as a `message`
@@ -363,7 +363,7 @@ used for resumable chat, gated on the same `speech-v1` capability as the [Speech
 
 | Type | Meaning |
 |------|---------|
-| `voice_state` | The session's phase: `listening`, `transcribing`, `thinking`, `speaking`, `muted`, or `stopped`. The gateway never actually sends `stopped` — a session ends with a `voice_stopped { reason }` frame instead |
+| `voice_state` | The session's phase: `listening`, `transcribing`, `thinking`, `speaking`, `muted`, or `stopped`. The HQ never actually sends `stopped` — a session ends with a `voice_stopped { reason }` frame instead |
 | `voice_transcript` | Text recognized from the user's speech. The transcript that starts a turn carries `final: true` and a `turnId`, and is always emitted before that turn's `accepted` |
 | `voice_speech` | One chunk of the agent's spoken reply: `format: 'mp3'` (one clip per sentence) or `format: 'pcm16'` (raw chunks, with `sampleRate` set) |
 | `voice_error` | A provider-level failure. `code` is the narrower `SpeechErrorCode` union: `unauthorized`, `unavailable`, `too_long`, `too_large`, `invalid`, `provider`, `network` |
@@ -381,17 +381,17 @@ Session rules:
 
 - One voice session per socket. Sending `voice_start` while a session is already open stops the
   previous one with `voice_stopped { reason: 'replaced' }` before the new session starts.
-- `voice_audio` sent before the gateway's own `voice_state listening` is silently dropped, not
-  rejected — the phone begins streaming the instant it sends `voice_start`, before the gateway has
+- `voice_audio` sent before the HQ's own `voice_state listening` is silently dropped, not
+  rejected — the phone begins streaming the instant it sends `voice_start`, before the HQ has
   confirmed the speech provider is available.
 - The `voice_transcript` carrying the `turnId` that starts a turn is always emitted before the
   resumable hub's `accepted` for that turn, so a client can render the optimistic user row before
   the turn is confirmed.
-- The gateway never sends `voice_state { state: 'stopped' }`, even though `stopped` is a valid
+- The HQ never sends `voice_state { state: 'stopped' }`, even though `stopped` is a valid
   enum value on the wire; every session end is a `voice_stopped { reason }` frame instead.
 - `voice_audio.pcm` decodes to at most 16384 bytes (16 KiB) per frame; one byte over answers the
   ordinary `error` frame with `code: 'validation_failed'`, not `voice_error`.
-- After the last `voice_speech` of a turn the gateway stays in `speaking` until the client sends
+- After the last `voice_speech` of a turn the HQ stays in `speaking` until the client sends
   `voice_played` with a `seq` at least as high as that chunk's, or until an 8-second safety timer
   fires. Clients that flush playback when the session leaves `speaking` must send it, or every
   reply's last sentence is cut off. A `voice_played` for audio a barge-in discarded should not be
@@ -414,7 +414,7 @@ See [Messaging Apps](/messaging-apps) for routing rules and access control.
 
 ## Credentials
 
-Store provider API keys and messaging tokens in the gateway's encrypted store
+Store provider API keys and messaging tokens in the HQ's encrypted store
 (`~/.dash/gateway/credentials.enc`). See [Secrets](/secrets).
 
 | Method | Path | Purpose |
@@ -449,7 +449,7 @@ WebSocket-based flow on the same `speech-v1` capability — see
 | `POST` | `/speech/speech` | Synthesize speech, streamed as `audio/mpeg` (or `audio/wav` for a PCM-only model) |
 
 `GET /health` advertises the `speech-v1` capability only while a speech provider can actually
-transcribe and speak; a gateway without a configured provider omits it, and older clients must
+transcribe and speak; an HQ without a configured provider omits it, and older clients must
 tolerate capability strings they don't recognize.
 
 `PATCH /speech/config` is a shallow per-section merge: an omitted key keeps its current value, and
@@ -475,7 +475,7 @@ curl -i -X POST "$MOBILE_URL/mobile/v1/speech/transcriptions" \
 ```
 
 The decoded audio must be at most 8 MiB (`413 too_large`); a clip is expected to be at most 60
-seconds. The gateway also fast-rejects on a `Content-Length` above 12 MB before reading the body at
+seconds. The HQ also fast-rejects on a `Content-Length` above 12 MB before reading the body at
 all, so an oversized upload is refused without being buffered.
 
 `POST /speech/speech` is the only operation in this namespace whose success body isn't JSON — it
@@ -497,12 +497,12 @@ accept `audio/mpeg`, `audio/wav`, and `application/json` on this route.
 `/speech/*` reuses the `MobileApiError` envelope but passes the provider-level error code through
 untranslated: `unauthorized` (the provider rejected the API key), `unavailable` (no provider is
 configured — retryable), `too_large` / `too_long` (payload over a limit), `provider` (the provider
-returned an error), `network` (the gateway couldn't reach it), and `invalid` (a malformed request).
+returned an error), `network` (the HQ couldn't reach it), and `invalid` (a malformed request).
 
 ## Events
 
-The unprefixed `GET /events` and replay routes remain available for Mission Control. Native clients
-use the corresponding `/mobile/v1` routes listed under **Conversations**. The gateway's durable
+The unprefixed `GET /events` and replay routes remain available for Desktop. Native clients
+use the corresponding `/mobile/v1` routes listed under **Conversations**. The HQ's durable
 event log lets clients replay missed chat frames without sending the prompt to the model again.
 See [Architecture](/architecture#event-log-and-chat-replay).
 

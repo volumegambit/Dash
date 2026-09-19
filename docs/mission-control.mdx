@@ -1,11 +1,11 @@
 ---
-title: "Mission Control"
-description: "Manage your AI squad from the Mission Control desktop app."
+title: "Desktop"
+description: "Manage your AI squad from the Desktop desktop app."
 ---
 
-Mission Control is your command center for Dash. Deploy new squad members, monitor running ones, chat with them directly, and connect them to messaging platforms — all from one place.
+Desktop is your command center for Dash. Deploy new squad members, monitor running ones, chat with them directly, and connect them to messaging platforms — all from one place.
 
-It's a **desktop app** that spawns and supervises the gateway for you. For automation, the gateway also exposes a [Management API](/api-reference) you can drive directly.
+It's a **desktop app** that spawns and supervises the HQ for you. For automation, the HQ also exposes a [Management API](/api-reference) you can drive directly.
 
 ## Desktop app
 
@@ -47,9 +47,9 @@ Click a squad member to see everything about it. The detail view has three tabs:
 
 ### Chat
 
-Talk to any running agent directly from Mission Control. The built-in chat interface uses a **tabbed layout** — open multiple conversations at once and switch between them like browser tabs (⌘T to open, ⌘W to close, ⌘1–9 to switch). Responses stream in real time — you see the agent thinking, using tools, and building its answer as it goes.
+Talk to any running agent directly from Desktop. The built-in chat interface uses a **tabbed layout** — open multiple conversations at once and switch between them like browser tabs (⌘T to open, ⌘W to close, ⌘1–9 to switch). Responses stream in real time — you see the agent thinking, using tools, and building its answer as it goes.
 
-The empty chat panel shows your recent conversations and deployed agents for quick access. Select which agent to chat with, start a conversation, and messages are routed through the Gateway automatically. Conversations persist as sessions, so you can pick up where you left off.
+The empty chat panel shows your recent conversations and deployed agents for quick access. Select which agent to chat with, start a conversation, and messages are routed through the HQ automatically. Conversations persist as sessions, so you can pick up where you left off.
 
 Tool calls render as collapsed cards you can expand for full inputs and results; task lists and failures open on their own. See [Reading tool activity](/chat-with-your-agent#reading-tool-activity) for how the cards work across every client.
 
@@ -117,11 +117,11 @@ A step-by-step wizard to deploy a new agent. Walk through:
     Choose which capabilities the agent needs.
   </Step>
   <Step title="Deploy">
-    The gateway creates the agent in-process with its own workspace at `~/.dash/workspaces/<agent-id>/`.
+    The HQ creates the agent in-process with its own workspace at `~/.dash/workspaces/<agent-id>/`.
   </Step>
 </Steps>
 
-## Running Mission Control
+## Running Desktop
 
 <Tabs>
   <Tab title="Dev mode">
@@ -138,21 +138,21 @@ A step-by-step wizard to deploy a new agent. Walk through:
   </Tab>
 </Tabs>
 
-For automation or a headless server, run the gateway on its own and drive it through the [Management API](/api-reference) — see [Configuration](/configuration#running-the-gateway-standalone).
+For automation or a headless server, run the HQ on its own and drive it through the [Management API](/api-reference) — see [Configuration](/configuration#running-the-hq-standalone).
 
 ## How it connects
 
-Mission Control communicates with the gateway through two channels:
+Desktop communicates with the HQ through two channels:
 
 | Connection | Protocol | Default port | Purpose |
 |-----------|----------|-------------|---------|
 | Management API | HTTP | 9300 | Health checks, deploy/start/stop/restart, credentials, models |
 | Channel server | WebSocket | 9200 | Chat messages to and from agents |
 
-The desktop app connects to these automatically. On first launch, MC spawns the gateway as a background process and stores the auth tokens in the OS keychain. Subsequent launches reconnect to the existing gateway without re-spawning.
+The desktop app connects to these automatically. On first launch, Desktop spawns the HQ as a background process and stores the auth tokens in the OS keychain. Subsequent launches reconnect to the existing HQ without re-spawning.
 
 <Warning>
-  Mission Control stores deployment records locally on your machine. Gateway tokens are stored in the OS keychain. Back up your keychain if you want to preserve your configuration across machines.
+  Desktop stores deployment records locally on your machine. HQ tokens are stored in the OS keychain. Back up your keychain if you want to preserve your configuration across machines.
 </Warning>
 
 ## What's next
@@ -162,7 +162,7 @@ The desktop app connects to these automatically. On first launch, MC spawns the 
     Learn how agents are configured and how they work.
   </Card>
   <Card title="Management API" icon="terminal" href="/api-reference">
-    Drive the gateway programmatically — agents, channels, credentials.
+    Drive the HQ programmatically — agents, channels, credentials.
   </Card>
   <Card title="Messaging Apps" icon="comments" href="/messaging-apps">
     Connect agents to Telegram, WhatsApp, and more.

@@ -17,7 +17,7 @@ protocol PairingChatChecking: Actor {
 extension ChatConnection: PairingChatChecking {}
 
 enum PairingVerificationStep: String, Equatable, Sendable {
-  case reachability = "Checking gateway"
+  case reachability = "Checking HQ"
   case capabilities = "Checking compatibility"
   case identity = "Verifying identity"
   case agents = "Loading agents"
@@ -523,13 +523,13 @@ final class PairingFeature {
     if error is PairingInstallError {
       return PairingFailure(
         title: "Couldn't save connection",
-        message: "Your gateway was verified, but Dash couldn't save it on this device. Try again."
+        message: "Your HQ was verified, but Dash couldn't save it on this device. Try again."
       )
     }
     if error is PairingValidationError || error is DecodingError {
       return PairingFailure(
         title: "Invalid connection details",
-        message: "Check the gateway address, ports, and connection values, then try again."
+        message: "Check the HQ address, ports, and connection values, then try again."
       )
     }
     if let error = error as? GatewayError {
@@ -537,27 +537,27 @@ final class PairingFeature {
       case .unauthorized:
         return PairingFailure(
           title: "Re-pair this device",
-          message: "The gateway rejected these credentials. Scan a fresh pairing code."
+          message: "The HQ rejected these credentials. Scan a fresh pairing code."
         )
       case .capabilityRequired:
         return PairingFailure(
           title: "Update Dash",
-          message: "This gateway does not support mobile conversation sync yet."
+          message: "This HQ does not support mobile conversation sync yet."
         )
       case .updateRequired:
         return PairingFailure(
           title: "Update Dash",
-          message: "Update Dash on this device and the gateway to compatible versions."
+          message: "Update Dash on this device and the HQ to compatible versions."
         )
       case .gatewayOffline:
         return PairingFailure(
-          title: "Gateway offline",
-          message: "The relay cannot reach this gateway. Check Mission Control and try again."
+          title: "HQ offline",
+          message: "The relay cannot reach this HQ. Check Desktop and try again."
         )
       case .transport:
         return PairingFailure(
-          title: "Gateway offline",
-          message: "Make sure the gateway is running and reachable, then try again."
+          title: "HQ offline",
+          message: "Make sure the HQ is running and reachable, then try again."
         )
       case .rateLimited(let retryAfter):
         return PairingFailure(
@@ -573,7 +573,7 @@ final class PairingFeature {
     }
     return PairingFailure(
       title: "Couldn't connect",
-      message: "Check the pairing code and gateway, then try again."
+      message: "Check the pairing code and HQ, then try again."
     )
   }
 

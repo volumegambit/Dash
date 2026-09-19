@@ -1304,9 +1304,9 @@ export async function startGateway(
     if (lanServer) lanPort = (lanServer.server.address() as { port: number }).port;
     if (flags.verbose) console.log('[gateway] chat-ws verbose logging enabled');
 
-    console.log(`Gateway management API listening on port ${managementPort}`);
-    console.log(`Gateway channel server listening on port ${channelPort}`);
-    if (lanServer) console.log(`Gateway pinned mobile LAN server listening on port ${lanPort}`);
+    console.log(`HQ management API listening on port ${managementPort}`);
+    console.log(`HQ channel server listening on port ${channelPort}`);
+    if (lanServer) console.log(`HQ pinned mobile LAN server listening on port ${lanPort}`);
 
     // Relay mode: when --relay-url is set, dial OUT to the relay and replay phone
     // traffic against our own loopback servers. With --control-plane-url present

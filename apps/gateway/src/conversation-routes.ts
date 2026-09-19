@@ -31,7 +31,7 @@ export function toMobileApiError(error: unknown): {
   }
   return {
     status: 500,
-    body: { code: 'gateway_offline', error: 'Internal gateway error', retryable: true },
+    body: { code: 'gateway_offline', error: 'Internal HQ error', retryable: true },
   };
 }
 

@@ -1,9 +1,9 @@
-# Mission Control — Test Plan
+# Desktop — Test Plan
 
 Test plan for agent-driven QA. Each section is independently executable — it declares its required state and includes bootstrap steps to set it up from scratch.
 
 **How to use this plan:**
-1. Launch Mission Control in dev mode (`npm run mc:dev` from repo root)
+1. Launch Desktop in dev mode (`npm run mc:dev` from repo root)
 2. Each section has a **Precondition** block. If the state isn't met, follow the **Bootstrap** steps to set it up.
 3. Sections can be run individually (e.g., "Run Section 8" to test file tool use) or sequentially (running Sections 1-4 in order naturally builds up the state later sections need).
 4. At each "Verify" step, take a screenshot and judge against the criteria.
@@ -16,7 +16,7 @@ Test plan for agent-driven QA. Each section is independently executable — it d
 MC_DATA_DIR=/tmp/mc-test-$(date +%s) npm run mc:dev
 ```
 
-**Port isolation (required for QA runs):** MC launches its gateway on fixed ports by default (9300 management / 9200 channel), so a QA instance collides with a personal MC already running on the machine ("Port 9300 is already in use by another gateway"). QA runs must override the ports and isolate the data tree:
+**Port isolation (required for QA runs):** Desktop launches its HQ on fixed ports by default (9300 management / 9200 channel), so a QA instance collides with a personal Desktop already running on the machine ("Port 9300 is already in use by another HQ"). QA runs must override the ports and isolate the data tree:
 
 ```bash
 DASH_HOME=/tmp/mc-qa-$(date +%s) \
@@ -25,21 +25,21 @@ MC_GATEWAY_CHANNEL_PORT=9210 \
 npm run mc:dev
 ```
 
-- `MC_GATEWAY_MANAGEMENT_PORT` / `MC_GATEWAY_CHANNEL_PORT` (defaults 9300/9200) move the QA gateway off the personal MC's ports. All MC-internal URLs follow automatically — `gateway-state.json` is the source of truth for ports. Invalid values fail launch loudly rather than falling back.
-- `DASH_HOME` relocates the whole `~/.dash` tree. Without it a QA gateway shares `~/.dash/gateway` (agents.json, credentials, event-log DB) with the personal gateway, so QA's agent create/delete tests would mutate the user's real agents.
-- The OS keychain entry (service `dash-mission-control`) is machine-global. A second MC instance reuses the existing tokens rather than rotating them, so QA does not break a running personal MC's auth — but do **not** run "Reset Gateway" (which clears the shared keychain) while a personal MC is running.
+- `MC_GATEWAY_MANAGEMENT_PORT` / `MC_GATEWAY_CHANNEL_PORT` (defaults 9300/9200) move the QA HQ off the personal Desktop's ports. All Desktop-internal URLs follow automatically — `gateway-state.json` is the source of truth for ports. Invalid values fail launch loudly rather than falling back.
+- `DASH_HOME` relocates the whole `~/.dash` tree. Without it a QA HQ shares `~/.dash/gateway` (agents.json, credentials, event-log DB) with the personal HQ, so QA's agent create/delete tests would mutate the user's real agents.
+- The OS keychain entry (service `dash-mission-control`) is machine-global. A second Desktop instance reuses the existing tokens rather than rotating them, so QA does not break a running personal Desktop's auth — but do **not** run "Reset HQ" (which clears the shared keychain) while a personal Desktop is running.
 
 ---
 
 ## Section 1: Fresh App Launch & Setup Wizard
 
-**Precondition:** Clean data directory (no prior setup). Start MC with `DASH_HOME=/tmp/mc-test-$(date +%s) MC_GATEWAY_MANAGEMENT_PORT=9310 MC_GATEWAY_CHANNEL_PORT=9210 npm run mc:dev` (see "Port isolation" in the preamble).
+**Precondition:** Clean data directory (no prior setup). Start Desktop with `DASH_HOME=/tmp/mc-test-$(date +%s) MC_GATEWAY_MANAGEMENT_PORT=9310 MC_GATEWAY_CHANNEL_PORT=9210 npm run mc:dev` (see "Port isolation" in the preamble).
 
-### 1.1 Gateway Initialization
+### 1.1 HQ Initialization
 1. Launch the app
 2. **Verify:** The window appears already dark — no white-screen flash before the first render (the main window is created hidden and revealed on `ready-to-show`)
 3. **Verify:** A setup wizard screen is visible (not the dashboard)
-4. **Verify:** A loading spinner or "Setting up" message is shown while the gateway initializes
+4. **Verify:** A loading spinner or "Setting up" message is shown while the HQ initializes
 5. Wait for initialization to complete (or fail)
 
 ### 1.1a Packaged Release Startup
@@ -48,18 +48,18 @@ Before publishing desktop installers, build with `npm run mc:package` and run th
 with a temporary `DASH_HOME`, unused management/channel/LAN ports, and a minimal system `PATH`.
 Do not reset the machine-global keychain during this check.
 
-1. Verify the app opens and its gateway becomes healthy without Homebrew or nvm on `PATH`.
-2. Verify the gateway process uses the Node executable under the app's `Resources/runtime`.
+1. Verify the app opens and its HQ becomes healthy without Homebrew or nvm on `PATH`.
+2. Verify the HQ process uses the Node executable under the app's `Resources/runtime`.
 3. Verify all five core providers appear and the bundled plugin version matches the release.
 4. Verify provider catalogs, bundled skills, and SQL migrations exist in the packaged resources.
 5. Run `scripts/smoke-desktop-runtime.mjs` against the packaged `Contents/Resources` directory.
 6. Repeat the runtime smoke with the matching native dependencies for each published architecture.
 
-### 1.2 Provider Selection (gateway-driven)
+### 1.2 Provider Selection (HQ-driven)
 
-> Note: The wizard provider picker is populated from the gateway's runtime plugins, exactly like the AI Providers page — labels and descriptions come from the provider catalogs, and cards are sorted by catalog `ui.sortOrder`. There is no hardcoded provider list in the wizard.
+> Note: The wizard provider picker is populated from the HQ's runtime plugins, exactly like the AI Providers page — labels and descriptions come from the provider catalogs, and cards are sorted by catalog `ui.sortOrder`. There is no hardcoded provider list in the wizard.
 
-1. After gateway init, a provider selection screen ("Choose Your AI Provider") should appear
+1. After HQ init, a provider selection screen ("Choose Your AI Provider") should appear
 2. **Verify:** Provider cards are listed in catalog `ui.sortOrder`: **Anthropic, OpenAI, Google, Moonshot (Kimi), OpenRouter** (plus any third-party provider plugins after those). Each card shows the catalog **label** and, when present, the catalog `ui.description` as a subtitle
 3. **Verify:** The **first** sorted provider (Anthropic) is **pre-selected** on arrival — it shows the selected/highlighted state and a check icon, and the continue button reads "Continue with Anthropic"
 4. Click the OpenAI card
@@ -67,11 +67,11 @@ Do not reset the machine-global keychain during this check.
 6. Click back to Anthropic, then click "Continue with Anthropic"
 
 #### 1.2a Wizard Picker Loading / Error / Retry
-1. Reach the provider step immediately after gateway init, before the runtime-plugins fetch resolves
+1. Reach the provider step immediately after HQ init, before the runtime-plugins fetch resolves
 2. **Verify:** A loading spinner is shown while the provider list is being fetched (no cards, no continue button yet)
-3. Simulate the gateway being unreachable for the fetch
+3. Simulate the HQ being unreachable for the fetch
 4. **Verify:** An error card is shown with the fetch error message (or a "no provider catalogs — make sure dash-core-providers is enabled" message) and a **Retry** button; no provider cards or continue button are shown
-5. Restore the gateway and click **Retry**
+5. Restore the HQ and click **Retry**
 6. **Verify:** The provider cards render and the first sorted provider is pre-selected
 
 ### 1.3 API Key Entry (instructions derive from catalog ui hints)
@@ -89,17 +89,17 @@ Do not reset the machine-global keychain during this check.
 1. **Verify:** The dashboard loads after the wizard completes
 2. **Verify:** The sidebar is visible with navigation links
 
-### 1.5 Gateway Fails to Start (Configured User)
+### 1.5 HQ Fails to Start (Configured User)
 
 **Precondition:** Setup previously completed — `settings.json` has `setupCompletedAt`, or a
-`gateway-state.json` exists in the MC data dir. Simulate a gateway that cannot start (e.g. launch MC
-under a Node version missing a required symbol, or otherwise force the gateway spawn to throw).
+`gateway-state.json` exists in the Desktop data dir. Simulate an HQ that cannot start (e.g. launch Desktop
+under a Node version missing a required symbol, or otherwise force the HQ spawn to throw).
 
-1. Launch MC. **Verify:** The **"Gateway failed to start"** screen appears — NOT the onboarding
+1. Launch Desktop. **Verify:** The **"HQ failed to start"** screen appears — NOT the onboarding
    wizard / "Welcome to Dash" keychain-consent screen.
-2. Click **Retry** while the gateway still can't start. **Verify:** The screen stays and shows the
+2. Click **Retry** while the HQ still can't start. **Verify:** The screen stays and shows the
    error text.
-3. Resolve the underlying cause, then click **Retry**. **Verify:** MC proceeds to the main app and
+3. Resolve the underlying cause, then click **Retry**. **Verify:** Desktop proceeds to the main app and
    chat is live.
 4. Relaunch and click **Quit** on the failure screen. **Verify:** The app exits.
 5. **Regression:** A genuinely new install (no `setupCompletedAt`, no `gateway-state.json`) still
@@ -116,7 +116,7 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ### 2.1 Sidebar Layout & Health
 1. Take a screenshot of the full sidebar
-2. **Verify:** Logo at top with a small green health dot (gateway healthy)
+2. **Verify:** Logo at top with a small green health dot (HQ healthy)
 3. **Verify:** Primary nav items with no section header: Chat, Agents, Projects. A DEVELOPER section (Under the Hood) appears in dev builds only
 4. **Verify:** A Settings entry is pinned in the sidebar footer (above Feedback), with active highlight when on any Settings page
 5. **Verify:** There are NO top-level items for AI Providers, Connectors (MCP), Plugins, Messaging Apps, Pair Device, or Web Search — all live under Settings
@@ -140,10 +140,10 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ## Section 3: AI Providers (Settings → AI Providers)
 
-**Precondition:** App running, gateway healthy, at least one API key configured.
+**Precondition:** App running, HQ healthy, at least one API key configured.
 **Bootstrap:** If no key exists, go to AI Providers → click "Add Key" for Anthropic → enter key name `default` and a valid API key from `test-credentials.json` → Save.
 
-> Note: MC no longer hardcodes the provider list. Every provider card — bundled and plugin-contributed alike — is rendered from the gateway's `GET /runtime/plugins` response (fetched over the T1 IPC bridge). Card title = catalog label, subtitle = catalog `ui.description`, ordering = catalog `ui.sortOrder`, and the connect-modal instructions are derived from the catalog `ui` hints. There is no separate "plugin providers" screen; core and plugin providers share one unified list and one connect flow.
+> Note: Desktop no longer hardcodes the provider list. Every provider card — bundled and plugin-contributed alike — is rendered from the HQ's `GET /runtime/plugins` response (fetched over the T1 IPC bridge). Card title = catalog label, subtitle = catalog `ui.description`, ordering = catalog `ui.sortOrder`, and the connect-modal instructions are derived from the catalog `ui` hints. There is no separate "plugin providers" screen; core and plugin providers share one unified list and one connect flow.
 
 ### 3.1 Page Layout
 1. Navigate to Settings → AI Providers
@@ -180,12 +180,12 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 3. **Verify:** The modal closes
 4. **Verify:** No key was added
 
-### 3.5 Loading & Error States (gateway-driven list)
-1. Open Settings → AI Providers immediately after a cold gateway start, before the runtime-plugins fetch resolves
+### 3.5 Loading & Error States (HQ-driven list)
+1. Open Settings → AI Providers immediately after a cold HQ start, before the runtime-plugins fetch resolves
 2. **Verify:** A centered loading spinner is shown while the provider list is being fetched (no cards yet)
-3. Simulate the gateway being unreachable when the fetch runs (e.g. stop the gateway, then reopen AI Providers)
-4. **Verify:** An error/empty card is shown titled **"No AI providers available"** with the fetch error message and a **Retry** button; clicking Retry re-fetches from the gateway
-5. Restore the gateway and click **Retry**
+3. Simulate the HQ being unreachable when the fetch runs (e.g. stop the HQ, then reopen AI Providers)
+4. **Verify:** An error/empty card is shown titled **"No AI providers available"** with the fetch error message and a **Retry** button; clicking Retry re-fetches from the HQ
+5. Restore the HQ and click **Retry**
 6. **Verify:** The provider cards render
 
 ### 3.6 Empty State via Disabling the Bundled Providers Plugin
@@ -268,23 +268,23 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 **Precondition:** At least two providers are connected (e.g. Anthropic AND OpenAI, so the model dropdown has more than one provider's models). This agent's model belongs to one of them (say Anthropic).
 
-> Note: The Providers card mirrors the Plugins card. It scopes which providers this agent may use — the choices come from the gateway's runtime provider list (same catalog labels and `ui.sortOrder` as the AI Providers page). Leaving it empty means **all** providers (the default for every existing agent — no change in behavior). Selecting a subset filters the agent's model dropdown to those providers.
+> Note: The Providers card mirrors the Plugins card. It scopes which providers this agent may use — the choices come from the HQ's runtime provider list (same catalog labels and `ui.sortOrder` as the AI Providers page). Leaving it empty means **all** providers (the default for every existing agent — no change in behavior). Selecting a subset filters the agent's model dropdown to those providers.
 
 1. On the agent detail page, click the "Configuration" tab and expand the **Providers** card
 2. **Verify:** The collapsed summary and expanded copy read **"All providers (default)"** — the expanded card explains the agent can use every provider and that selecting a subset filters the model dropdown to match
-3. **Verify:** An "Add provider..." dropdown lists **every provider in the gateway's runtime catalog** — the five bundled providers at minimum (Anthropic, OpenAI, Google, and the other bundled ones) — with their catalog labels, in catalog `ui.sortOrder` (e.g. Anthropic before OpenAI). The list is **not** gated by credential status: providers appear whether or not a key is connected (the card scopes which providers are *permitted*, independent of which are *configured*)
+3. **Verify:** An "Add provider..." dropdown lists **every provider in the HQ's runtime catalog** — the five bundled providers at minimum (Anthropic, OpenAI, Google, and the other bundled ones) — with their catalog labels, in catalog `ui.sortOrder` (e.g. Anthropic before OpenAI). The list is **not** gated by credential status: providers appear whether or not a key is connected (the card scopes which providers are *permitted*, independent of which are *configured*)
 4. Expand the **Models** card and note the primary model dropdown groups models by provider (optgroups for Anthropic, OpenAI, etc.)
 5. Back in the Providers card, select **only Anthropic** from the "Add provider..." dropdown
 6. **Verify:** An **Anthropic** chip (catalog label) appears and the summary now reads **"1 selected"**
 7. Re-open the **Models** card. **Verify:** The primary model dropdown now shows **only the Anthropic optgroup(s)** — OpenAI (and any other now-disallowed provider) optgroups are gone
 8. **Verify (disallowed-but-selected primary):** If the agent's primary model was an OpenAI model before you scoped it to Anthropic, that model stays visible in the dropdown with a **" (not allowed)"** suffix on its label (the value is kept, not silently dropped, so the conflict is obvious). If the agent started on an Anthropic model, set its primary to an OpenAI model first (before step 5), then re-check after scoping.
 9. **Verify (disallowed-but-selected fallback):** In the **Models** card, add a fallback model row and set it to an **OpenAI** model *before* scoping providers (the fallback dropdown, like the primary, only offers allowed providers once scoped — so the disallowed value must be selected first, or retained from a prior config). After scoping to Anthropic in step 5, re-open the Models card and confirm the **fallback** row also keeps its OpenAI model visible with the **" (not allowed)"** suffix (the marking applies to fallback rows, not just the primary)
-10. **Verify (inline policy error — whole chain disallowed):** For the error to surface inline you must make the **entire** model chain disallowed — with any *allowed* model anywhere in primary+fallbacks, the gateway silently falls back to it instead of erroring. So: set the primary **and every fallback** to OpenAI models (via the retained " (not allowed)"-marked values from steps 8–9), keep the agent scoped to **Anthropic only**, then navigate to **Chat**, select this agent, and send a message. **Verify:** The message surfaces the policy error inline in the conversation — text of the form **`Provider "openai" is not allowed for this agent (allowed: anthropic)`** (red error text) naming the current allow-list — rather than a normal model reply. (Equivalently: select the OpenAI primary+fallbacks first, chat once to confirm a normal reply, then scope to Anthropic and chat again — the *next* message errors, proving the allow-list is enforced live on the warm conversation without a restart.)
+10. **Verify (inline policy error — whole chain disallowed):** For the error to surface inline you must make the **entire** model chain disallowed — with any *allowed* model anywhere in primary+fallbacks, the HQ silently falls back to it instead of erroring. So: set the primary **and every fallback** to OpenAI models (via the retained " (not allowed)"-marked values from steps 8–9), keep the agent scoped to **Anthropic only**, then navigate to **Chat**, select this agent, and send a message. **Verify:** The message surfaces the policy error inline in the conversation — text of the form **`Provider "openai" is not allowed for this agent (allowed: anthropic)`** (red error text) naming the current allow-list — rather than a normal model reply. (Equivalently: select the OpenAI primary+fallbacks first, chat once to confirm a normal reply, then scope to Anthropic and chat again — the *next* message errors, proving the allow-list is enforced live on the warm conversation without a restart.)
 11. Return to Configuration → Providers, remove the **Anthropic** chip (click its ✕)
 12. **Verify:** The card returns to **"All providers (default)"** and the summary no longer shows a count
 13. Re-open the **Models** card. **Verify:** The model dropdown again lists **all** providers' optgroups (OpenAI restored), and any previously " (not allowed)"-marked model no longer carries the suffix
 14. **Verify (existing-agent default):** For an agent that has never had providers scoped, the Providers card shows "All providers (default)" and its model dropdown is unfiltered — confirming the allow-list is opt-in and does not change behavior for existing agents
-15. **Verify (failed save rolls back — Connectors, Plugins, AND Providers cards):** Make the gateway unreachable while MC stays open (e.g. `kill -9` the gateway process), then add or remove a chip in each of the three assignment cards. **Verify:** an inline red error banner with the failure message appears at the top of the expanded card, the chip and the collapsed summary (count / "All … (default)") revert to the last saved state — no phantom selection sticks — and for Providers the Models-card dropdown filter reverts too. Bring the gateway back and retry: the error clears and the change now sticks. All three cards must behave identically
+15. **Verify (failed save rolls back — Connectors, Plugins, AND Providers cards):** Make the HQ unreachable while Desktop stays open (e.g. `kill -9` the HQ process), then add or remove a chip in each of the three assignment cards. **Verify:** an inline red error banner with the failure message appears at the top of the expanded card, the chip and the collapsed summary (count / "All … (default)") revert to the last saved state — no phantom selection sticks — and for Providers the Models-card dropdown filter reverts too. Bring the HQ back and retry: the error clears and the change now sticks. All three cards must behave identically
 
 ---
 
@@ -357,33 +357,33 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 5. Click on conversation B
 6. **Verify:** Unread indicator clears
 
-### 6.8 Shared conversation history (capable gateway)
-1. Connect Mission Control and an iPhone/iPad test client to the same gateway.
-2. Create a conversation in Mission Control and send `desktop created this`.
+### 6.8 Shared conversation history (capable HQ)
+1. Connect Desktop and an iPhone/iPad test client to the same HQ.
+2. Create a conversation in Desktop and send `desktop created this`.
 3. Refresh Conversations on iOS. **Verify:** one conversation appears with the same title, agent name, canonical user message, and assistant response.
-4. Rename it on iOS, then return to Mission Control. **Verify:** the SSE invalidation refreshes the existing row; no duplicate row appears.
-5. Delete it on Mission Control. **Verify:** it disappears on both clients and reopening its old deep link shows not found rather than an empty replacement.
+4. Rename it on iOS, then return to Desktop. **Verify:** the SSE invalidation refreshes the existing row; no duplicate row appears.
+5. Delete it on Desktop. **Verify:** it disappears on both clients and reopening its old deep link shows not found rather than an empty replacement.
 
 ### 6.9 On this Mac legacy history
-1. Seed a local Mission Control conversation before connecting to a `conversation-sync-v1` gateway.
-2. Connect the capable gateway and open the conversation browser.
-3. **Verify:** gateway conversations are listed normally and the seeded item appears under **On this Mac**.
-4. Open the local item. **Verify:** its full transcript is readable; send, rename, and delete are disabled; no Move to gateway action exists.
-5. Inspect the gateway conversation list. **Verify:** the local conversation was not uploaded.
+1. Seed a local Desktop conversation before connecting to a `conversation-sync-v1` HQ.
+2. Connect the capable HQ and open the conversation browser.
+3. **Verify:** HQ conversations are listed normally and the seeded item appears under **On this Mac**.
+4. Open the local item. **Verify:** its full transcript is readable; send, rename, and delete are disabled; no Move to HQ action exists.
+5. Inspect the HQ conversation list. **Verify:** the local conversation was not uploaded.
 
-### 6.10 Cached gateway history while offline
-1. Open a gateway conversation and fully load its transcript.
-2. Stop or disconnect the gateway without changing the saved profile.
-3. **Verify:** the cached list/transcript remain visible under the nonmodal banner **Gateway offline — cached conversations are read-only.**
+### 6.10 Cached HQ history while offline
+1. Open an HQ conversation and fully load its transcript.
+2. Stop or disconnect the HQ without changing the saved profile.
+3. **Verify:** the cached list/transcript remain visible under the nonmodal banner **HQ offline — cached conversations are read-only.**
 4. **Verify:** New conversation, send, attachment, rename, and delete are disabled; no local shadow conversation/file is created.
-5. Restore the same gateway. **Verify:** canonical state refreshes and mutations re-enable.
+5. Restore the same HQ. **Verify:** canonical state refreshes and mutations re-enable.
 
 ### 6.11 Cross-device active turn, replay, and cancellation
-1. Start a slow turn on iOS while the same conversation is open in Mission Control.
-2. **Verify:** Mission Control shows **Active on another device**, streams/replays the same output, and disables a second send, rename, and delete.
-3. Disconnect Mission Control, let more output arrive, and reconnect it.
+1. Start a slow turn on iOS while the same conversation is open in Desktop.
+2. **Verify:** Desktop shows **Active on another device**, streams/replays the same output, and disables a second send, rename, and delete.
+3. Disconnect Desktop, let more output arrive, and reconnect it.
 4. **Verify:** missing output appears once, in order, and the final transcript matches iOS.
-5. Start another slow turn, click Stop in Mission Control, and watch iOS.
+5. Start another slow turn, click Stop in Desktop, and watch iOS.
 6. **Verify:** both clients show the durable cancelled outcome and no swarm worker remains active.
 
 ### 6.12 Working Directory Picker (chat header)
@@ -601,9 +601,9 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 4. **Verify:** The answer is sent and the question shows as answered
 
 ### 12.3 Answer an iOS-originated question
-1. Open the same capable-gateway conversation in Mission Control and iOS.
+1. Open the same capable-HQ conversation in Desktop and iOS.
 2. From iOS, start a turn that asks a question and wait for the question card to appear in both clients.
-3. Answer the question in Mission Control.
+3. Answer the question in Desktop.
 4. **Verify:** the answer appears once on both clients, the shared turn continues, and iOS cannot submit a second answer to the completed question.
 
 ---
@@ -690,33 +690,33 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 5. If retries are exhausted (persistent failure), **Verify:** a red error block appears (Section 14.1 behavior) and the turn ends
 
 ### 14.5 Conversation revision conflict
-1. Open the same gateway conversation in Mission Control and iOS.
-2. Rename it on iOS, then immediately try to rename or delete the stale row in Mission Control.
+1. Open the same HQ conversation in Desktop and iOS.
+2. Rename it on iOS, then immediately try to rename or delete the stale row in Desktop.
 3. **Verify:** the `revision_conflict` response refreshes the current canonical title/state and explains that the conversation changed.
 4. Review the refreshed state and retry. **Verify:** the mutation succeeds against the new revision without creating a duplicate row.
 
 ### 14.6 Conversation already active
-1. Start a slow turn on iOS, then try to send a different turn in the same conversation from Mission Control.
+1. Start a slow turn on iOS, then try to send a different turn in the same conversation from Desktop.
 2. **Verify:** the `conversation_busy` response shows **Active on another device**, preserves the canonical active turn, and does not add a second optimistic user message.
 3. Wait for completion or explicitly stop the active turn. **Verify:** sending becomes available again.
 
 ### 14.7 Chat rate limit
-1. Use a test gateway configured to return a chat rate-limit response with a retry delay.
-2. Send a message from Mission Control.
+1. Use a test HQ configured to return a chat rate-limit response with a retry delay.
+2. Send a message from Desktop.
 3. **Verify:** the rate-limit notice is non-destructive, identifies that retry is allowed, and keeps the canonical transcript readable.
 4. Wait for the displayed retry period and retry. **Verify:** a successful send uses the same conversation rather than creating a replacement.
 
 ### 14.8 Chat authorization and re-pair
-1. Pair Mission Control, then invalidate its chat credential on the test gateway.
-2. Open a gateway conversation or send a message.
-3. **Verify:** Mission Control explains that gateway authorization failed and requires reconnecting or re-pairing; it does not clear cached history or fall back to a local conversation.
+1. Pair Desktop, then invalidate its chat credential on the test HQ.
+2. Open an HQ conversation or send a message.
+3. **Verify:** Desktop explains that HQ authorization failed and requires reconnecting or re-pairing; it does not clear cached history or fall back to a local conversation.
 4. Reconnect/re-pair with a valid credential. **Verify:** the same canonical conversation refreshes and becomes writable.
 
 ### 14.9 Update Dash required contract shape
-1. Connect this Mission Control build to a test gateway that returns a required chat frame shape this version cannot decode.
+1. Connect this Desktop build to a test HQ that returns a required chat frame shape this version cannot decode.
 2. Start or resume a turn.
 3. **Verify:** chat shows **Update Dash** instead of silently dropping the frame, corrupting the transcript, or clearing history.
-4. Update Mission Control and reopen the conversation. **Verify:** the canonical history is still present and can resume normally.
+4. Update Desktop and reopen the conversation. **Verify:** the canonical history is still present and can resume normally.
 
 ---
 
@@ -805,7 +805,7 @@ There is no pre-send "missing credential" banner in chat; the input is not gated
 3. **Verify:** No script tags or event handlers execute (sanitized)
 
 ### 16.7 Cross-Client Event Ordering
-1. Open the same conversation in Mission Control, web, iOS, and Android.
+1. Open the same conversation in Desktop, web, iOS, and Android.
 2. Send a request that produces prose, a tool call, more prose, and a second tool call.
 3. **Verify:** Every client shows each prose segment and tool card in the order emitted.
 4. **Verify:** Tool completion updates the existing card without moving it below later prose.
@@ -962,15 +962,15 @@ There is no pre-send "missing credential" banner in chat; the input is not gated
 5. Send a message: `Hello from test`
 6. **Verify:** The message is sent successfully in Telegram Web
 
-### 20.7 Telegram — Verify Message Received in MC
-1. Switch back to Mission Control
+### 20.7 Telegram — Verify Message Received in Desktop
+1. Switch back to Desktop
 2. Navigate to Settings → Messaging Apps → click the Telegram channel
 3. Check the message log (if available) for the received message
 4. **Verify:** The message "Hello from test" appears in the log with the sender ID
 5. **Verify:** The log shows which agent handled the message
 
 ### 20.8 Telegram — Verify Agent Response in Chat
-1. Navigate to Chat in Mission Control
+1. Navigate to Chat in Desktop
 2. Look for a conversation created by the Telegram message
 3. **Verify:** The user message from Telegram appears in the conversation
 4. **Verify:** The agent's response is visible (the agent processed the message)
@@ -979,21 +979,21 @@ There is no pre-send "missing credential" banner in chat; the input is not gated
 1. Switch back to Telegram Web
 2. Check the chat with the test bot
 3. **Verify:** The bot has replied with the agent's response
-4. **Verify:** The response text matches what was shown in the MC Chat view
+4. **Verify:** The response text matches what was shown in the Desktop Chat view
 
 ### 20.10 Telegram — Send Multiple Messages
 1. In Telegram Web, send 3 messages rapidly: `Message 1`, `Message 2`, `Message 3`
-2. Switch to Mission Control Chat
+2. Switch to Desktop Chat
 3. **Verify:** All 3 messages were received and processed
 4. **Verify:** Each message has a corresponding agent response
 5. **Verify:** Messages are in the correct order
 
 ### 20.11 Telegram — Whitelist Enforcement
 1. If the channel was configured with whitelist mode:
-2. In MC, navigate to the channel detail and check the routing rule has sender condition
+2. In Desktop, navigate to the channel detail and check the routing rule has sender condition
 3. Send a message from the whitelisted user ID — should be received
 4. (If possible) have a non-whitelisted user message the bot
-5. **Verify:** Non-whitelisted messages are blocked (no conversation created in MC)
+5. **Verify:** Non-whitelisted messages are blocked (no conversation created in Desktop)
 
 ### 20.12 Telegram — Update Routing
 1. Navigate to the Telegram channel detail page
@@ -1052,7 +1052,7 @@ There is no pre-send "missing credential" banner in chat; the input is not gated
 
 ## Section 22: Settings
 
-The Settings page has its own left sub-nav with seven sections: **General** (Gateway, Squad, About) and **Agent Defaults** (Default Model Chain, Web Search) at the top, then **PROVIDERS & TOOLS** (AI Providers, Connectors (MCP), Plugins) and **ACCESS** (Messaging Apps, Devices). AI Providers, Connectors, Plugins, and Messaging Apps keep their existing behavior (Sections 3, 19, 20) — only their location changed.
+The Settings page has its own left sub-nav with seven sections: **General** (HQ, Squad, About) and **Agent Defaults** (Default Model Chain, Web Search) at the top, then **PROVIDERS & TOOLS** (AI Providers, Connectors (MCP), Plugins) and **ACCESS** (Messaging Apps, Devices). AI Providers, Connectors, Plugins, and Messaging Apps keep their existing behavior (Sections 3, 19, 20) — only their location changed.
 
 ### 22.0 Settings Sub-nav
 1. Navigate to Settings (sidebar footer entry)
@@ -1070,114 +1070,114 @@ The Settings page has its own left sub-nav with seven sections: **General** (Gat
 4. Select a model
 5. **Verify:** Selection is saved
 
-### 22.2 Gateway Restart (General)
-1. On Settings → General, locate the "Gateway" section
-2. **Verify:** "Restart Gateway" button is visible with a refresh icon
+### 22.2 HQ Restart (General)
+1. On Settings → General, locate the "HQ" section
+2. **Verify:** "Restart HQ" button is visible with a refresh icon
 3. Note the current sidebar health dot color (should be green)
-4. Click "Restart Gateway"
+4. Click "Restart HQ"
 5. **Verify:** Button changes to "Restarting..." with a spinning icon
 6. **Verify:** Button is disabled during restart (cannot click again)
 7. **Verify:** Sidebar health dot changes from green to yellow or red briefly
 8. Wait for restart to complete
-9. **Verify:** Button returns to "Restart Gateway" (no longer spinning)
+9. **Verify:** Button returns to "Restart HQ" (no longer spinning)
 10. **Verify:** Sidebar health dot returns to green
 11. Navigate to Agents page
 12. **Verify:** Agents are still listed and running (state survived the restart)
 13. Navigate to Chat, select an existing conversation
 14. **Verify:** Previous messages are still loaded (conversations survived the restart)
 15. Send a new message
-16. **Verify:** The agent responds successfully (gateway is fully operational)
-17. Start a slow response, wait until part of it is visible, then click "Restart Gateway".
-18. **Verify:** the partial transcript remains readable while Mission Control reconnects and is not replaced by an empty local conversation.
+16. **Verify:** The agent responds successfully (HQ is fully operational)
+17. Start a slow response, wait until part of it is visible, then click "Restart HQ".
+18. **Verify:** the partial transcript remains readable while Desktop reconnects and is not replaced by an empty local conversation.
 19. After the health dot returns to green, reopen the conversation. **Verify:** durable replay restores any missing output once and in order, preserves the partial response, and shows the canonical terminal outcome.
 
-### 22.2A Gateway Runtime Profile (General)
-**Precondition:** Gateway is healthy. For manual QA, use an isolated `MC_DATA_DIR`,
+### 22.2A HQ Runtime Profile (General)
+**Precondition:** HQ is healthy. For manual QA, use an isolated `MC_DATA_DIR`,
 `DASH_HOME`, `MC_GATEWAY_MANAGEMENT_PORT`, and `MC_GATEWAY_CHANNEL_PORT` as described in
 the preamble.
 
-1. On Settings → General, locate the "Gateway" section
+1. On Settings → General, locate the "HQ" section
 2. **Verify:** The runtime status row shows "This computer - healthy" and the local endpoint
    beneath it
 3. **Verify:** The raw management URL/token fields are not visible by default
-4. Click "Change gateway"
-5. **Verify:** The wizard shows "Use this computer", "Connect existing gateway", and
+4. Click "Change HQ"
+5. **Verify:** The wizard shows "Use this computer", "Connect existing HQ", and
    "Self-host on a VPS"
-6. **Verify:** No hosted Dash gateway option is visible in this release
+6. **Verify:** No hosted Dash HQ option is visible in this release
 7. Click "Use this computer"
 8. **Verify:** The runtime status remains "This computer - healthy"
-9. Restart Mission Control with the same isolated data directory
-10. **Verify:** The app opens normally and still reports the local gateway as healthy
+9. Restart Desktop with the same isolated data directory
+10. **Verify:** The app opens normally and still reports the local HQ as healthy
 
-### 22.2B Connect Existing Gateway (General)
-**Precondition:** Gateway is healthy. Use isolated QA data. If testing a real remote gateway,
+### 22.2B Connect Existing HQ (General)
+**Precondition:** HQ is healthy. Use isolated QA data. If testing a real remote HQ,
 use test-only management and chat tokens.
 
-1. On Settings → General, click "Change gateway"
-2. Click "Connect existing gateway"
-3. Enter a gateway name, management URL, chat URL, management token, chat token, and optional
+1. On Settings → General, click "Change HQ"
+2. Click "Connect existing HQ"
+3. Enter an HQ name, management URL, chat URL, management token, chat token, and optional
    relay credential
-4. **Verify:** "Use this gateway" is disabled before the connection is tested
+4. **Verify:** "Use this HQ" is disabled before the connection is tested
 5. Click "Test connection"
-6. **Verify:** A reachable gateway shows "Connection looks good"
-7. Click "Use this gateway"
-8. **Verify:** The runtime status changes to the saved gateway name and reports "healthy"
-9. **Verify:** The settings file contains only the gateway profile metadata (`mode`, name, URLs,
+6. **Verify:** A reachable HQ shows "Connection looks good"
+7. Click "Use this HQ"
+8. **Verify:** The runtime status changes to the saved HQ name and reports "healthy"
+9. **Verify:** The settings file contains only the HQ profile metadata (`mode`, name, URLs,
    timestamp) and does not contain the management token, chat token, or relay credential
-10. Restart Mission Control with the same isolated data directory
+10. Restart Desktop with the same isolated data directory
 11. **Verify:** A reachable saved relay profile is used on startup
 12. Click "Use this computer"
-13. **Verify:** The status returns to "This computer - healthy" and the local gateway can list
+13. **Verify:** The status returns to "This computer - healthy" and the local HQ can list
    agents
 
 ### 22.2C Connect Endpoint Failure Recovery (General)
-**Precondition:** Gateway is healthy in an isolated QA profile.
+**Precondition:** HQ is healthy in an isolated QA profile.
 
-1. Open Change gateway → Connect existing gateway
+1. Open Change HQ → Connect existing HQ
 2. Enter `http://127.0.0.1:9` as the management URL, `ws://127.0.0.1:9` as the chat URL, and
    dummy tokens
 3. Click "Test connection"
-4. **Verify:** Mission Control shows "Could not reach that gateway. Check the URL and tokens,
+4. **Verify:** Desktop shows "Could not reach that HQ. Check the URL and tokens,
    then try again."
-5. **Verify:** "Use this gateway" remains disabled and the active gateway profile is not changed
+5. **Verify:** "Use this HQ" remains disabled and the active HQ profile is not changed
 6. For startup recovery, create an isolated profile with an unreachable saved relay profile, or
    temporarily break a previously reachable test relay
-7. Restart Mission Control with the same isolated data directory
-8. **Verify:** The gateway failure recovery screen says "Saved gateway is not reachable"
-9. Click "Edit gateway connection"
-10. **Verify:** The same gateway chooser opens
+7. Restart Desktop with the same isolated data directory
+8. **Verify:** The HQ failure recovery screen says "Saved HQ is not reachable"
+9. Click "Edit HQ connection"
+10. **Verify:** The same HQ chooser opens
 11. Go back to the recovery screen, click "Use this computer"
-12. **Verify:** The app recovers and returns to the local gateway with "This computer - healthy"
+12. **Verify:** The app recovers and returns to the local HQ with "This computer - healthy"
 
-### 22.2D Deploy Gateway to VPS (General)
+### 22.2D Deploy HQ to VPS (General)
 **Precondition:** Use a disposable VPS with SSH access, a test relay domain/token, and an
-isolated MC profile. Do not run this against a personal gateway or production relay.
+isolated Desktop profile. Do not run this against a personal HQ or production relay.
 
-1. On Settings → General, click "Change gateway"
+1. On Settings → General, click "Change HQ"
 2. **Verify:** VPS fields are not visible before choosing the advanced path
 3. Click "Self-host on a VPS"
 4. Click "Deploy and connect" with the required fields empty
-5. **Verify:** A validation error is shown and no gateway profile is changed
-6. Fill Host, User, SSH port, SSH key, Gateway id, Relay URL, Relay token, optional VPS relay
+5. **Verify:** A validation error is shown and no HQ profile is changed
+6. Fill Host, User, SSH port, SSH key, HQ id, Relay URL, Relay token, optional VPS relay
    credential, Repo URL, and Branch
 7. Click "Deploy and connect"
 8. **Verify:** The button changes to "Deploying..." and is disabled while SSH deployment runs
 9. **Verify:** On the VPS, the `dash-gateway` user systemd service is installed, enabled, and
    running
-10. **Verify:** Mission Control tests the deployed gateway before saving the profile
-11. **Verify:** The runtime status changes to the derived relay gateway name and reports
+10. **Verify:** Desktop tests the deployed HQ before saving the profile
+11. **Verify:** The runtime status changes to the derived relay HQ name and reports
    "healthy"
 12. **Verify:** Pair Device shows the relay host rather than the local network host
-13. Restart Mission Control
-14. **Verify:** The saved relay gateway is reused on startup without re-entering tokens
+13. Restart Desktop
+14. **Verify:** The saved relay HQ is reused on startup without re-entering tokens
 15. Click "Use this computer"
-16. **Verify:** MC returns to the local gateway without deleting the remote secrets from the
+16. **Verify:** Desktop returns to the local HQ without deleting the remote secrets from the
     OS credential store
 
-### 22.3 Gateway Restart — Connector Recovery
+### 22.3 HQ Restart — Connector Recovery
 1. If MCP connectors are configured:
 2. Navigate to Settings → Connectors (MCP), note connector statuses (should be green)
-3. Go to Settings → General, click "Restart Gateway"
+3. Go to Settings → General, click "Restart HQ"
 4. Wait for restart to complete
 5. Navigate to Settings → Connectors (MCP)
 6. **Verify:** Connectors reconnect automatically (may briefly show reconnecting, then connected)
@@ -1200,51 +1200,51 @@ Dash for iOS no longer uses this card — it connects by account sign-in instead
 1. Navigate to Settings → Devices
 2. **Verify:** "Pair Device" card renders a QR code on a white tile
 3. **Verify:** The card says `Scan this code with the Dash mobile app for Android.` (no iOS mention) and its QR image has platform-neutral accessibility text.
-4. **Verify:** The gateway host is shown below the QR with a mode badge reading "local network" or "relay"
+4. **Verify:** The HQ host is shown below the QR with a mode badge reading "local network" or "relay"
 5. **Verify:** No tokens or credentials appear as plain text anywhere on the card
 6. With the badge showing "local network", scan the QR in the Dash Android app on the same Wi-Fi network.
-7. **Verify:** Android connects to the same gateway and chat succeeds. (Android keeps a private, non-resumable history — it does not join Mission Control's canonical conversation list; that's 22.7's iOS/Mission Control check.)
-8. If a relay gateway is enrolled (see 22.7): **Verify:** the badge reads "relay" and the host is the relay address
-9. Claim a gateway in Remote access (22.7) without leaving the page: **Verify:** the QR re-renders in relay mode (no stale "local network" badge)
+7. **Verify:** Android connects to the same HQ and chat succeeds. (Android keeps a private, non-resumable history — it does not join Desktop's canonical conversation list; that's 22.7's iOS/Desktop check.)
+8. If a relay HQ is enrolled (see 22.7): **Verify:** the badge reads "relay" and the host is the relay address
+9. Claim an HQ in Remote access (22.7) without leaving the page: **Verify:** the QR re-renders in relay mode (no stale "local network" badge)
 10. On a computer with multiple physical network connections, leave local pairing active. **Verify:** the QR uses the address selected by the operating system's default route; if no active route identifies one connection, Pair Device shows an ambiguity error instead of choosing an arbitrary address.
 11. With relay mode active, make local network-interface discovery unavailable while preserving relay connectivity. **Verify:** Pair Device still renders the relay QR and does not show a LAN-address or certificate-fingerprint error.
 
 ### 22.7 Remote Access (Devices)
 1. On Settings → Devices, locate the "Remote access" section below Pair Device
 2. **Verify:** When signed out, a "Sign in to Dash" button is shown
-3. If signed in and enrolled: **Verify:** "Gateway ready at" shows the claimed subdomain and a "Paired devices" list (with Revoke buttons) is present
-4. On the Dash iOS app, tap **Sign In**, sign in with the same Dash account, and tap this gateway in the list. **Verify:** it appears in the "Paired devices" list above once connected — iOS never uses the Pair Device QR code.
+3. If signed in and enrolled: **Verify:** "HQ ready at" shows the claimed subdomain and a "Paired devices" list (with Revoke buttons) is present
+4. On the Dash iOS app, tap **Sign In**, sign in with the same Dash account, and tap this HQ in the list. **Verify:** it appears in the "Paired devices" list above once connected — iOS never uses the Pair Device QR code.
 5. With the iOS device connected, move the phone off the LAN (for example, use cellular data). **Verify:** it keeps working — Dash for iOS is relay-only, so there's no LAN fallback to lose.
-6. Create a conversation on iOS and open it in Mission Control. **Verify:** both clients show the same canonical history and active turn through the relay.
-7. Rename the conversation in Mission Control and delete it on iOS. **Verify:** both changes propagate without a duplicate or empty replacement conversation.
-8. Click **Revoke** next to the iOS device, then reopen Dash on iOS. **Verify:** it shows "Re-pair required"; on the phone, open Settings → Disconnect & Forget, then sign back in and tap the gateway again in the picker — no QR code needed — to reconnect.
-9. Simulate a pre-web enrollment: enroll a gateway, then clear its chat capability on the control plane so only the relay address remains. Quit and relaunch Mission Control. **Verify:** the relaunch pushes the chat capability again (no user action beyond relaunching) — Dash for iOS can now connect to that gateway from the picker without showing "needs to be re-enrolled."
+6. Create a conversation on iOS and open it in Desktop. **Verify:** both clients show the same canonical history and active turn through the relay.
+7. Rename the conversation in Desktop and delete it on iOS. **Verify:** both changes propagate without a duplicate or empty replacement conversation.
+8. Click **Revoke** next to the iOS device, then reopen Dash on iOS. **Verify:** it shows "Re-pair required"; on the phone, open Settings → Disconnect & Forget, then sign back in and tap the HQ again in the picker — no QR code needed — to reconnect.
+9. Simulate a pre-web enrollment: enroll an HQ, then clear its chat capability on the control plane so only the relay address remains. Quit and relaunch Desktop. **Verify:** the relaunch pushes the chat capability again (no user action beyond relaunching) — Dash for iOS can now connect to that HQ from the picker without showing "needs to be re-enrolled."
 
 ### 22.8 Signer devices — approve a browser session
 **Precondition:** A Dash for iOS device is already signed in to the account (22.7) and
-has connected to a gateway at least once, so it's registered as a signer. Use a browser
+has connected to an HQ at least once, so it's registered as a signer. Use a browser
 that has never signed in to the web client for this account before. This flow lives in
-the web client and Dash for iOS, not Mission Control itself — MC's own role is just
-enrolling the gateway both clients connect through.
+the web client and Dash for iOS, not Desktop itself — Desktop's own role is just
+enrolling the HQ both clients connect through.
 
 1. Open the web client and sign in with a passkey for this account
-2. Pick a gateway this account has already enrolled
+2. Pick an HQ this account has already enrolled
 3. **Verify:** Instead of chatting immediately, the browser shows "Approve this
    device" with "Waiting for approval — scan this code with the Dash app on your phone."
    and a QR code with a live countdown
 4. On the iOS device, open **Settings** and tap **Approve a device**, then scan the QR
    code
-5. **Verify:** Dash shows a confirm sheet reading `Allow "<device>" to access <gateway>?`
-   naming the browser and the gateway
+5. **Verify:** Dash shows a confirm sheet reading `Allow "<device>" to access <HQ>?`
+   naming the browser and the HQ
 6. Tap **Approve**
 7. **Verify:** Within a couple of seconds, the browser continues past the QR screen
-   into the gateway's chat, with no further action needed there
+   into the HQ's chat, with no further action needed there
 8. Repeat from step 1 with a second new browser, but tap **Deny** on the confirm sheet
    instead
-9. **Verify:** The browser shows "Approval declined. You can try again from the gateway list."
+9. **Verify:** The browser shows "Approval declined. You can try again from the HQ list."
 10. Repeat from step 1 with a third new browser, but let the countdown run out without
     scanning
-11. **Verify:** The browser shows "The code expired. Try again from the gateway list."
+11. **Verify:** The browser shows "The code expired. Try again from the HQ list."
 12. On the iOS device, scan an already-expired QR code (reuse the one from step 11, or
     wait out its own approval window)
 13. **Verify:** Dash shows "This code has expired. Ask the device to try again."
@@ -1277,7 +1277,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 7. **Verify:** Error messages appear in red below the relevant input
 
 ### 23.3 Status Dots
-1. Check status dots on: Sidebar (gateway), Agents list, Connectors page, Agent detail (channels tab)
+1. Check status dots on: Sidebar (HQ), Agents list, Connectors page, Agent detail (channels tab)
 2. **Verify:** Green = healthy/connected/running — same shade everywhere
 3. **Verify:** Yellow = warning/starting — same shade everywhere
 4. **Verify:** Red = error/disconnected — same shade everywhere
@@ -1333,10 +1333,17 @@ Take screenshots of every page and evaluate against these criteria. This section
 6. **Verify:** Content fills appropriately (no awkward whitespace)
 
 ### 23.11 Conversation state indicators
-1. Compare a cached offline gateway conversation, an archived conversation, and a local legacy conversation in the browser and open tabs.
+1. Compare a cached offline HQ conversation, an archived conversation, and a local legacy conversation in the browser and open tabs.
 2. **Verify:** **Cached**, **Archived**, and **On this Mac** badges use consistent compact sizing, typography, spacing, and muted/read-only treatment.
-3. Disconnect a saved capable gateway. **Verify:** the nonmodal **Gateway offline — cached conversations are read-only.** banner remains visible without covering the conversation list, transcript, or navigation.
+3. Disconnect a saved capable HQ. **Verify:** the nonmodal **HQ offline — cached conversations are read-only.** banner remains visible without covering the conversation list, transcript, or navigation.
 4. **Verify:** the banner and badges do not use destructive error styling, and disabled conversation actions look consistent in every state.
+
+
+### 23.12 Product names
+1. Launch Desktop and expand the sidebar. **Verify:** the window title and sidebar wordmark say **Desktop**; dev/test window titles retain their environment suffix.
+2. Open the setup wizard, Settings → General, Devices, and the HQ connection wizard. **Verify:** product labels, buttons, helper text, and recovery messages use **HQ**.
+3. Open Under the Hood. **Verify:** log tabs are labeled **HQ** and **Desktop** and continue to display their existing logs.
+4. Select an existing connection with a custom name. **Verify:** its saved name, address, credentials, and history remain intact after restarting Desktop.
 
 ---
 
@@ -1412,7 +1419,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 
 ## Section 27: Projects
 
-**Precondition:** App running, gateway healthy, at least one agent created. For seeded data, ask an agent in Chat to "create a project called Gateway with key GATEWAY, then create three tasks in it" (the agent uses the `projects_*` tools), or create tasks via the UI as the steps below allow.
+**Precondition:** App running, HQ healthy, at least one agent created. For seeded data, ask an agent in Chat to "create a project called Gateway with key GATEWAY, then create three tasks in it" (the agent uses the `projects_*` tools), or create tasks via the UI as the steps below allow.
 
 ### 27.1 Sidebar entry & subnav
 1. **Verify:** The sidebar has a "Projects" entry (folder-kanban icon) among the primary items.
@@ -1497,14 +1504,14 @@ Take screenshots of every page and evaluate against these criteria. This section
 ### 27.12 Task detail — status & linked sessions
 1. On a task detail, change the header Status dropdown to "Review".
 2. **Verify:** The status pill/state updates and persists after navigating away and back.
-3. **Verify:** Linked Mission Control sessions appear as agent-named tabs. Sessions from other channels remain muted, non-clickable rows under "Linked Sessions".
-4. Seed more than 50 gateway conversations so this task's linked Mission Control session is beyond the first conversation page.
+3. **Verify:** Linked Desktop sessions appear as agent-named tabs. Sessions from other channels remain muted, non-clickable rows under "Linked Sessions".
+4. Seed more than 50 HQ conversations so this task's linked Desktop session is beyond the first conversation page.
 5. Open the linked session from the task detail.
-6. **Verify:** Mission Control fetches that exact canonical conversation by ID and opens its existing transcript; it does not create a replacement conversation or duplicate list row.
+6. **Verify:** Desktop fetches that exact canonical conversation by ID and opens its existing transcript; it does not create a replacement conversation or duplicate list row.
 
 ### 27.13 Reactivity (no polling)
-1. Open Projects → Kanban in MC.
-2. In a separate Chat conversation, ask an agent to "create a new task titled Reactivity Test" (uses `projects_*` tools), or create one via another MC window.
+1. Open Projects → Kanban in Desktop.
+2. In a separate Chat conversation, ask an agent to "create a new task titled Reactivity Test" (uses `projects_*` tools), or create one via another Desktop window.
 3. **Verify:** The new card appears in the Kanban board WITHOUT manually refreshing (driven by the `/projects/ws` broadcast).
 4. Have the agent move/update that task.
 5. **Verify:** The board reflects the change live.
@@ -1525,7 +1532,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 7. **Verify:** The confirm collapses back to the trash icon; nothing is deleted.
 8. Click the trash icon, then "Yes".
 9. **Verify:** The view navigates back to All tasks; the task AND its subtask are gone from All tasks, Kanban, and Inbox.
-10. Open a second MC window on Kanban before deleting another task.
+10. Open a second Desktop window on Kanban before deleting another task.
 11. **Verify:** The card disappears from the second window without a refresh (issue.deleted broadcast).
 12. Delete a SUBTASK from its own detail page.
 13. **Verify:** The view navigates to the parent task's detail, and the subtask no longer appears in the parent's Subtasks list.
@@ -1536,7 +1543,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 2. **Verify:** The right pane shows an "Assign agent" picker above Linked Sessions; disabled agents are not listed.
 3. Select an agent and click "Assign".
 4. **Verify:** You STAY on the task page; the button shows "Assigning…" then resets.
-5. **Verify:** Status flips to in_progress with sub-status agent_working (shown as a pill in the right pane), and a tab bar appears at the top of the main column: a "Task" tab plus a "🤖 <agent name>" tab per MC session — without a manual refresh.
+5. **Verify:** Status flips to in_progress with sub-status agent_working (shown as a pill in the right pane), and a tab bar appears at the top of the main column: a "Task" tab plus a "🤖 <agent name>" tab per Desktop session — without a manual refresh.
 6. **Verify:** The view auto-switches to the new session's tab, showing the kickoff message and the agent's streaming reply live at full column width. Clicking "Task" returns to DESCRIPTION (or an italic "No description") and TIMELINE with relative timestamps; no raw `comment_added` rows and no bare "Linked session <uuid>" rows (session links read "🤖 <agent> session linked"). While the agent streams, its tab shows a small accent dot (visible from the Task tab).
 7. When the agent asks a question / goes waiting_on_human, type an answer in the session tab's "Reply to the agent…" box and press Enter.
 8. **Verify:** Your reply and the agent's next streaming turn render in the tab without leaving the task page.
@@ -1545,21 +1552,21 @@ Take screenshots of every page and evaluate against these criteria. This section
 10. **Verify:** The main column switches to that session's transcript (active tab gets an accent underline); clicking the external-link icon at the top of the session content opens the SAME session in the full Chat view (title "KEY — task title", no duplicate conversation created).
 11. In Chat, ask the agent to add a comment to the task; return to the task detail.
 12. **Verify:** The comment appears in the timeline (agent-authored, non-highlighted).
-13. For a task with a linked session from a NON-MC channel (e.g. Telegram, seeded via that channel's agent), open its detail.
-14. **Verify:** That session gets NO tab; it appears under Linked Sessions in the right pane as a muted, non-clickable row with a "Session from another channel" tooltip, and the count reflects only such sessions. A task whose sessions are all MC sessions shows no Linked Sessions section; a task with no MC sessions shows no tab bar at all.
+13. For a task with a linked session from a NON-Desktop channel (e.g. Telegram, seeded via that channel's agent), open its detail.
+14. **Verify:** That session gets NO tab; it appears under Linked Sessions in the right pane as a muted, non-clickable row with a "Session from another channel" tooltip, and the count reflects only such sessions. A task whose sessions are all Desktop sessions shows no Linked Sessions section; a task with no Desktop sessions shows no tab bar at all.
 15. Open Projects → Kanban. **Verify:** Each card shows a small assign icon (person-plus) in its top-right, next to the 🤖 badge when present.
 16. Click a card's assign icon. **Verify:** A dropdown lists non-disabled agents; the card does NOT open. Pick an agent.
 17. **Verify:** The menu closes; the card moves to In Progress under "Agent working" without a refresh; the task detail shows the new linked session.
 18. Open Projects → All tasks (also check My work and a project's task table). **Verify:** The Assignee cell of each row has the same assign icon; clicking it opens the menu without opening the row, and Escape or an outside click closes it.
-19. With a task's detail page open, link a session WITHOUT using this window's UI — e.g. ask an agent in Chat to pick up the task via its projects tool, or assign an agent from a second MC window. **Verify:** The new "🤖 <agent>" session tab appears in the open task page's tab bar live (driven by the session.linked broadcast), without navigating away and back.
-20. With more than 50 gateway conversations, link the task to a Mission Control session outside the first conversation page and click its external-link icon.
+19. With a task's detail page open, link a session WITHOUT using this window's UI — e.g. ask an agent in Chat to pick up the task via its projects tool, or assign an agent from a second Desktop window. **Verify:** The new "🤖 <agent>" session tab appears in the open task page's tab bar live (driven by the session.linked broadcast), without navigating away and back.
+20. With more than 50 HQ conversations, link the task to a Desktop session outside the first conversation page and click its external-link icon.
 21. **Verify:** full Chat opens the same canonical conversation and transcript by ID, with no new conversation, empty replacement, or duplicate row.
 
 ---
 
 ## Section 28: Skills over chat
 
-**Precondition:** App running, gateway healthy, at least one agent created, and a messaging channel connected (Section 20) OR use the in-app Chat. To exercise install/remove, deploy or edit an agent with the **Skills** tools enabled (Deploy wizard → Tools → Skills group: Create Skill, Install Skill, Remove Skill).
+**Precondition:** App running, HQ healthy, at least one agent created, and a messaging channel connected (Section 20) OR use the in-app Chat. To exercise install/remove, deploy or edit an agent with the **Skills** tools enabled (Deploy wizard → Tools → Skills group: Create Skill, Install Skill, Remove Skill).
 
 ### 28.1 Bundled skills are available out of the box
 1. Open Chat with an agent (or message it over a connected channel).
@@ -1600,8 +1607,8 @@ Take screenshots of every page and evaluate against these criteria. This section
 3. Ask the agent to remove a bundled skill (e.g. "remove summarize-thread").
 4. **Verify:** The agent refuses — bundled skills cannot be removed.
 
-### 28.7 Skills tab in Mission Control
-**Precondition:** App running, gateway healthy, at least one agent created.
+### 28.7 Skills tab in Desktop
+**Precondition:** App running, HQ healthy, at least one agent created.
 1. Open an agent's detail page and click the **Skills** tab.
 2. **Verify:** A list of skills shows, each with a source badge (Bundled / Managed / Agent / Remote). Bundled skills (e.g. `deep-research`) appear by default.
 3. Click a bundled skill.
@@ -1621,7 +1628,7 @@ Take screenshots of every page and evaluate against these criteria. This section
 
 Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), and built-in plugins.
 
-**Preconditions:** Gateway running and MC connected (Sections 1–2). No test plugins installed yet.
+**Preconditions:** HQ running and Desktop connected (Sections 1–2). No test plugins installed yet.
 
 1. Navigate to Settings → Plugins. **Verify:** the five built-in plugins (Assistant, Communication, Creative, Developer, Skill Management) are listed, each with a "Built-in" badge, status "Loaded", a skills contribution tag, an Enable/Disable control, and NO Remove button. Each card shows a one-line **description** under the title (e.g. Developer: "Developer skills: code review, PR workflow, systematic debugging, writing tests"); a plugin whose manifest has no `description` shows no description line (no "undefined"/blank row).
 2. Disable "Developer". **Verify:** status flips to Disabled; in a chat with any agent, `load_skill code-review` no longer finds the skill. Re-enable and verify it returns.
@@ -1634,17 +1641,17 @@ Covers the Plugins screen (P3), plugin trust, per-agent plugin selection (P5), a
 
 ## Section 30: Squad widget (floating desktop squad)
 
-**Precondition:** App running, gateway healthy, at least one agent created, and the **Show the squad** toggle enabled (Settings → General → Squad). The squad is a separate always-on-top desktop window (not part of the main MC window); the in-app component is a headless publisher that streams per-agent session statuses (each carrying the agent's identity and a short **activity preview**) and the selected squad to that window over IPC. The user selects **one of nine themed squads** (Settings → General → Squad → SquadPicker — squads are the only selectable unit; there is **no** individual-pet selection): **kitchen** (sous chef, pastry chef, sushi chef, butcher, dishwasher), **office** (boss, accountant, intern, IT support, receptionist), **wait staff** (waiter, barista, sommelier, bartender, bubble-tea maker), **soldiers** (sergeant, scout, combat medic, rifleman, rocket soldier), **police** (police officer, detective, K9 handler, SWAT, motorcycle cop), **fire squad** (firefighter, fire chief, ladder firefighter, rookie firefighter, fire dalmatian), **villagers** (baker, blacksmith, fisherman, shepherd, delivery courier), **farmers** (farmer, dairy farmer, fruit picker, beekeeper, scarecrow), and **gym** (sled pusher, wall baller, rower, kettlebell athlete, weightlifter) — default **kitchen**. Each member is a frame-animated pixel-art sprite (PixelLab-generated), 45 sprites total.
+**Precondition:** App running, HQ healthy, at least one agent created, and the **Show the squad** toggle enabled (Settings → General → Squad). The squad is a separate always-on-top desktop window (not part of the main Desktop window); the in-app component is a headless publisher that streams per-agent session statuses (each carrying the agent's identity and a short **activity preview**) and the selected squad to that window over IPC. The user selects **one of nine themed squads** (Settings → General → Squad → SquadPicker — squads are the only selectable unit; there is **no** individual-pet selection): **kitchen** (sous chef, pastry chef, sushi chef, butcher, dishwasher), **office** (boss, accountant, intern, IT support, receptionist), **wait staff** (waiter, barista, sommelier, bartender, bubble-tea maker), **soldiers** (sergeant, scout, combat medic, rifleman, rocket soldier), **police** (police officer, detective, K9 handler, SWAT, motorcycle cop), **fire squad** (firefighter, fire chief, ladder firefighter, rookie firefighter, fire dalmatian), **villagers** (baker, blacksmith, fisherman, shepherd, delivery courier), **farmers** (farmer, dairy farmer, fruit picker, beekeeper, scarecrow), and **gym** (sled pusher, wall baller, rower, kettlebell athlete, weightlifter) — default **kitchen**. Each member is a frame-animated pixel-art sprite (PixelLab-generated), 45 sprites total.
 
 The widget renders **exactly one squad member per running agent** (capped at five): member *i* mirrors the *i*-th running agent (agents **sorted by name**), members are taken from the squad roster in display order, and the window **resizes live** to fit the member count. With **no agents running, a single idle member** remains (the widget never renders empty and never shows idle spares). Each member shows its own agent's aggregate mood via a distinct animation and a **collar badge dot**. Mood priority (highest wins): **error** (red `#f87171`) > **needs** (amber `#f5c518`) > **working** (blue `#3da5d9`) > **done** (green `#34c759`) > **idle** (gray `#9aa0a6` — no sessions). A **speech bubble** above each member surfaces what its agent is doing — the live tool (e.g. "Edit: auth.ts"), the question when it needs you, the error, or the final result when done. Bubbles must never be clipped by the window edges: the window pads 24px on each side (more than the bubble's max overhang past an edge member), and every other member's bubble is raised so adjacent bubbles don't collide.
 
 Legacy persisted selections keep working: an old `crew:<kind>` value selects that squad; an old single-pet id falls back to the default squad.
 
 ### 30.1 Widget appears and floats
-1. Launch MC with the squad enabled.
+1. Launch Desktop with the squad enabled.
 2. **Verify:** A pixel-art squad widget appears at the **bottom-right** of the screen (frameless, transparent background, not shown in the taskbar/dock switcher). With no agents running it shows a **single idle member** — the first member of the selected squad (gray collar dot, slow idle animation) — never an empty window and never five idle spares.
 3. **Verify:** The member belongs to the squad selected in Settings (default **kitchen** → sous chef on a fresh install) — it does **not** start blank (the selection is replayed to the widget when it opens).
-4. Bring another application fully in front of MC.
+4. Bring another application fully in front of Desktop.
 5. **Verify:** The widget still floats **on top of** that other app.
 
 ### 30.2 Squad picker swaps the squad live
@@ -1656,11 +1663,11 @@ Legacy persisted selections keep working: an old `crew:<kind>` value selects tha
 
 ### 30.3 Squad selection persists across restart
 1. Select a squad (e.g. **Police**) in Settings → General → Squad.
-2. Fully quit and relaunch MC.
+2. Fully quit and relaunch Desktop.
 3. **Verify:** The widget reappears rendering the **same squad** you selected (selection persisted; the picker shows it highlighted).
 
 ### 30.4 Survives main-window minimize
-1. Minimize the main MC window.
+1. Minimize the main Desktop window.
 2. **Verify:** The widget stays visible and on top (it is independent of the main window's minimized state).
 3. Restore the main window.
 4. **Verify:** The widget is unchanged.
@@ -1668,7 +1675,7 @@ Legacy persisted selections keep working: an old `crew:<kind>` value selects tha
 ### 30.5 Drag and persist position
 1. Drag the widget to a different location on screen.
 2. **Verify:** It moves and stays where dropped.
-3. Fully quit and relaunch MC.
+3. Fully quit and relaunch Desktop.
 4. **Verify:** The widget reappears **at the position you left it** (position persisted across restarts).
 
 ### 30.6 Settings toggle hides/shows it
@@ -1676,11 +1683,11 @@ Legacy persisted selections keep working: an old `crew:<kind>` value selects tha
 2. **Verify:** The widget disappears immediately, and the SquadPicker is hidden (only shown when the squad is visible).
 3. Re-check the toggle.
 4. **Verify:** The widget reappears (bottom-right, or its last persisted position) with the previously selected squad, and the SquadPicker reappears.
-5. Toggle it **off**, then fully quit and relaunch MC.
+5. Toggle it **off**, then fully quit and relaunch Desktop.
 6. **Verify:** The widget stays hidden after restart (the visibility preference is persisted).
 
 ### 30.7 Closing the main window removes the widget
-1. With the widget visible, close the main MC window (quit the app).
+1. With the widget visible, close the main Desktop window (quit the app).
 2. **Verify:** The widget is removed as well — no orphaned always-on-top window is left behind.
 
 ### 30.8 Multi-display unplug (position recenters)
@@ -1750,7 +1757,7 @@ A bubble above each member surfaces what its agent is actually doing.
 
 Covers the per-agent **Swarm** feature: the enable toggle in agent settings, the per-worker **cards** that render in a chat turn (live and from history), **orphan** cards after a crash-reconcile, the **pinned swarm strip**, the **swarm supervision panel** (run list, worker detail, cancel, send-to-worker), 409 handling, caps errors in chat, and cancel-mid-swarm terminalization.
 
-**Preconditions:** Gateway running and MC connected (Sections 1–2), at least one AI provider connected with a **cheap** model available (Section 3), and an agent whose tools include `read`, `bash`, `grep`, `ls`. A cheap model keeps these tests to ~cents — the swarm makes real, small LLM calls.
+**Preconditions:** HQ running and Desktop connected (Sections 1–2), at least one AI provider connected with a **cheap** model available (Section 3), and an agent whose tools include `read`, `bash`, `grep`, `ls`. A cheap model keeps these tests to ~cents — the swarm makes real, small LLM calls.
 
 **Bootstrap (fastest path):**
 1. Create or open an agent (Section 4) on a cheap model. Give it a workspace with at least one subdirectory containing a few files (so workers have something to list).
@@ -1759,10 +1766,10 @@ Covers the per-agent **Swarm** feature: the enable toggle in agent settings, the
 
 ### 31.1 Swarm toggle round-trip (persistence + eviction)
 1. Agent detail → **Configuration** → **Swarm** card. **Verify:** collapsed, it summarizes **"Disabled"** for a fresh agent, or **"Enabled — agent can spawn workers"** once on.
-2. Expand the card. **Verify:** a checkbox labeled **"Enable swarm — let this agent spawn parallel workers"**, optional cap fields (max concurrent workers, max workers per run, max steers per worker, max run seconds), an allowed-models field, and the note **"Leave a cap blank to use the gateway default. Changes take effect on new conversations."**
+2. Expand the card. **Verify:** a checkbox labeled **"Enable swarm — let this agent spawn parallel workers"**, optional cap fields (max concurrent workers, max workers per run, max steers per worker, max run seconds), an allowed-models field, and the note **"Leave a cap blank to use the HQ default. Changes take effect on new conversations."**
 3. Enable swarm, leave the caps blank, and **Save**. **Verify:** the card summary flips to **"Enabled — agent can spawn workers"**.
 4. Reload the agent detail page (or re-open the app). **Verify:** the toggle is still enabled — the setting persisted (`~/.dash/gateway/agents.json` carries a `swarm.enabled: true` block).
-5. **Eviction / next-message semantics:** in an existing chat conversation with this agent, send the swarm prompt. **Verify:** the agent actually spawns workers (worker cards appear — see 30.2). Because a swarm-config change **evicts the agent's warm backend**, the swarm tools are rebuilt into the agent on its next message; you do **not** need to restart the gateway or create a new conversation.
+5. **Eviction / next-message semantics:** in an existing chat conversation with this agent, send the swarm prompt. **Verify:** the agent actually spawns workers (worker cards appear — see 30.2). Because a swarm-config change **evicts the agent's warm backend**, the swarm tools are rebuilt into the agent on its next message; you do **not** need to restart the HQ or create a new conversation.
 6. Turn swarm **off** and **Save**, then send the prompt again in the same conversation. **Verify:** the agent no longer spawns workers (it has no `spawn_worker` tool) — again the change takes effect on the next message via eviction.
 
 ### 31.2 Worker cards render live during a swarm turn
@@ -1773,27 +1780,27 @@ Covers the per-agent **Swarm** feature: the enable toggle in agent settings, the
 5. **Verify:** the orchestrator's final synthesized answer appears after the worker cards (one answer built from the workers' reports).
 
 ### 31.3 Cards render identically from history after app restart
-1. After a completed swarm turn (30.2), fully quit and relaunch MC, then re-open the same conversation.
+1. After a completed swarm turn (30.2), fully quit and relaunch Desktop, then re-open the same conversation.
 2. **Verify:** the same worker cards render from persisted history — same roles, same terminal statuses (**Done**/**Failed**), same reports on expand. History replay must match the live render, not collapse the cards into plain text.
 3. **Verify:** any worker that reached **Done** live still shows **Done** from history (it is not re-derived as cancelled).
 
 ### 31.4 Orphan card after a forced crash-reconcile
-An **orphan** card is a worker whose terminal event landed in a *different* persisted message than its spawn (e.g. the gateway restarted mid-run, so the spawn is in message A and the `subagent_finished` reconciled into message B).
-1. Start a swarm turn, then force a crash-reconcile: kill/restart the gateway (or MC's gateway child) while workers are still running, then let MC reconnect and reconcile.
+An **orphan** card is a worker whose terminal event landed in a *different* persisted message than its spawn (e.g. the HQ restarted mid-run, so the spawn is in message A and the `subagent_finished` reconciled into message B).
+1. Start a swarm turn, then force a crash-reconcile: kill/restart the HQ (or Desktop's HQ child) while workers are still running, then let Desktop reconnect and reconcile.
 2. Re-open the conversation. **Verify:** the split worker renders as a **compact standalone card** whose collapsed summary reads **"worker done"** / **"worker failed"** / **"worker cancelled"** (lowercase status), sourced from the terminal event's self-describing role — it is not dropped and does not error the message render. **Not re-verified — those three summary strings date from before `e5ea76a6` replaced `WorkerCard` with `SubagentCard`; the mechanism (an orphan terminal still anchors its own card) is current, the wording is not. See the note under 31.4B.**
 3. **Verify:** an orphan card is **not** counted in the pinned strip (it represents a finished worker from a prior message, not live work).
 
-### 31.4B Gateway dies mid-run → boot-time terminalization
-When the gateway process is killed hard mid-run, nothing gets to write the turn's terminal state: the event log ends with `subagent_started` events that have no matching `subagent_finished` and no done/error stream marker. On its **next boot** the gateway repairs this: the generic conversation recovery appends exactly one terminal marker for the turn and flips the child conversations to `interrupted`, and the sub-agent pass appends a synthesized `subagent_finished` with status **`interrupted`** and the report `The gateway restarted while this agent was running. Its transcript is intact and it can be resumed with send_message.` per dangling child, then queues the parent a notification about each (the parent sees it as a `<task-notification>` on its next turn). Since D6 it does **not** rebuild a `RunSnapshot` — the panel reads child conversations.
-1. Start a swarm turn and, while workers are still **Running**, kill the gateway process hard (`kill -9`; for MC's managed gateway, force-quit MC too so its own reconcile can't run first).
-   > **Mission Control does not bring the gateway back on its own, and is not meant to (D8).** With MC still running, a `kill -9` on the managed gateway leaves `Gateway offline — cached conversations are read-only.` and nothing respawns: the supervisor spawns `detached: true` + `unref()` and subscribes no `'exit'` listener (`packages/mc/src/runtime/process.ts:543-560`), and the 5s poller is deliberately wired to the **read-only** `getClient()` rather than `ensureRunning()` — `apps/mission-control/src/main/ipc.ts:1435-1442` records why ("every transient hiccup … would trigger a respawn cascade — the root cause of the EADDRINUSE loop we hit"). Respawn is **lazy**: any IPC through `getRequiredGatewayManagementClient` calls `ensureRunning()`, the port probes `free`, and a fresh gateway is spawned reusing the keychain token (`process.test.ts:641`). Sitting in Chat cannot trigger it — the renderer gates chat actions on `gatewayOnline` **before** dispatching IPC (`stores/chat.ts:341, 846, 960`). So **this step's own relaunch of MC is what restores the gateway**, and that is by design, not a defect. The one arguable gap, recorded and not fixed: `classifyConversationGatewayFailure` sets `retryable: true` for the offline case but the banner (`routes/chat.tsx:2948`) exposes no retry control; the only restart affordance in the app is Settings → General → **Restart Gateway**.
-2. Restart the gateway (relaunch MC) and let MC reconnect and reconcile. **Verify:** the gateway boot log contains a `[conversation-recovery] interrupted N conversation(s), appended M terminal(s)` line and a `[subagent-recovery] terminalized N parent-side child(ren), marked M child conversation(s) interrupted, queued K notification(s)` line.
+### 31.4B HQ dies mid-run → boot-time terminalization
+When the HQ process is killed hard mid-run, nothing gets to write the turn's terminal state: the event log ends with `subagent_started` events that have no matching `subagent_finished` and no done/error stream marker. On its **next boot** the HQ repairs this: the generic conversation recovery appends exactly one terminal marker for the turn and flips the child conversations to `interrupted`, and the sub-agent pass appends a synthesized `subagent_finished` with status **`interrupted`** and the report `The HQ restarted while this agent was running. Its transcript is intact and it can be resumed with send_message.` per dangling child, then queues the parent a notification about each (the parent sees it as a `<task-notification>` on its next turn). Since D6 it does **not** rebuild a `RunSnapshot` — the panel reads child conversations.
+1. Start a swarm turn and, while workers are still **Running**, kill the HQ process hard (`kill -9`; for Desktop's managed HQ, force-quit Desktop too so its own reconcile can't run first).
+   > **Desktop does not bring the HQ back on its own, and is not meant to (D8).** With Desktop still running, a `kill -9` on the managed HQ leaves `HQ offline — cached conversations are read-only.` and nothing respawns: the supervisor spawns `detached: true` + `unref()` and subscribes no `'exit'` listener (`packages/mc/src/runtime/process.ts:543-560`), and the 5s poller is deliberately wired to the **read-only** `getClient()` rather than `ensureRunning()` — `apps/mission-control/src/main/ipc.ts:1435-1442` records why ("every transient hiccup … would trigger a respawn cascade — the root cause of the EADDRINUSE loop we hit"). Respawn is **lazy**: any IPC through `getRequiredGatewayManagementClient` calls `ensureRunning()`, the port probes `free`, and a fresh HQ is spawned reusing the keychain token (`process.test.ts:641`). Sitting in Chat cannot trigger it — the renderer gates chat actions on `gatewayOnline` **before** dispatching IPC (`stores/chat.ts:341, 846, 960`). So **this step's own relaunch of Desktop is what restores the HQ**, and that is by design, not a defect. The one arguable gap, recorded and not fixed: `classifyConversationGatewayFailure` sets `retryable: true` for the offline case but the banner (`routes/chat.tsx:2948`) exposes no retry control; the only restart affordance in the app is Settings → General → **Restart HQ**.
+2. Restart the HQ (relaunch Desktop) and let Desktop reconnect and reconcile. **Verify:** the HQ boot log contains a `[conversation-recovery] interrupted N conversation(s), appended M terminal(s)` line and a `[subagent-recovery] terminalized N parent-side child(ren), marked M child conversation(s) interrupted, queued K notification(s)` line.
 3. Re-open the conversation. **Verify:** no sub-agent card and no `wait_workers` tool block is left spinning — every child that never finished shows a terminal state carrying the restart report above (typically as orphan cards in a recovered message, per 31.4), and the turn carries a terminal error.
 4. Open the swarm supervision panel. **Verify:** it does **not** read "No swarm runs yet" — the crashed run's children are listed with their post-recovery statuses (children that finished before the crash keep their real status, e.g. **Done** with their report).
 
-> **Not re-verified.** §31.4 step 2 and §31.4B steps 3–4 describe UI wording that the sub-agent migration changed (`66f4630b` for the gateway side, `e5ea76a6` for the card) and that the `worker_*` retirement did not re-run against a live gateway. The event-level facts in the preamble and in step 2 above are read from `apps/gateway/src/swarm-log-recovery.ts` and `apps/gateway/src/index.ts:651/661`; the card and panel labels are the last known wording and should be corrected the first time these sections are actually executed.
-5. Restart the gateway once more. **Verify:** nothing changes — the repair is idempotent (no duplicate cancelled cards, no extra error).
-6. **Non-swarm turns are untouched:** cancel a plain (non-swarm) turn mid-stream, then restart the gateway. **Verify:** that conversation gets **no** synthesized error appended — boot recovery only repairs turns with dangling workers.
+> **Not re-verified.** §31.4 step 2 and §31.4B steps 3–4 describe UI wording that the sub-agent migration changed (`66f4630b` for the HQ side, `e5ea76a6` for the card) and that the `worker_*` retirement did not re-run against a live HQ. The event-level facts in the preamble and in step 2 above are read from `apps/gateway/src/swarm-log-recovery.ts` and `apps/gateway/src/index.ts:651/661`; the card and panel labels are the last known wording and should be corrected the first time these sections are actually executed.
+5. Restart the HQ once more. **Verify:** nothing changes — the repair is idempotent (no duplicate cancelled cards, no extra error).
+6. **Non-swarm turns are untouched:** cancel a plain (non-swarm) turn mid-stream, then restart the HQ. **Verify:** that conversation gets **no** synthesized error appended — boot recovery only repairs turns with dangling workers.
 
 ### 31.5 Pinned strip counts
 1. During a live swarm turn with multiple workers, **Verify:** a **pinned swarm strip** appears (a people/`Users` icon plus a summary line) reading e.g. **"3 workers · 2 running · 1 waiting"** — singular **"1 worker"** when only one, and the "running"/"waiting" parts only appear when non-zero.
@@ -1827,7 +1834,7 @@ composer), the **sub-agent panel** (children of the open conversation, stop,
 resume), refusal handling, and the re-read behaviour that keeps every surface
 describing the run the child is actually on.
 
-**Preconditions:** Gateway running and MC connected (Sections 1–2), a provider
+**Preconditions:** HQ running and Desktop connected (Sections 1–2), a provider
 connected with a **cheap** model (Section 3), and an agent with sub-agents
 enabled (Section 31.1 — the same **Swarm** card). These tests make real, small
 LLM calls.
@@ -1876,24 +1883,24 @@ LLM calls.
 3. Resume from the panel instead (**Resume** → type → **Send**). **Verify:** the same thing happens. Both paths go through `POST /subagents/:id/resume`; there is no second client-side path.
 4. **Refusal 1 — one-shot type.** Use an `Explore` or `Plan` child, which is one-shot. **Verify:** its **Resume** button is disabled and the row says *"one-shot — cannot be resumed"*; in the card's expanded body the composer is disabled and says *"This sub-agent type is one-shot and cannot be resumed."*
 5. **Refusal 1B — the exception.** A one-shot child **parked on a question** can still be answered: **verify** its reply box is enabled and the answer is delivered.
-6. **Refusal 2 — steer cap.** Set **max steers per worker** to 1 (Section 31.1), then send a child two steers. **Verify:** the second is refused and the gateway's own sentence appears in a dismissable red notice (`data-testid="swarm-action-notice"`) **on the row you clicked**, and in the card's own notice when sent from the card.
-7. **Refusal 3 — unrebuildable grant.** Remove a tool the child was granted (agent Configuration → tools) and then resume it. **Verify:** the refusal appears in the same place with the gateway's reason.
+6. **Refusal 2 — steer cap.** Set **max steers per worker** to 1 (Section 31.1), then send a child two steers. **Verify:** the second is refused and the HQ's own sentence appears in a dismissable red notice (`data-testid="swarm-action-notice"`) **on the row you clicked**, and in the card's own notice when sent from the card.
+7. **Refusal 3 — unrebuildable grant.** Remove a tool the child was granted (agent Configuration → tools) and then resume it. **Verify:** the refusal appears in the same place with the HQ's reason.
 8. **Verify:** in every refusal case the sentence you typed is **still in the box** — a refused message is not thrown away — and the notice dismisses with its X.
 
 ### 32.7 The list stays correct without you touching it
 1. Spawn a **background** child (one that outlives the turn). **Verify:** when the parent turn ends, that child's card does **not** flip to **Cancelled** — a background child is exempt from end-of-stream terminalization.
 2. Let the background child finish while you are on a different conversation. Switch back. **Verify:** the panel and the card both show its true final status. (Reading the list on conversation selection is the only trigger that fires here — no live turn means no event ever reaches the parent.)
-3. With a child live, leave the panel open and do nothing for a minute. **Verify:** the row's status keeps up (a 20s poll runs while any child is non-terminal). Once every child is terminal, **verify** the polling stops — no further `GET /conversations/:id/subagents` requests in the gateway log.
+3. With a child live, leave the panel open and do nothing for a minute. **Verify:** the row's status keeps up (a 20s poll runs while any child is non-terminal). Once every child is terminal, **verify** the polling stops — no further `GET /conversations/:id/subagents` requests in the HQ log.
    Then repeat with the panel **closed**, watching an expanded card in the transcript instead. **Verify:** the same 20s re-read happens — the poll follows the children, not the drawer. This is what a reopened conversation with a background child depends on: without it that card's spinner and elapsed counter tick upward forever.
 4. Switch conversations rapidly back and forth while a list read is in flight. **Verify:** the panel never shows another conversation's children, and never briefly flashes them.
 5. With children showing, **close the selected tab** (the × on it, or ⌘W) so a different tab takes over. **Verify:** the panel does not keep the closed conversation's children for a moment — it empties and then fills with the new selection's, exactly as picking that tab would have done. Closing any **other** tab must leave the panel untouched.
-6. Repeat step 5 with **deletion** instead of closing: with children showing, **delete the selected conversation** so a different tab takes over. **Verify:** the same thing — the panel empties and fills with the new selection's children, not the deleted conversation's. Then have another client (iOS, or a second Mission Control) delete the conversation you are looking at, so the switch arrives as a pushed invalidation rather than your own click. **Verify:** the same again. Deleting any conversation that is **not** selected must leave the panel untouched.
+6. Repeat step 5 with **deletion** instead of closing: with children showing, **delete the selected conversation** so a different tab takes over. **Verify:** the same thing — the panel empties and fills with the new selection's children, not the deleted conversation's. Then have another client (iOS, or a second Desktop) delete the conversation you are looking at, so the switch arrives as a pushed invalidation rather than your own click. **Verify:** the same again. Deleting any conversation that is **not** selected must leave the panel untouched.
 
 ### 32.8 The retired `worker_*` events are invisible on replay
-The gateway no longer emits `worker_spawned` / `worker_status` / `worker_done` — `subagent_started` is the only thing that anchors a card. A conversation recorded **before** that change still holds the retired events in its log; the decision taken there was that **clients drop them and the gateway does not rewrite them on replay**.
+The HQ no longer emits `worker_spawned` / `worker_status` / `worker_done` — `subagent_started` is the only thing that anchors a card. A conversation recorded **before** that change still holds the retired events in its log; the decision taken there was that **clients drop them and the HQ does not rewrite them on replay**.
 1. Run any sub-agent turn and re-open the conversation from history.
 2. **Verify:** each child renders as **exactly one** card — never two, and never a card plus an "Activity from a newer Dash version" block.
-3. Open a conversation recorded before this change (needs an archived pre-change event log — you cannot produce one with the current gateway). **Verify:** each child still renders **one** card, anchored at its `subagent_started`, and the retired events beside it draw **nothing at all** — no second card, no placeholder row, no unknown-activity block. A child that has **only** retired events and nothing canonical draws no card at all.
+3. Open a conversation recorded before this change (needs an archived pre-change event log — you cannot produce one with the current HQ). **Verify:** each child still renders **one** card, anchored at its `subagent_started`, and the retired events beside it draw **nothing at all** — no second card, no placeholder row, no unknown-activity block. A child that has **only** retired events and nothing canonical draws no card at all.
 4. **Verify:** the one case that loses information is a pre-change child cancelled after its consumer was gone — the only case whose terminal was logged as `worker_done` alone. Its card has no terminal event left in the fold, so it is terminalized at end of stream instead: same **Cancelled** status, but without the cancel reason the retired event carried as its report.
 
 ### 32.9 The parallel group container (design §8.2)
@@ -1947,7 +1954,7 @@ while it works.
    rest of the session with nothing to pair it with and nothing to replace
    it. Answering *after* the list has caught up must behave identically.
 7. **Refusal.** Reply to a one-shot child, or blow the steer cap. **Verify:**
-   the gateway's sentence appears on the card, your draft is still in the box,
+   the HQ's sentence appears on the card, your draft is still in the box,
    and the optimistic row is **gone** from the body — it must not claim the
    child received something it refused.
 8. **The panel counts too.** Close every card, open the **Sub-agents** drawer
@@ -1958,11 +1965,11 @@ while it works.
    another conversation and back. **Verify:** the card is collapsed (expansion
    is not kept across a switch — a known divergence from web), and expanding
    it again shows a current transcript rather than a stale one.
-10. **Reconnect.** With a card open on a running child, stop the gateway for
+10. **Reconnect.** With a card open on a running child, stop the HQ for
     ~15 s and start it again. **Verify:** the body catches up with what the
     child did while the connection was down, and no red connection banner
     appears over the **parent's** transcript on account of the child's socket.
-11. **Quit.** With several cards open, quit Mission Control. **Verify:** it
+11. **Quit.** With several cards open, quit Desktop. **Verify:** it
     exits without hanging. (Every watch is released with the transport at
     `before-quit`; a leaked socket would show as a slow or stuck quit.)
 
@@ -1970,7 +1977,7 @@ while it works.
 
 Covers the per-agent **Memory** tab on the agent detail page: the grouped memory list, editing and deleting a memory, the **Automatic memory** / **Post-turn sweep** config strip, per-agent isolation when switching agents, and the chat chip shown when the agent remembers or forgets something.
 
-**Preconditions:** Gateway running and MC connected (Sections 1–2), at least one AI provider connected (Section 3), and an agent whose model supports tool use. A cheap model keeps this section to ~cents — asking the agent to remember things makes real, small LLM calls. The Memory tab has no manual "add memory" control: memories can only be created by asking the agent to remember something in chat (it saves them itself), or by editing one it already saved.
+**Preconditions:** HQ running and Desktop connected (Sections 1–2), at least one AI provider connected (Section 3), and an agent whose model supports tool use. A cheap model keeps this section to ~cents — asking the agent to remember things makes real, small LLM calls. The Memory tab has no manual "add memory" control: memories can only be created by asking the agent to remember something in chat (it saves them itself), or by editing one it already saved.
 
 **Bootstrap (fastest path):**
 1. Create or open an agent (Section 4).

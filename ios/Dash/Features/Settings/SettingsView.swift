@@ -19,7 +19,7 @@ struct SettingsView: View {
     // so the composer and this Picker can never disagree about it.
     @Bindable var composerPreferences = ComposerPreferences.shared
     return Form {
-      Section("Gateway") {
+      Section("HQ") {
         LabeledContent("Name") {
           // `LabeledContent(_:value:)` wraps a long value onto its own line
           // below the label, which is why a gateway hostname broke the
@@ -31,7 +31,7 @@ struct SettingsView: View {
             .truncationMode(.middle)
             .textSelection(.enabled)
         }
-        LabeledContent("Gateway ID") {
+        LabeledContent("HQ ID") {
           Text(feature.identity.gatewayId)
             .textSelection(.enabled)
             .lineLimit(1)
@@ -147,7 +147,7 @@ struct SettingsView: View {
         Text(
           appModel.speechAvailable
             ? "Dictation, read aloud, and the voice your agent speaks with."
-            : "Update your gateway to use speech."
+            : "Update your HQ to use speech."
         )
         .accessibilityIdentifier(
           appModel.speechAvailable ? "settings.speech.description" : "settings.speech.unavailable"
@@ -195,14 +195,14 @@ struct SettingsView: View {
           Button("Cancel", role: .cancel) {}
         } message: {
           Text(
-            "This removes this gateway's connection secrets, offline cache, drafts, and attachments from this device."
+            "This removes this HQ's connection secrets, offline cache, drafts, and attachments from this device."
           )
         }
 
         if feature.isForgetting {
           HStack {
             ProgressView()
-            Text("Removing gateway data")
+            Text("Removing HQ data")
               .foregroundStyle(.secondary)
           }
           .accessibilityElement(children: .combine)
@@ -211,7 +211,7 @@ struct SettingsView: View {
         Text("Device")
       } footer: {
         Text(
-          "Connection secrets, offline cache, drafts, and attachments for this gateway are removed from this device."
+          "Connection secrets, offline cache, drafts, and attachments for this HQ are removed from this device."
         )
       }
 
@@ -249,7 +249,7 @@ struct SettingsView: View {
     .alert("Settings update failed", isPresented: errorPresented) {
       Button("OK") { feature.error = nil }
     } message: {
-      Text(feature.error ?? "Dash couldn't update gateway settings.")
+      Text(feature.error ?? "Dash couldn't update HQ settings.")
     }
     .sheet(isPresented: approveDeviceSheetPresented) {
       if let approveDeviceViewModel {

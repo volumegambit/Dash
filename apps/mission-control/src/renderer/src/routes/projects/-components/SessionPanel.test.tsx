@@ -230,7 +230,7 @@ describe('SessionPanel', () => {
 
     expect(screen.getByText('cached session')).toBeInTheDocument();
     expect(
-      screen.getByText('Gateway offline — cached conversations are read-only.'),
+      screen.getByText('HQ offline — cached conversations are read-only.'),
     ).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Reconnect to send a message')).toBeDisabled();
   });

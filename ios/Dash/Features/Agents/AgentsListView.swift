@@ -15,7 +15,7 @@ struct AgentsListView: View {
           description: Text(
             feature.mutationsAllowed
               ? "Create an agent to start a conversation."
-              : "Connect to the gateway to load agents."
+              : "Connect to the HQ to load agents."
           )
         )
         .listRowBackground(Color.clear)
@@ -122,7 +122,7 @@ struct AgentsListView: View {
         .disabled(feature.mutationsAllowed == false)
         .accessibilityIdentifier("agent.create")
         .accessibilityHint(
-          feature.mutationsAllowed ? "" : "Connect to the gateway to create an agent"
+          feature.mutationsAllowed ? "" : "Connect to the HQ to create an agent"
         )
       }
     }

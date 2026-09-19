@@ -11,7 +11,7 @@ final class AccountUITests: DashUITestCase {
   private static let cpUnreachableCopy =
     "Couldn't reach your Dash account service. Check your connection and try again."
   private static let notEnrolledCopy =
-    "This gateway needs to be re-enrolled from Mission Control before app access works."
+    "This HQ needs to be re-enrolled from Desktop before app access works."
 
   func testSignedOutShowsSignIn() {
     let app = launch(scenario: "signed-out")

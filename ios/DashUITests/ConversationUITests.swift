@@ -37,7 +37,7 @@ final class ConversationUITests: DashUITestCase {
     replaceText(in: composer, with: "Continue this draft offline", clearExisting: false)
     XCTAssertEqual(composer.value as? String, "Continue this draft offline")
     XCTAssertFalse(element("chat.send", in: app).isEnabled)
-    XCTAssertTrue(app.staticTexts["Connect to the gateway to send"].exists)
+    XCTAssertTrue(app.staticTexts["Connect to the HQ to send"].exists)
   }
 
   func testCachedOfflineAgentsRemainVisibleButBlockRemoteMutations() {

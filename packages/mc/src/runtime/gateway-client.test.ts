@@ -247,7 +247,7 @@ describe('GatewayManagementClient', () => {
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await expect(client.createAgent(req)).rejects.toThrow(
-        'Gateway createAgent failed: 409 Agent already exists',
+        'HQ createAgent failed: 409 Agent already exists',
       );
     });
   });
@@ -271,7 +271,7 @@ describe('GatewayManagementClient', () => {
       mockError(500);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.listAgents()).rejects.toThrow('Gateway listAgents failed: 500');
+      await expect(client.listAgents()).rejects.toThrow('HQ listAgents failed: 500');
     });
   });
 
@@ -303,9 +303,7 @@ describe('GatewayManagementClient', () => {
       mockError(404, 'not found');
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.getAgent('missing')).rejects.toThrow(
-        'Gateway getAgent failed: 404 not found',
-      );
+      await expect(client.getAgent('missing')).rejects.toThrow('HQ getAgent failed: 404 not found');
     });
   });
 
@@ -335,9 +333,7 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.updateAgent('missing', {})).rejects.toThrow(
-        'Gateway updateAgent failed: 404',
-      );
+      await expect(client.updateAgent('missing', {})).rejects.toThrow('HQ updateAgent failed: 404');
     });
   });
 
@@ -361,9 +357,7 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.removeAgent('missing')).rejects.toThrow(
-        'Gateway removeAgent failed: 404',
-      );
+      await expect(client.removeAgent('missing')).rejects.toThrow('HQ removeAgent failed: 404');
     });
   });
 
@@ -387,9 +381,7 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.disableAgent('missing')).rejects.toThrow(
-        'Gateway disableAgent failed: 404',
-      );
+      await expect(client.disableAgent('missing')).rejects.toThrow('HQ disableAgent failed: 404');
     });
   });
 
@@ -413,9 +405,7 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.enableAgent('missing')).rejects.toThrow(
-        'Gateway enableAgent failed: 404',
-      );
+      await expect(client.enableAgent('missing')).rejects.toThrow('HQ enableAgent failed: 404');
     });
   });
 
@@ -454,7 +444,7 @@ describe('GatewayManagementClient', () => {
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await expect(
         client.registerChannel({ name: 'bad', adapter: 'telegram', routing: [] }),
-      ).rejects.toThrow('Gateway registerChannel failed: 400 invalid config');
+      ).rejects.toThrow('HQ registerChannel failed: 400 invalid config');
     });
   });
 
@@ -477,7 +467,7 @@ describe('GatewayManagementClient', () => {
       mockError(500);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.listChannels()).rejects.toThrow('Gateway listChannels failed: 500');
+      await expect(client.listChannels()).rejects.toThrow('HQ listChannels failed: 500');
     });
   });
 
@@ -509,7 +499,7 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.getChannel('missing')).rejects.toThrow('Gateway getChannel failed: 404');
+      await expect(client.getChannel('missing')).rejects.toThrow('HQ getChannel failed: 404');
     });
   });
 
@@ -536,7 +526,7 @@ describe('GatewayManagementClient', () => {
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await expect(client.updateChannel('missing', {})).rejects.toThrow(
-        'Gateway updateChannel failed: 404',
+        'HQ updateChannel failed: 404',
       );
     });
   });
@@ -561,9 +551,7 @@ describe('GatewayManagementClient', () => {
       mockError(404);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.removeChannel('missing')).rejects.toThrow(
-        'Gateway removeChannel failed: 404',
-      );
+      await expect(client.removeChannel('missing')).rejects.toThrow('HQ removeChannel failed: 404');
     });
   });
 
@@ -592,7 +580,7 @@ describe('GatewayManagementClient', () => {
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await expect(client.setCredential('', 'val')).rejects.toThrow(
-        'Gateway setCredential failed: 400 invalid key',
+        'HQ setCredential failed: 400 invalid key',
       );
     });
   });
@@ -615,7 +603,7 @@ describe('GatewayManagementClient', () => {
       mockError(403);
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
-      await expect(client.listCredentials()).rejects.toThrow('Gateway listCredentials failed: 403');
+      await expect(client.listCredentials()).rejects.toThrow('HQ listCredentials failed: 403');
     });
   });
 
@@ -652,7 +640,7 @@ describe('GatewayManagementClient', () => {
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await expect(client.removeCredential('missing')).rejects.toThrow(
-        'Gateway removeCredential failed: 404',
+        'HQ removeCredential failed: 404',
       );
     });
   });
@@ -845,9 +833,7 @@ describe('GatewayManagementClient', () => {
       const malformed = await client.getConversation('conv-1').catch((caught: unknown) => caught);
       expect(plain).toBeInstanceOf(GatewayHttpError);
       expect((plain as GatewayHttpError).apiError).toBeUndefined();
-      expect((plain as Error).message).toBe(
-        'Gateway getConversation failed: 502 upstream unavailable',
-      );
+      expect((plain as Error).message).toBe('HQ getConversation failed: 502 upstream unavailable');
       expect(malformed).toBeInstanceOf(GatewayHttpError);
       expect((malformed as GatewayHttpError).apiError).toBeUndefined();
     });

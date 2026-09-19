@@ -46,8 +46,8 @@ export function PreciseLocationSetting() {
         </p>
       ) : (
         <p role="note">
-          Precise location needs a secure (HTTPS) connection to your gateway. Your agent still knows
-          your time zone and region.
+          Precise location needs a secure (HTTPS) connection to your HQ. Your agent still knows your
+          time zone and region.
         </p>
       )}
     </section>

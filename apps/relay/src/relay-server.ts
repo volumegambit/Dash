@@ -286,7 +286,7 @@ function handlePhoneHttp(
   const conn = gatewayId ? gateways.get(gatewayId) : undefined;
   if (!gatewayId || !conn) {
     res.writeHead(502, { 'content-type': 'text/plain', ...cors });
-    res.end('No gateway connected');
+    res.end('No HQ connected');
     return;
   }
 

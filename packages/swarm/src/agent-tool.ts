@@ -46,11 +46,11 @@ const SEND_MESSAGE_DESCRIPTION =
   'Send a message to one of your agents by name or id. A running agent ' +
   'receives it after its current step; a finished agent resumes with its ' +
   'context intact. Returns immediately; the agent’s next completion is ' +
-  'delivered to you as a notification (or via wait_workers in this gateway ' +
+  'delivered to you as a notification (or via wait_workers in this HQ ' +
   'version).';
 
 const TURN_SCOPED_NOTE =
-  ' Note: in this gateway version a background agent is scoped to this turn ' +
+  ' Note: in this HQ version a background agent is scoped to this turn ' +
   '— collect it with wait_workers before you finish, or it is cancelled ' +
   'when your turn ends.';
 

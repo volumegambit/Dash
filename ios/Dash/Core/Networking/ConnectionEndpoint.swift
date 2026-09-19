@@ -212,7 +212,7 @@ struct ConnectionEndpoint: CustomStringConvertible, Sendable {
         profile.secure,
         GatewayCertificatePin.normalize(profile.tlsCertificateSha256) != nil
       else {
-        throw GatewayError.validation("Re-pair this gateway to use pinned LAN TLS")
+        throw GatewayError.validation("Re-pair this HQ to use pinned LAN TLS")
       }
     case .relay:
       let relayCredential = secrets.relayCredential?.trimmingCharacters(
@@ -234,7 +234,7 @@ struct ConnectionEndpoint: CustomStringConvertible, Sendable {
         relayPortsValid,
         relayCredential?.isEmpty == false
       else {
-        throw GatewayError.validation("Re-pair this gateway to use secure relay transport")
+        throw GatewayError.validation("Re-pair this HQ to use secure relay transport")
       }
     }
   }

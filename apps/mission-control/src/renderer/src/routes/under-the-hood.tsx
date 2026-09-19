@@ -67,8 +67,8 @@ function UnderTheHood(): JSX.Element {
   }, [logs, activeTab]);
 
   const tabs: { key: Tab; label: string }[] = [
-    { key: 'gateway', label: 'Gateway' },
-    { key: 'mc', label: 'Mission Control' },
+    { key: 'gateway', label: 'HQ' },
+    { key: 'mc', label: 'Desktop' },
     { key: 'models', label: 'Models' },
   ];
 
@@ -146,7 +146,7 @@ function UnderTheHood(): JSX.Element {
           className="flex-1 overflow-auto bg-[#0a0a0a] p-4 font-[family-name:var(--font-mono)] text-[11px] leading-[1.6] text-[#ccc] whitespace-pre-wrap break-all"
         >
           {logs[activeTab as LogSource] ||
-            'No logs yet. Logs will appear here after gateway or MC activity.'}
+            'No logs yet. Logs will appear here after HQ or Desktop activity.'}
         </pre>
       )}
 
@@ -218,7 +218,7 @@ function ModelsDebugPanel({ debug, refreshing, onRefresh }: ModelsDebugPanelProp
           className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors disabled:opacity-50"
         >
           <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
-          {refreshing ? 'Refreshing…' : 'Refresh from gateway'}
+          {refreshing ? 'Refreshing…' : 'Refresh from HQ'}
         </button>
       </div>
 

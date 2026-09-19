@@ -1844,11 +1844,11 @@ private struct ChatStatusBanner: View {
     case .offline:
       "You're offline"
     case .gatewayOffline:
-      "Gateway unavailable"
+      "HQ unavailable"
     case .rateLimited:
       "Sending is paused"
     case .repairRequired:
-      "Re-pair this gateway"
+      "Re-pair this HQ"
     case .updateRequired:
       "Update Dash to continue"
     case .failed:
@@ -1866,13 +1866,13 @@ private struct ChatStatusBanner: View {
     case .offline:
       Text("Saved messages and your draft remain available.")
     case .gatewayOffline:
-      Text("The gateway isn't responding. Try again when it's available.")
+      Text("The HQ isn't responding. Try again when it's available.")
     case .rateLimited(let retryAt):
       Text("Try again ") + Text(retryAt, style: .relative) + Text(".")
     case .repairRequired:
       Text("Your credentials are no longer accepted. Saved messages remain available.")
     case .updateRequired:
-      Text("This gateway requires a newer version of the app.")
+      Text("This HQ requires a newer version of the app.")
     case .failed(let message):
       Text(message)
     }

@@ -35,10 +35,7 @@ export function createNotificationDriver(options: NotificationDriverOptions): No
     startNotificationTurn(agentId, conversationId, text, turnId) {
       const execution = options.execution();
       if (!execution) {
-        throw new ChildTurnStartError(
-          'stopped',
-          'the gateway execution coordinator is not running',
-        );
+        throw new ChildTurnStartError('stopped', 'the HQ execution coordinator is not running');
       }
 
       // Bounded failure (ruling 8): an agent that has been deleted, disabled or

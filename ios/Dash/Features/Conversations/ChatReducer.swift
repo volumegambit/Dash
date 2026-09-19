@@ -1380,7 +1380,7 @@ enum ChatReducer {
     // before D8 contains them — and they fold into NOTHING: they anchor no
     // row, contribute no field, and `isSubagentChrome` still claims them so
     // they never reach the `.unknown` branch below, which would redecorate
-    // every old conversation with three "Gateway event: worker_…" rows per
+    // every old conversation with three "HQ event: worker_…" rows per
     // child. The mirrors were never TWINNED in the log — a `worker_done` from
     // the consumer-gone cancel path has no `subagent_finished` beside it — so
     // dropping loses that one cancel report (TEST_PLAN §32.8 step 4). Dropping
@@ -1489,7 +1489,7 @@ enum ChatReducer {
     case let .unknown(type, _):
       appendStatus(
         kind: .unknown,
-        title: "Gateway event: \(type)",
+        title: "HQ event: \(type)",
         detail: nil,
         unknownType: type,
         onto: &assistant
@@ -1912,7 +1912,7 @@ enum ChatReducer {
       state.composerBlock = .remoteActiveTurn(activeTurnID)
       return []
     case .gatewayOffline:
-      state.errorBanner = "Gateway is offline"
+      state.errorBanner = "HQ is offline"
     case .notFound:
       state.errorBanner = "Conversation not found"
     case let .validation(message), let .transport(message):
@@ -1920,7 +1920,7 @@ enum ChatReducer {
     case .revisionConflict:
       state.errorBanner = "Conversation changed on another device"
     case .rateLimited:
-      state.errorBanner = "The gateway is busy. Try again shortly."
+      state.errorBanner = "The HQ is busy. Try again shortly."
     case .mutationOutcomeUnknown:
       state.errorBanner = "The message outcome is unknown. Refresh the conversation."
     case let .server(error, _):

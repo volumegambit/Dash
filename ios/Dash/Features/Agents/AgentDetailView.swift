@@ -110,7 +110,7 @@ struct AgentDetailView: View {
             )
           }
           .disabled(feature.mutationsAllowed == false || isWorking)
-          .accessibilityHint(feature.mutationsAllowed ? "" : "Connect to the gateway to edit")
+          .accessibilityHint(feature.mutationsAllowed ? "" : "Connect to the HQ to edit")
           .accessibilityIdentifier("agent.edit")
         }
         ToolbarItem(placement: .topBarTrailing) {
@@ -161,7 +161,7 @@ struct AgentDetailView: View {
     }
     .disabled(feature.mutationsAllowed == false || isWorking)
     .accessibilityHint(
-      feature.mutationsAllowed ? "" : "Connect to the gateway to manage this agent"
+      feature.mutationsAllowed ? "" : "Connect to the HQ to manage this agent"
     )
     .accessibilityIdentifier("agent.actions")
     // Presentation audit (iPad goal Phase D, Task 11): a `confirmationDialog`
@@ -764,7 +764,7 @@ enum AgentDetailPresentation {
   /// first because it blocks everything else on the screen too. Empty when
   /// the button is live.
   static func startChatHint(status: RegisteredAgentStatus, online: Bool) -> String {
-    if online == false { return "Connect to the gateway to start a conversation" }
+    if online == false { return "Connect to the HQ to start a conversation" }
     if status == .disabled { return "Enable this agent to start a conversation" }
     return ""
   }

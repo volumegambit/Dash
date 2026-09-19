@@ -253,7 +253,7 @@ export function AiProviders(): JSX.Element {
             <p className="mx-auto mt-2 max-w-md text-sm text-muted">
               {error
                 ? error.message
-                : 'The gateway reported no provider catalogs. The built-in dash-core-providers plugin may be disabled — re-enable it under Settings → Plugins, or install a provider plugin.'}
+                : 'The HQ reported no provider catalogs. The built-in dash-core-providers plugin may be disabled — re-enable it under Settings → Plugins, or install a provider plugin.'}
             </p>
             <button
               type="button"

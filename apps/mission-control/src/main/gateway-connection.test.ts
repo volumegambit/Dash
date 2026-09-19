@@ -191,7 +191,7 @@ describe('gateway connection helpers', () => {
 
     expect(result).toEqual({
       ok: false,
-      message: 'Could not reach that gateway. Check the URL and tokens, then try again.',
+      message: 'Could not reach that HQ. Check the URL and tokens, then try again.',
     });
   });
 
@@ -200,7 +200,7 @@ describe('gateway connection helpers', () => {
     deps.checkRemoteGateway.mockRejectedValueOnce(new Error('network down'));
 
     await expect(saveGatewayRelayConnection(validInput, deps)).rejects.toThrow(
-      'Could not reach that gateway. Check the URL and tokens, then try again.',
+      'Could not reach that HQ. Check the URL and tokens, then try again.',
     );
 
     expect(deps.setRemoteGatewaySecrets).not.toHaveBeenCalled();
@@ -249,7 +249,7 @@ describe('gateway connection helpers', () => {
     deps.checkRemoteGateway.mockRejectedValueOnce(new Error('identity unauthorized'));
 
     await expect(saveGatewayRelayConnection(validInput, deps)).rejects.toThrow(
-      'Could not reach that gateway. Check the URL and tokens, then try again.',
+      'Could not reach that HQ. Check the URL and tokens, then try again.',
     );
 
     expect(deps.setRemoteGatewaySecrets).not.toHaveBeenCalled();

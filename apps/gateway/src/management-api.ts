@@ -496,7 +496,7 @@ function mobileAgentNotFound(): MobileApiError {
 }
 
 function mobileGatewayError(): MobileApiError {
-  return { code: 'gateway_offline', error: 'Internal gateway error', retryable: true };
+  return { code: 'gateway_offline', error: 'Internal HQ error', retryable: true };
 }
 
 /**

@@ -123,7 +123,7 @@ describe('buildPairingInfo', () => {
         },
         provision,
       ),
-    ).rejects.toThrow('Relay pairing requires an enrolled gateway and relay host');
+    ).rejects.toThrow('Relay pairing requires an enrolled HQ and relay host');
     expect(provision).not.toHaveBeenCalled();
   });
 });

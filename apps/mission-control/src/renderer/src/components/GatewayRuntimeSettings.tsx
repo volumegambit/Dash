@@ -6,7 +6,7 @@ import { GatewayConnectionWizard } from './GatewayConnectionWizard.js';
 function statusLabel(status: GatewayConnectionStatus | null): string {
   if (!status) return 'Checking...';
   if (status.profile.mode === 'local') return 'This computer';
-  return status.profile.name || 'Existing gateway';
+  return status.profile.name || 'Existing HQ';
 }
 
 function statusText(status: GatewayConnectionStatus | null): string {
@@ -36,7 +36,7 @@ export function GatewayRuntimeSettings(): JSX.Element {
   const currentMode = status?.profile.mode ?? 'local';
   const currentEndpoint = useMemo(() => {
     if (currentMode === 'local') return '127.0.0.1';
-    return status?.profile.managementBaseUrl || 'Remote gateway';
+    return status?.profile.managementBaseUrl || 'Remote HQ';
   }, [currentMode, status]);
 
   const button =
@@ -50,7 +50,7 @@ export function GatewayRuntimeSettings(): JSX.Element {
     try {
       setStatus(await window.api.gatewayConnectionUseLocal());
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gateway update failed');
+      setError(err instanceof Error ? err.message : 'HQ update failed');
     } finally {
       setBusy(null);
     }
@@ -78,7 +78,7 @@ export function GatewayRuntimeSettings(): JSX.Element {
           )}
           <button type="button" onClick={() => setShowWizard(true)} className={primary}>
             <Settings2 size={14} />
-            Change gateway
+            Change HQ
           </button>
         </div>
       </div>

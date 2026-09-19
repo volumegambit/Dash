@@ -29,7 +29,7 @@ export function DeviceSettings(): JSX.Element {
           Devices
         </h1>
         <p className="mt-1 text-sm text-muted">
-          Pair your phone and manage remote access to this gateway.
+          Pair your phone and manage remote access to this HQ.
         </p>
       </div>
 

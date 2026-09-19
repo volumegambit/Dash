@@ -41,16 +41,16 @@ export function GeneralSettings(): JSX.Element {
         <h1 className="font-[family-name:var(--font-display)] text-[22px] font-semibold text-foreground">
           General
         </h1>
-        <p className="mt-1 text-sm text-muted">Application, gateway, and squad settings.</p>
+        <p className="mt-1 text-sm text-muted">Application, HQ, and squad settings.</p>
       </div>
 
       <div className="flex-1 overflow-y-auto p-8">
         <div className="rounded-lg border border-border bg-card-bg p-4">
           <h2 className="mb-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[2px] text-accent">
-            Gateway
+            HQ
           </h2>
           <p className="mb-3 text-xs text-muted">
-            The gateway process manages agents, channels, and credentials.
+            The HQ process manages agents, channels, and credentials.
           </p>
           <div className="flex items-center gap-3">
             <button
@@ -60,13 +60,13 @@ export function GeneralSettings(): JSX.Element {
               className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-card-hover transition-colors disabled:opacity-50"
             >
               <RefreshCw size={14} className={restarting ? 'animate-spin' : ''} />
-              {restarting ? 'Restarting...' : 'Restart Gateway'}
+              {restarting ? 'Restarting...' : 'Restart HQ'}
             </button>
             {restartStatus === 'success' && (
-              <span className="text-xs text-green">Gateway restarted successfully</span>
+              <span className="text-xs text-green">HQ restarted successfully</span>
             )}
             {restartStatus === 'error' && (
-              <span className="text-xs text-red">Failed to restart gateway</span>
+              <span className="text-xs text-red">Failed to restart HQ</span>
             )}
           </div>
           <div className="mt-5 border-t border-border pt-5">

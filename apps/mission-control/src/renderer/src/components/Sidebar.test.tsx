@@ -86,10 +86,10 @@ describe('Sidebar', () => {
     expect(screen.queryByText('Squad')).not.toBeInTheDocument();
   });
 
-  it('hides the Mission Control wordmark when collapsed', () => {
+  it('hides the Desktop wordmark when collapsed', () => {
     useUIStore.setState({ sidebarCollapsed: true });
     render(<Sidebar />);
-    expect(screen.queryByText('Mission Control')).not.toBeInTheDocument();
+    expect(screen.queryByText('Desktop')).not.toBeInTheDocument();
   });
 
   it('hides the DEVELOPER section header when collapsed', () => {

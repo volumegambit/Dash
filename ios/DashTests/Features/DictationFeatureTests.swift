@@ -110,7 +110,7 @@ struct DictationFeatureTests {
     await harness.feature.start()
     _ = await harness.feature.finish()
 
-    #expect(harness.feature.state.phase == .failed("Speech isn't set up on your gateway yet."))
+    #expect(harness.feature.state.phase == .failed("Speech isn't set up on your HQ yet."))
   }
 
   @Test("a rejected provider key reads as a key problem, never as a pairing problem")
@@ -125,7 +125,7 @@ struct DictationFeatureTests {
     _ = await harness.feature.finish()
 
     #expect(
-      harness.feature.state.phase == .failed("Your gateway's speech provider key was rejected.")
+      harness.feature.state.phase == .failed("Your HQ's speech provider key was rejected.")
     )
   }
 
